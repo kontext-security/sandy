@@ -8,13 +8,17 @@ descendants. It is a process sandbox, not a container or VM.
 
 ## Quick start
 
-Install from source with Rust 1.91.1:
+Install the private preview with Homebrew after authenticating with an account
+that can read this repository:
 
 ```bash
-git clone https://github.com/kontext-security/sandy.git
-cd sandy
-cargo install --path crates/cli --locked
+HOMEBREW_GITHUB_API_TOKEN="$(gh auth token)" \
+  brew install kontext-security/tap/sandy
 ```
+
+Sandy remains independent of Kontext; this token is only needed because the
+Sandy release assets are private. You can also install from source with Rust
+1.91.1 using `cargo install --path crates/cli --locked` from a checkout.
 
 Run an agent with read/write access to the current project:
 
