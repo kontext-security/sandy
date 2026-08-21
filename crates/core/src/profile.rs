@@ -128,6 +128,8 @@ pub struct DetectSpec {
 pub struct ProfileDocumentV1 {
     pub schema_version: u32,
     pub name: String,
+    #[serde(default, rename = "abstract")]
+    pub is_abstract: bool,
     #[serde(default, deserialize_with = "deserialize_extends")]
     pub extends: Vec<String>,
     #[serde(default)]
@@ -226,6 +228,9 @@ impl ProfileRegistry {
             if document.extends.len() > 1 {
                 return Err(ProfileError::MultipleBases(document.name.clone()));
             }
+            if document.is_abstract && !document.detect.binary_names.is_empty() {
+                return Err(ProfileError::AbstractDetection(document.name.clone()));
+            }
             for base in &document.extends {
                 validate_name(base)?;
             }
@@ -252,6 +257,16 @@ impl ProfileRegistry {
         self.documents.keys().cloned().collect()
     }
 
+    /// Returns the public profiles that may be selected for a launch.
+    #[must_use]
+    pub fn selectable_names(&self) -> Vec<String> {
+        self.documents
+            .values()
+            .filter(|document| !document.is_abstract)
+            .map(|document| document.name.clone())
+            .collect()
+    }
+
     /// Returns the profile claiming the given target binary basename, if any.
     #[must_use]
     pub fn detect(&self, binary_name: &str) -> Option<&str> {
@@ -267,6 +282,19 @@ impl ProfileRegistry {
             merged.absorb(document);
         }
         merged.finish(name)
+    }
+
+    /// Resolves a public launch profile while rejecting inheritance-only
+    /// documents.
+    pub fn resolve_selectable(&self, name: &str) -> Result<ResolvedProfile, ProfileError> {
+        let document = self
+            .documents
+            .get(name)
+            .ok_or_else(|| ProfileError::UnknownProfile(name.to_owned()))?;
+        if document.is_abstract {
+            return Err(ProfileError::AbstractProfile(name.to_owned()));
+        }
+        self.resolve(name)
     }
 
     fn extend_chain(&self, name: &str) -> Result<Vec<&ProfileDocumentV1>, ProfileError> {
@@ -415,10 +443,14 @@ pub enum ProfileError {
     DuplicateProfile(String),
     #[error("profile {0:?} extends more than one base profile")]
     MultipleBases(String),
+    #[error("abstract profile {0:?} cannot claim a detected binary name")]
+    AbstractDetection(String),
     #[error("profile path is invalid: {0}")]
     InvalidTemplate(String),
     #[error("unknown agent profile {0:?}")]
     UnknownProfile(String),
+    #[error("profile {0:?} is inheritance-only and cannot be selected")]
+    AbstractProfile(String),
     #[error("agent profile inheritance cycle at {0:?}")]
     Cycle(String),
     #[error("agent profile inheritance depth exceeded at {0:?}")]

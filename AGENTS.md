@@ -23,7 +23,8 @@ allow/block, dry-run output, and optional self-serve Kontext compatibility.
 Agent presets are versioned, strictly typed profile documents embedded in the
 CLI at compile time. Profiles resolve through deterministic inheritance in
 `sandy-core` and may express only existing typed capabilities. Adding an agent
-is a data change plus tests; it must not require renderer or bootstrap changes.
+requires a profile document, an embedded registry entry, and tests; it must not
+require renderer or bootstrap changes.
 
 Do not add Linux, detached sessions, a PTY proxy, domain filtering, credential
 brokering, dynamic grants, rollback, resource limits, raw Seatbelt input, or

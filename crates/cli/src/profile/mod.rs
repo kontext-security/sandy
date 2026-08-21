@@ -122,14 +122,19 @@ pub(crate) fn select(
 }
 
 fn resolve_by_name(name: &str) -> Result<ResolvedProfile, AppError> {
-    let available = || registry().map_or_else(|_| Vec::new(), |registry| registry.names());
-    registry()?.resolve(name).map_err(|error| match error {
-        ProfileError::UnknownProfile(_) => AppError::UnknownProfile {
-            name: name.to_owned(),
-            available: available(),
-        },
-        other => AppError::Profile(other.to_string()),
-    })
+    let available =
+        || registry().map_or_else(|_| Vec::new(), |registry| registry.selectable_names());
+    registry()?
+        .resolve_selectable(name)
+        .map_err(|error| match error {
+            ProfileError::UnknownProfile(_) | ProfileError::AbstractProfile(_) => {
+                AppError::UnknownProfile {
+                    name: name.to_owned(),
+                    available: available(),
+                }
+            }
+            other => AppError::Profile(other.to_string()),
+        })
 }
 
 fn expand(template: &TemplatePath, paths: &ResolvedPaths) -> Option<PathBuf> {
@@ -198,7 +203,7 @@ mod tests {
         assert_eq!(opencode.binary_names(), ["opencode"]);
         assert!(opencode.kontext_hook_files().is_empty());
         assert_eq!(opencode.grants().len(), 2);
-        assert_eq!(opencode.protected_write_paths().len(), 1);
+        assert_eq!(opencode.protected_write_paths().len(), 2);
         Ok(())
     }
 
@@ -223,7 +228,14 @@ mod tests {
         if let Err(AppError::UnknownProfile { available, .. }) = error {
             assert!(available.contains(&"opencode".to_owned()));
             assert!(available.contains(&"codex".to_owned()));
+            assert!(!available.contains(&"base".to_owned()));
         }
+    }
+
+    #[test]
+    fn inheritance_only_profile_cannot_be_selected() {
+        let error = select(Some(&"base".to_owned()), std::ffi::OsStr::new("anything"));
+        assert!(matches!(error, Err(AppError::UnknownProfile { .. })));
     }
 
     #[test]

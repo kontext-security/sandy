@@ -8,6 +8,7 @@
     { "path": "~/.local/share/opencode", "access": "read_write", "scope": "subtree" }
   ],
   "protected_write_paths": [
-    "~/.config/opencode/opencode.json"
+    "~/.config/opencode/opencode.json",
+    "~/.config/opencode/opencode.jsonc"
   ]
 }

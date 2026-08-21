@@ -5,6 +5,7 @@ use sandy_core::{
 const BASE: &str = r#"{
     "schema_version": 1,
     "name": "base",
+    "abstract": true,
     "protected_paths": ["~/.ssh", "~/Library/Keychains"],
     "protected_write_paths": ["~/.base-config"]
 }"#;
@@ -51,6 +52,32 @@ fn resolves_inheritance_base_first() -> Result<(), Box<dyn std::error::Error>> {
         ]
     );
     Ok(())
+}
+
+#[test]
+fn inheritance_only_profiles_are_not_selectable() -> Result<(), Box<dyn std::error::Error>> {
+    let registry = registry()?;
+    assert_eq!(registry.selectable_names(), vec!["agent".to_owned()]);
+    assert!(matches!(
+        registry.resolve_selectable("base"),
+        Err(ProfileError::AbstractProfile(name)) if name == "base"
+    ));
+    assert_eq!(registry.resolve_selectable("agent")?.name(), "agent");
+    Ok(())
+}
+
+#[test]
+fn abstract_profiles_cannot_claim_detection_names() {
+    let source = r#"{
+        "schema_version": 1,
+        "name": "base",
+        "abstract": true,
+        "detect": { "binary_names": ["base"] }
+    }"#;
+    assert!(matches!(
+        ProfileRegistry::build(&[("base", source)]),
+        Err(ProfileError::AbstractDetection(name)) if name == "base"
+    ));
 }
 
 #[test]

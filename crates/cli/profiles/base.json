@@ -1,5 +1,6 @@
 {
   "schema_version": 1,
   "name": "base",
+  "abstract": true,
   "protected_paths": ["~/.ssh", "~/.gnupg", "~/.aws", "~/Library/Keychains"]
 }

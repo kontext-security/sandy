@@ -31,8 +31,9 @@ profile; anything else runs with the generic profile. Force a profile with
 error so it is never silent.
 
 Profiles are versioned typed documents compiled into the binary
-(`crates/cli/profiles/*.json`). They declare filesystem grants, protected
-paths, and Kontext hook locations; they never carry raw Seatbelt source.
+(`crates/cli/profiles/*.json`) and listed in the CLI's embedded registry. They
+declare filesystem grants, protected paths, and Kontext hook locations; they
+never carry raw Seatbelt source.
 
 Sandy is standalone by default. It does not require Kontext, a daemon, an
 account, or a second copy of the target agent.

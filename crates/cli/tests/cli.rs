@@ -65,7 +65,19 @@ fn unknown_profile_name_fails_with_available_list() -> Result<(), Box<dyn std::e
         .assert()
         .failure()
         .stderr(predicate::str::contains("ghost"))
-        .stderr(predicate::str::contains("opencode"));
+        .stderr(predicate::str::contains("opencode"))
+        .stderr(predicate::str::contains("base").not());
+    Ok(())
+}
+
+#[test]
+fn inheritance_only_profile_cannot_be_selected() -> Result<(), Box<dyn std::error::Error>> {
+    let mut command = Command::cargo_bin("sandy")?;
+    command
+        .args(["run", "--profile", "base", "--", "/bin/echo"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unknown agent profile \"base\""));
     Ok(())
 }
 

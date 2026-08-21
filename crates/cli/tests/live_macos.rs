@@ -67,3 +67,81 @@ fn preserves_target_exit_code() -> Result<(), Box<dyn std::error::Error>> {
         .code(42);
     Ok(())
 }
+
+#[test]
+#[ignore = "irreversibly applies Seatbelt; run on a host, not inside another sandbox"]
+fn opencode_profile_allows_state_but_protects_configuration_and_secrets()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let root_path = fs::canonicalize(root.path())?;
+    let home = root_path.join("home");
+    let project = root_path.join("project");
+    let config = home.join(".config/opencode");
+    let state = home.join(".local/share/opencode");
+    let ssh = home.join(".ssh");
+    fs::create_dir_all(&config)?;
+    fs::create_dir_all(&state)?;
+    fs::create_dir_all(&ssh)?;
+    fs::create_dir(&project)?;
+    fs::write(config.join("opencode.json"), "original json")?;
+    fs::write(config.join("opencode.jsonc"), "original jsonc")?;
+    fs::write(ssh.join("secret"), "must stay protected")?;
+
+    let mut allowed = Command::cargo_bin("sandy")?;
+    allowed
+        .env("HOME", &home)
+        .current_dir(&project)
+        .args([
+            "run",
+            "--profile",
+            "opencode",
+            "--",
+            "/bin/sh",
+            "-c",
+            "printf state > \"$HOME/.local/share/opencode/session\"",
+        ])
+        .assert()
+        .success();
+    assert_eq!(fs::read_to_string(state.join("session"))?, "state");
+
+    for (name, original) in [
+        ("opencode.json", "original json"),
+        ("opencode.jsonc", "original jsonc"),
+    ] {
+        let script = format!("printf changed > \"$HOME/.config/opencode/{name}\"");
+        let mut denied = Command::cargo_bin("sandy")?;
+        denied
+            .env("HOME", &home)
+            .current_dir(&project)
+            .args([
+                "run",
+                "--profile",
+                "opencode",
+                "--",
+                "/bin/sh",
+                "-c",
+                &script,
+            ])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("Operation not permitted"));
+        assert_eq!(fs::read_to_string(config.join(name))?, original);
+    }
+
+    let mut denied_secret = Command::cargo_bin("sandy")?;
+    denied_secret
+        .env("HOME", &home)
+        .current_dir(&project)
+        .args([
+            "run",
+            "--profile",
+            "opencode",
+            "--",
+            "/bin/sh",
+            "-c",
+            "/bin/cat \"$HOME/.ssh/secret\"",
+        ])
+        .assert()
+        .failure();
+    Ok(())
+}
