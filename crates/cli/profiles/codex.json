@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "name": "codex",
+  "extends": ["base"],
+  "detect": { "binary_names": ["codex"] },
+  "grants": [
+    { "path": "~/.codex", "access": "read_write", "scope": "subtree" }
+  ],
+  "protected_write_paths": [
+    "~/.codex/hooks.json",
+    "~/.codex/config.toml"
+  ],
+  "kontext_hook_files": ["~/.codex/hooks.json"]
+}

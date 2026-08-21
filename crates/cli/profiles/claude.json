@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "name": "claude",
+  "extends": ["base"],
+  "detect": { "binary_names": ["claude"] },
+  "grants": [
+    { "path": "~/.claude", "access": "read_write", "scope": "subtree" },
+    { "path": "~/.claude.json", "access": "read_write", "scope": "exact" }
+  ],
+  "protected_write_paths": [
+    "~/.claude/settings.json",
+    "~/.claude.json"
+  ],
+  "kontext_hook_files": [
+    "~/.claude/settings.json",
+    "/Library/Application Support/ClaudeCode/managed-settings.d/20-kontext.json",
+    "/Library/Application Support/ClaudeCode/managed-settings.json"
+  ]
+}

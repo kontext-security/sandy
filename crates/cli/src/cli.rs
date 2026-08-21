@@ -27,6 +27,11 @@ pub(crate) enum Command {
 
 #[derive(Debug, Args)]
 pub(crate) struct RunArgs {
+    /// Force an agent profile (claude, codex, opencode, generic). Without it,
+    /// the profile is detected from the command name.
+    #[arg(long, value_name = "NAME")]
+    pub(crate) profile: Option<String>,
+
     /// Grant read-only access to an existing path.
     #[arg(long, value_name = "PATH")]
     pub(crate) read: Vec<PathBuf>,

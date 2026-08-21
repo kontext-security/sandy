@@ -25,3 +25,76 @@ fn dry_run_does_not_require_kontext() -> Result<(), Box<dyn std::error::Error>> 
         .stdout(predicate::str::contains(r#""command": "/bin/echo""#));
     Ok(())
 }
+
+#[test]
+fn unknown_target_falls_back_to_generic_profile() -> Result<(), Box<dyn std::error::Error>> {
+    let mut command = Command::cargo_bin("sandy")?;
+    command
+        .args(["run", "--dry-run", "--", "/bin/echo"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#""name": "generic""#))
+        .stdout(predicate::str::contains(r#""detected": false"#));
+    Ok(())
+}
+
+#[test]
+fn explicit_profile_overrides_detection() -> Result<(), Box<dyn std::error::Error>> {
+    let mut command = Command::cargo_bin("sandy")?;
+    command
+        .args([
+            "run",
+            "--dry-run",
+            "--profile",
+            "generic",
+            "--",
+            "/bin/echo",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#""name": "generic""#))
+        .stdout(predicate::str::contains(r#""detected": false"#));
+    Ok(())
+}
+
+#[test]
+fn unknown_profile_name_fails_with_available_list() -> Result<(), Box<dyn std::error::Error>> {
+    let mut command = Command::cargo_bin("sandy")?;
+    command
+        .args(["run", "--profile", "ghost", "--", "/bin/echo"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("ghost"))
+        .stderr(predicate::str::contains("opencode"))
+        .stderr(predicate::str::contains("base").not());
+    Ok(())
+}
+
+#[test]
+fn inheritance_only_profile_cannot_be_selected() -> Result<(), Box<dyn std::error::Error>> {
+    let mut command = Command::cargo_bin("sandy")?;
+    command
+        .args(["run", "--profile", "base", "--", "/bin/echo"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unknown agent profile \"base\""));
+    Ok(())
+}
+
+#[test]
+fn detected_agent_profile_is_announced() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    std::os::unix::fs::symlink("/bin/echo", directory.path().join("codex"))?;
+    let mut command = Command::cargo_bin("sandy")?;
+    command
+        .env("PATH", directory.path())
+        .args(["run", "--dry-run", "--", "codex"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#""name": "codex""#))
+        .stdout(predicate::str::contains(r#""detected": true"#))
+        .stderr(predicate::str::contains(
+            "applying detected agent profile 'codex'",
+        ));
+    Ok(())
+}
