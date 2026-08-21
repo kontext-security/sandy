@@ -1,4 +1,4 @@
-# Kontext Sandbox
+# Sandy
 
 Native macOS sandboxing for AI coding agents. The command is `sandy`.
 
