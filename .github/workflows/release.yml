@@ -1,0 +1,131 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: gh release create "$TAG_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --draft --generate-notes --title "$TAG_NAME"
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-26
+            target: aarch64-apple-darwin
+            archive_arch: arm64
+          - runner: macos-26-intel
+            target: x86_64-apple-darwin
+            archive_arch: amd64
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.91.1 --profile minimal --target "${{ matrix.target }}"
+      - name: Verify tag version
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          version="${TAG_NAME#v}"
+          cargo_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
+          test "$version" = "$cargo_version"
+      - name: Build release binary
+        run: cargo build --release --locked --target "${{ matrix.target }}" -p sandy-cli
+      - name: Package release
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
+          ARCH: ${{ matrix.archive_arch }}
+        run: |
+          version="${TAG_NAME#v}"
+          asset="sandy_${version}_darwin_${ARCH}"
+          mkdir -p "dist/${asset}"
+          install -m 0755 "target/${TARGET}/release/sandy" "dist/${asset}/sandy"
+          cp LICENSE README.md "dist/${asset}/"
+          COPYFILE_DISABLE=1 tar -C "dist/${asset}" -czf "dist/${asset}.tar.gz" sandy LICENSE README.md
+          shasum -a 256 "dist/${asset}.tar.gz" | awk '{print $1}' > "dist/${asset}.tar.gz.sha256"
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+          ARCH: ${{ matrix.archive_arch }}
+        run: |
+          version="${TAG_NAME#v}"
+          asset="sandy_${version}_darwin_${ARCH}.tar.gz"
+          gh release upload "$TAG_NAME" "dist/$asset" "dist/${asset}.sha256" --repo "$GITHUB_REPOSITORY"
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: gh release edit "$TAG_NAME" --repo "$GITHUB_REPOSITORY" --draft=false
+
+  homebrew:
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out Sandy
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Check out Homebrew tap
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: kontext-security/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+      - name: Render Sandy formula
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          version="${TAG_NAME#v}"
+          arm_asset="sandy_${version}_darwin_arm64.tar.gz.sha256"
+          amd_asset="sandy_${version}_darwin_amd64.tar.gz.sha256"
+          mkdir checksums
+          gh release download "$TAG_NAME" --repo "$GITHUB_REPOSITORY" --pattern "*.sha256" --dir checksums
+          arm_sha="$(tr -d '[:space:]' < "checksums/$arm_asset")"
+          amd_sha="$(tr -d '[:space:]' < "checksums/$amd_asset")"
+          ./scripts/render-homebrew-formula.sh "$version" "$arm_sha" "$amd_sha" > homebrew-tap/Formula/sandy.rb
+          ruby -c homebrew-tap/Formula/sandy.rb
+      - name: Publish Sandy formula
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          version="${TAG_NAME#v}"
+          cd homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/sandy.rb
+          git commit -m "chore: update sandy formula to ${version}"
+          git push

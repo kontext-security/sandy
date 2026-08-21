@@ -276,6 +276,11 @@ changes also run the dedicated live macOS test target.
 CI uses minimal permissions, disables persisted checkout credentials, pins
 third-party actions to full commit SHAs, and uses locked Cargo commands.
 
+Release tags must match the workspace version. The release workflow builds
+native arm64 and x86_64 macOS archives, publishes checksums, and updates only
+`Formula/sandy.rb` in `kontext-security/homebrew-tap`. Sandy has no package
+dependency on Kontext and must not modify the tap's Kontext formulae.
+
 Before submitting a change, confirm:
 
 - [ ] requested behavior works;
