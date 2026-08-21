@@ -177,6 +177,14 @@ make check
 cargo test -p sandy-cli --test live_macos -- --ignored
 ```
 
+Commits merged to `main` are collected into a continuously updated Release
+Please pull request. The pull request updates the workspace version,
+workspace-internal dependency versions, `Cargo.lock`, and `CHANGELOG.md` from
+conventional commit messages since the previous release. Merging it creates a
+draft `vX.Y.Z` release and runs the macOS release workflow; the release becomes
+public only after both architecture builds and checksums have been uploaded.
+The release workflow can also be dispatched manually for an existing tag.
+
 `make check` expects `cargo-deny` 0.20.2 to be installed.
 
 Only `crates/seatbelt/src/platform/macos/ffi.rs` may contain unsafe Rust or
