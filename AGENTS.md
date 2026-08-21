@@ -2,260 +2,283 @@
 
 This file governs the entire repository.
 
-## Project
+## Product contract
 
-Sandy is a macOS-native process sandbox for AI coding agents. Its canonical
-executable is `sandy`.
+Sandy is a macOS-native process sandbox for AI coding agents.
 
-Standalone sandboxing is the product default:
+- Cargo package: `sandy-cli`
+- Installed executable: `sandy`
+- Default mode: standalone sandboxing
+- Optional integration: Kontext through `--kontext`
+- Runtime model: one foreground supervisor per invocation, never a Sandy daemon
 
-```bash
-sandy run -- claude
-sandy run -- codex
-```
+Sandy is a process sandbox, not a container or VM. Describe its guarantees
+narrowly.
 
-Kontext is an optional compatibility integration:
+Version `0.1.x` is limited to macOS, one foreground `run` mode, Claude Code,
+Codex, and generic profiles, explicit filesystem grants, network allow/block,
+dry-run output, and optional self-serve Kontext compatibility.
 
-```bash
-sandy run --kontext -- claude
-```
+Do not add Linux, detached sessions, a PTY proxy, domain filtering, credential
+brokering, dynamic grants, rollback, resource limits, raw Seatbelt input, or
+organization-managed Kontext support without an explicit scope decision.
 
-Do not introduce a runtime dependency on Kontext for ordinary Sandy commands.
 Do not modify the separate Kontext repository as part of Sandy changes.
 
-## Supported scope
+## Architecture
 
-Version `0.1.x` is macOS-only and uses Seatbelt to restrict the target process
-and its descendants. It is a process sandbox, not a container, VM, endpoint
-monitor, or always-on daemon.
+Use one root package. Do not create a virtual workspace or internal crate until
+there is a demonstrated consumer, backend, publishing need, or independently
+reviewed trust boundary.
 
-Keep the first release deliberately small:
+```text
+Cargo.toml                 package sandy-cli; workspace root
+src/main.rs                thin sandy binary
+src/lib.rs                 testable application entry point
+src/platform/macos/        private platform implementation
+```
 
-- one foreground `run` execution mode;
-- Claude Code, Codex, and generic/minimal profiles;
-- current-working-directory and explicit filesystem grants;
-- network allowed or fully blocked;
-- resolved-manifest and dry-run output;
-- optional self-serve Kontext compatibility.
+Seatbelt is a private macOS module in `v0.1.x`, not a separate crate.
 
-Do not add Linux support, detached sessions, a PTY proxy, domain filtering,
-credential brokering, dynamic grants, rollback, resource limits, arbitrary raw
-Seatbelt input, or organization-managed Kontext support without an explicit
-scope decision.
+Keep dependencies flowing in one direction:
 
-## Required architecture
+```text
+CLI
+  -> resolution and execution
+  -> typed capabilities
+  -> platform renderer and native wrapper
 
-Use a small Rust workspace:
+optional integrations
+  -> typed capabilities
+  -> never raw Seatbelt source
+```
 
-- the root package owns the CLI, resolution, policy model, profiles, execution,
-  and integrations;
-- a private `crates/seatbelt` package owns the narrow macOS FFI wrapper.
+The CLI does not render policy. The platform layer does not know about Clap,
+agent preset names, or Kontext configuration. Avoid vague modules such as
+`core`, `util`, or `common`; name modules for their responsibility.
 
-Do not split the CLI and core model into separate public crates until a real
-consumer requires it.
+## Execution model
 
-`sandy run` must:
+`sandy run` resolves the complete launch in the trusted parent, creates a
+private session directory, and spawns the same executable in a hidden bootstrap
+mode through `std::process::Command`.
 
-1. resolve the command, environment, paths, profile, and optional integrations
-   in the trusted parent;
-2. spawn the same executable in a hidden bootstrap mode using
-   `std::process::Command`;
-3. send a bounded, versioned launch manifest over inherited close-on-exec
-   pipes;
-4. apply Seatbelt in the fresh bootstrap process;
-5. report sandbox-application failure to the parent; and
-6. `execve` the target only after Seatbelt succeeds.
+The fresh bootstrap validates a bounded, versioned manifest, applies Seatbelt,
+reports a bounded error on failure, and replaces itself with the target only
+after the sandbox succeeds.
 
 Do not use Rust `pre_exec` callbacks or run general Rust code in a
-fork-after-threads child. Prefer the normal macOS `posix_spawn` path used by
-`std::process::Command`.
+fork-after-threads child. The hidden bootstrap must not appear in normal CLI
+help.
 
 The parent remains outside the sandbox, supervises only the launched session,
-and returns the target's exact exit status. Sandy must not install or start an
-always-on Sandy daemon.
+cleans up session resources, and returns the target's exact exit status.
 
 ## Security invariants
 
-These are release-blocking requirements:
+These rules are release-blocking:
 
-- The target executable must never run when manifest validation, profile
-  generation, the runtime probe, or Seatbelt application fails.
-- Unsupported and already-incompatible sandbox environments fail closed.
-- Seatbelt restrictions must be inherited by every target descendant.
-- User-controlled values must never be concatenated into Seatbelt source
-  without type-appropriate escaping and validation.
-- Filesystem grants must be absolute, resolved, bounded, and inspectable.
-- Sensitive terminal deny rules must override broader grants.
-- Close all inherited file descriptors other than standard input, output, and
-  error plus the bootstrap protocol descriptors.
-- Create a private per-session temporary directory with mode `0700`, expose
-  only that directory as `TMPDIR`, and clean it after the process tree exits.
-- Strip `DYLD_*`, `SSH_AUTH_SOCK`, and security-sensitive routing overrides
-  unless a reviewed feature explicitly requires them.
-- Do not silently grant Keychain databases, SSH material, Docker sockets,
-  unrelated Unix sockets, or the user's entire home directory.
-- Never fall back to unrestricted execution after a sandbox error.
+- The target never runs when resolution, validation, probing, rendering, or
+  Seatbelt application fails.
+- Unsupported and incompatible nested-sandbox environments fail closed.
+- Sandy never falls back to unrestricted execution.
+- Restrictions are inherited by every target descendant.
+- The CLI and profiles accept typed capabilities, never raw Seatbelt rules.
+- One centralized renderer validates and escapes every value used in policy.
+- Paths are absolute, canonicalized, bounded, and compared as `Path`
+  components rather than string prefixes.
+- Canonicalization does not remove time-of-check/time-of-use risk; symlink and
+  replacement behavior requires negative tests.
+- Security configuration load failures are fatal. Never use a permissive
+  default for missing protection data.
+- Sensitive terminal deny rules override broader grants.
+- Close inherited file descriptors except standard streams and temporary
+  bootstrap protocol descriptors.
+- Give each session a mode-`0700` private `TMPDIR`; do not grant broad
+  temporary-directory access.
+- Strip `DYLD_*`, `SSH_AUTH_SOCK`, and security-routing overrides unless a
+  reviewed capability explicitly requires them.
+- Do not silently grant the home directory, Keychains, SSH material, Docker
+  sockets, agent sockets, or unrelated local services.
+- Network-enabled profiles may reach same-user local services as well as the
+  Internet; treat that as an explicit compatibility tradeoff.
 
 Treat the Seatbelt raw-profile interface as private, deprecated macOS SPI.
-Probe support in a sacrificial subprocess and test it live on every supported
-macOS release.
+Probe it in a sacrificial process and test it live on each supported macOS
+release.
 
-## Unsafe Rust
+Policy loosening requires a named capability, a positive compatibility test,
+and a negative test proving adjacent sensitive access remains denied. Never
+add a blanket permission solely to make a smoke test pass.
 
-The root package must use:
+## Unsafe Rust boundary
+
+`src/main.rs` uses `#![forbid(unsafe_code)]`. The library uses:
 
 ```rust
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
+#![deny(unsafe_op_in_unsafe_fn)]
 ```
 
-The Seatbelt crate must deny unsafe code globally and allow it only in a private
-`ffi` module. Every unsafe block requires a local `SAFETY:` explanation that
-states pointer ownership, lifetime, nullability, and cleanup assumptions.
+Unsafe code and native declarations are permitted only in:
 
-Do not expose raw pointers or unsafe functions from the safe Seatbelt wrapper.
-Convert native errors into owned Rust errors at the boundary.
+```text
+src/platform/macos/seatbelt/ffi.rs
+```
 
-## Launch manifest and paths
+The parent module may lower the unsafe lint for exactly that private module.
+Repository checks must reject `unsafe`, `extern "C"`, and
+`allow(unsafe_code)` anywhere else.
 
-Use a versioned manifest model. Preserve command arguments and environment
-values as `OsString` bytes on macOS rather than forcing UTF-8. Reject embedded
-NUL only where required by `execve`. Paths inserted into Seatbelt source must
-meet its encoding requirements or be rejected with a clear error.
+Every unsafe block needs an adjacent `SAFETY:` explanation covering pointer
+validity, ownership, lifetime, nullability, thread/process assumptions, and
+cleanup. The FFI boundary exposes only owned safe Rust types and functions.
+Raw pointers, unsafe functions, native error buffers, and raw sandbox flags
+must not escape it.
 
-Bound the serialized manifest and bootstrap error frames. Reject unknown
-manifest versions. Do not deserialize unbounded attacker-controlled data.
+Adding a native symbol requires documenting its SDK declaration, availability,
+deprecation status, cleanup contract, and live macOS coverage.
 
-Canonicalize existing grant paths and handle macOS aliases such as
-`/tmp` and `/private/tmp` deliberately. Reject nonexistent grants in
-`v0.1.x`. Add regression tests before changing symlink behavior.
+## Data and CLI contracts
 
-## CLI contract
+Preserve target arguments and environment values as `OsString` bytes. Reject
+embedded NUL only at the native execution boundary and reject values that
+cannot be represented safely in policy.
 
-Keep the basic interface unsurprising:
+Bound every bootstrap manifest and error frame. Reject unknown protocol
+versions. Protocol changes require a version decision and malformed-input
+tests.
+
+Canonicalize existing grants, handle macOS aliases deliberately, and reject
+nonexistent grants in `v0.1.x`.
+
+The public interface is:
 
 ```bash
 sandy run [SANDY OPTIONS] -- COMMAND [ARGUMENTS...]
 ```
 
-All Sandy options precede `--`. Pass everything after `--` to the target
-without rewriting it.
+All Sandy options precede `--`. Everything after `--` is opaque target data
+and must pass through unchanged. Do not add ambiguous shorthand.
 
-Initial options may include:
+Clap help is the source of truth for syntax. The typed manifest is the source
+of truth for launch behavior. Renderer tests are the source of truth for
+generated policy.
 
-- `--read PATH`;
-- `--read-write PATH`;
-- `--block-net`;
-- `--preset NAME`;
-- `--dry-run`;
-- `--kontext`.
+Error messages identify the failed phase and safe remediation without dumping
+secrets, full environments, or sensitive policy contents.
 
-Do not add command shorthand that makes the option boundary ambiguous. Error
-messages must identify the failed capability or path and provide a safe
-remediation when one exists.
+## Process behavior
 
-Dry-run output must describe the fully resolved manifest and must not start the
-target or contact Kontext unless the user explicitly selected `--kontext`.
-Never print secrets or full sensitive environment values.
+Inherit standard input, output, error, terminal, and foreground process group.
+Do not add a PTY proxy in `v0.1.x`.
 
-## Process and terminal behavior
+Handle `INT`, `TERM`, `HUP`, and `QUIT` without leaving an orphaned target.
+Close the spawn-to-handler race, restore signal state before target execution,
+retry interrupted waits, preserve normal exit codes, and return `128 + signal`
+for signal termination.
 
-In `v0.1.x`, inherit standard input, output, error, terminal, and the foreground
-process group. Do not introduce a PTY proxy.
+Supervisor changes require exit, signal, Ctrl-C, and terminal regression tests.
 
-Handle `INT`, `TERM`, `HUP`, and `QUIT` without leaving an unrestricted or
-orphaned target. Close the spawn-to-handler race by controlling the signal mask
-around bootstrap creation. Restore default dispositions and the signal mask
-before target execution.
+## Kontext boundary
 
-Return normal exit codes unchanged and use the conventional `128 + signal`
-result for signal termination. Retry interrupted waits.
+Kontext remains a runtime-only integration behind `--kontext`, never a linked
+dependency or Cargo feature. Without the flag, Sandy does not discover, contact,
+or grant resources for Kontext.
 
-## Kontext integration
+The host-installed Kontext binary and LaunchAgent daemon remain outside the
+sandbox. Preflight fails before target execution when a supported installation
+cannot be established.
 
-Keep integration behind the runtime `--kontext` branch, not a Cargo feature or
-linked Kontext dependency. The host-installed `kontext` binary and existing
-LaunchAgent daemon remain outside the sandbox.
+Grant only exact resources required by the selected hook. Keep hook
+configuration, policy, databases, installation identity, logs, credentials,
+and Keychain material protected from writes or disclosure.
 
-`--kontext` must fail before target execution when its preflight cannot
-establish a supported configuration. In particular:
+Tests use fake executables, fixture output, temporary configuration roots, and
+mock sockets. They never inspect or modify a developer's real Kontext
+installation.
 
-- parse `kontext doctor --json`; do not infer health from its exit code;
-- tolerate unknown additive JSON fields but reject malformed or missing
-  required fields;
-- validate the selected agent's hooks rather than relying only on aggregate
-  health;
-- start an already-configured self-serve LaunchAgent from the trusted parent
-  when needed, but do not run automatic repair;
-- resolve the executable used by the actual hook configuration, including its
-  stable Homebrew path and resolved Cellar target;
-- grant only the exact required read-only configuration and policy-cache files
-  and the exact managed Unix socket;
-- retain write-denies for hook configuration, policy files, Kontext databases,
-  installation identity, logs, and Keychain material;
-- strip or validate `KONTEXT_*` routing overrides and non-default
-  `CODEX_HOME`.
+Do not claim authenticated process-to-hook binding, complete tool coverage,
+cryptographic provenance, or that Kontext supervises the Sandy process.
 
-The current Kontext socket is a same-user compatibility channel, not an
-authenticated binding between the sandboxed process and hook events. Do not
-claim complete tool coverage, cryptographic provenance, or that Kontext
-supervises the Sandy process.
+## Rust and dependencies
 
-## Dependencies and Rust style
+Use Rust edition 2024 and pin one toolchain version consistently in
+`Cargo.toml`, `rust-toolchain.toml`, and CI. Commit `Cargo.lock`.
 
-Target Rust edition 2024 with MSRV 1.85 unless a documented dependency requires
-a deliberate change. Commit `Cargo.lock`.
+Centralize package metadata, dependency versions, release profiles, and lints
+in the root manifest. Future workspace members must inherit workspace lints.
 
-Prefer a small synchronous dependency set. Expected dependencies include
-`clap`, `serde`, `serde_json`, `toml`, `thiserror`, `tracing`,
-`rustix` or narrowly scoped `libc`, and `signal-hook`.
+Prefer a small synchronous dependency set. New dependencies require a concrete
+need, minimal features, a lockfile update, license/source/advisory checks, and
+an explanation in the change.
 
-Do not add Tokio, an HTTP client, a keyring library, a proxy stack, or a general
-async runtime for `v0.1.x`.
+Do not add an async runtime, HTTP client, keyring library, proxy stack, or
+plugin framework in `v0.1.x`.
 
-Use structured error types and add context at subsystem boundaries. Avoid
-`unwrap`, `expect`, unchecked indexing, and panics in production paths.
-Keep platform-specific code behind explicit `cfg(target_os = "macos")`
-boundaries.
+Production paths do not use `unwrap`, `expect`, unchecked indexing, or panic
+for expected errors. Use structured errors, checked arithmetic for
+security-sensitive sizes, and `#[must_use]` for critical results.
 
-Before committing Rust changes, run:
-
-```bash
-cargo fmt --all --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace
-```
+Do not suppress lints without a nearby reason. Avoid `#[allow(dead_code)]`;
+remove unused code or test the intended behavior.
 
 ## Tests
 
-Pure policy rendering and resolution tests may run in-process. Every live
-Seatbelt test must run in a sacrificial subprocess because applying a sandbox
-is irreversible.
+Keep pure unit tests beside resolution, manifest, escaping, and renderer code.
+Use black-box integration tests for CLI, process, signal, and sandbox behavior.
 
-At minimum, cover:
+Applying Seatbelt is irreversible. Every live sandbox test runs in a
+sacrificial subprocess, never inside the unit-test process.
 
-- sandbox initialization failure never executes the target;
-- current-project reads and writes;
-- denial outside declared grants;
-- denial of SSH, Keychain, and Kontext-sensitive state;
-- child and grandchild inheritance;
-- canonical paths, macOS path aliases, and symlink escape attempts;
-- quotes, backslashes, newlines, control characters, and profile injection;
-- private temporary-directory behavior;
-- network allow and block behavior, including loopback and Unix sockets;
-- exact Kontext socket access when integration is selected;
-- immutable hook and policy configuration;
-- environment and file-descriptor sanitization;
-- normal exits, signal exits, Ctrl-C, and terminal behavior.
+Tests modifying process-wide environment variables use a restoring guard and
+serialization. Fixtures contain no developer paths, usernames, credentials,
+installation identifiers, or real socket locations.
 
-Release CI must include real Seatbelt end-to-end jobs on supported macOS 15 and
-macOS 26 runners. Build and test both Apple Silicon and Intel release artifacts.
+Every security fix and policy change includes a regression test. Release CI
+runs live Seatbelt tests on supported macOS 15 and 26 runners and builds both
+Apple Silicon and Intel artifacts.
 
-## Documentation and change discipline
+## Development process
 
-Keep `README.md`, `THREAT_MODEL.md`, CLI help, and behavior consistent.
-Describe guarantees narrowly and list residual risks. Never describe Sandy as
-VM isolation or claim that hooks observe operations outside their documented
-event surfaces.
+Before changing code:
 
-Preserve unrelated user changes. Avoid broad rewrites when a focused patch is
-enough. Security-sensitive behavior changes require tests in the same commit.
+1. read this file and the relevant architecture, threat-model, and security
+   documentation;
+2. identify the trust boundary and tests affected;
+3. preserve unrelated work; and
+4. choose the smallest patch that fully solves the request.
+
+Behavior, tests, and documentation change together. Keep commits focused.
+Never commit build output, local paths, credentials, or temporary fixtures.
+Keep the lockfile synchronized with manifests.
+
+The repository provides one authoritative `make check` command used locally
+and in CI. It runs at minimum:
+
+```bash
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+cargo test --workspace --locked
+cargo deny check
+```
+
+Security-sensitive renderer, FFI, bootstrap, process, capability, or Kontext
+changes also run the dedicated live macOS test target.
+
+CI uses minimal permissions, disables persisted checkout credentials, pins
+third-party actions to full commit SHAs, and uses locked Cargo commands.
+
+Before submitting a change, confirm:
+
+- [ ] requested behavior works;
+- [ ] adjacent sensitive behavior remains denied;
+- [ ] failure paths cannot execute the target;
+- [ ] no capability was broadened unintentionally;
+- [ ] user-controlled paths and values are validated and escaped;
+- [ ] tests and documentation changed with behavior;
+- [ ] `make check` passes.
+
+Keep `README.md`, CLI help, architecture documentation, `THREAT_MODEL.md`,
+`SECURITY.md`, and behavior consistent. Replace planning language in this
+file with actual commands and paths as implementation lands.
