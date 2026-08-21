@@ -22,7 +22,17 @@ Run an agent with read/write access to the current project:
 sandy doctor
 sandy run -- claude
 sandy run -- codex
+sandy run -- opencode
 ```
+
+Sandy recognizes known agents from the command name and applies a matching
+profile; anything else runs with the generic profile. Force a profile with
+`--profile claude|codex|opencode|generic`. Detection is announced on standard
+error so it is never silent.
+
+Profiles are versioned typed documents compiled into the binary
+(`crates/cli/profiles/*.json`). They declare filesystem grants, protected
+paths, and Kontext hook locations; they never carry raw Seatbelt source.
 
 Sandy is standalone by default. It does not require Kontext, a daemon, an
 account, or a second copy of the target agent.
@@ -140,7 +150,8 @@ depending on Sandy as a security boundary.
 
 Included in this first implementation:
 
-- a standalone macOS runner for generic commands, Claude Code, and Codex;
+- a standalone macOS runner for generic commands, Claude Code, Codex, and
+  OpenCode;
 - typed filesystem grants and network allow/block;
 - byte-preserving arguments and a bounded, versioned launch manifest;
 - a fresh apply-before-exec bootstrap;

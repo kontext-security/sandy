@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "name": "opencode",
+  "extends": ["base"],
+  "detect": { "binary_names": ["opencode"] },
+  "grants": [
+    { "path": "~/.config/opencode", "access": "read_write", "scope": "subtree" },
+    { "path": "~/.local/share/opencode", "access": "read_write", "scope": "subtree" }
+  ],
+  "protected_write_paths": [
+    "~/.config/opencode/opencode.json"
+  ]
+}

@@ -12,7 +12,6 @@ use serde_json::Value;
 
 use crate::{
     error::AppError,
-    profile::Preset,
     resolve::{ResolvedCommand, ResolvedPaths, grant, resolve_command},
 };
 
@@ -36,12 +35,11 @@ struct DoctorReport {
 }
 
 pub(crate) fn resolve(
-    preset: Preset,
+    hook_files: &[PathBuf],
     required: bool,
     paths: &ResolvedPaths,
 ) -> Result<KontextIntegration, AppError> {
-    let hook_files = hook_files(preset, paths);
-    let configured = find_configured_binary(&hook_files)?;
+    let configured = find_configured_binary(hook_files)?;
     let Some(configured_binary) = configured else {
         if required {
             return Err(AppError::Kontext(
@@ -77,7 +75,7 @@ pub(crate) fn resolve(
         add_existing(&mut grants, parent, AccessMode::Read, PathScope::Subtree)?;
     }
     for hook_file in hook_files {
-        add_existing(&mut grants, &hook_file, AccessMode::Read, PathScope::Exact)?;
+        add_existing(&mut grants, hook_file, AccessMode::Read, PathScope::Exact)?;
     }
     if let Some(config_path) = &report.config_path {
         add_existing(&mut grants, config_path, AccessMode::Read, PathScope::Exact)?;
@@ -113,26 +111,6 @@ pub(crate) fn resolve(
         grants,
         version: report.installed_version,
     })
-}
-
-fn hook_files(preset: Preset, paths: &ResolvedPaths) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    if let Some(home) = &paths.home {
-        match preset {
-            Preset::Claude => files.push(home.join(".claude/settings.json")),
-            Preset::Codex => files.push(home.join(".codex/hooks.json")),
-            Preset::Minimal => {}
-        }
-    }
-    if preset == Preset::Claude {
-        files.push(PathBuf::from(
-            "/Library/Application Support/ClaudeCode/managed-settings.d/20-kontext.json",
-        ));
-        files.push(PathBuf::from(
-            "/Library/Application Support/ClaudeCode/managed-settings.json",
-        ));
-    }
-    files
 }
 
 fn find_configured_binary(paths: &[PathBuf]) -> Result<Option<PathBuf>, AppError> {

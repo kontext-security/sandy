@@ -31,6 +31,13 @@ pub(crate) enum AppError {
     UnsupportedPlatform,
     #[error("Kontext integration failed: {0}")]
     Kontext(String),
+    #[error("agent profile failed: {0}")]
+    Profile(String),
+    #[error("unknown agent profile {name:?}; available profiles: {}", available.join(", "))]
+    UnknownProfile {
+        name: String,
+        available: Vec<String>,
+    },
     #[error("target command could not be executed: {0}")]
     Exec(io::Error),
 }

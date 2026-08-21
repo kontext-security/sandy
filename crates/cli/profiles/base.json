@@ -1,0 +1,5 @@
+{
+  "schema_version": 1,
+  "name": "base",
+  "protected_paths": ["~/.ssh", "~/.gnupg", "~/.aws", "~/Library/Keychains"]
+}

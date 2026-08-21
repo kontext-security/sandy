@@ -24,9 +24,15 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
     if !cfg!(target_os = "macos") {
         return Err(AppError::UnsupportedPlatform);
     }
-    let paths = resolve_paths()?;
     let command = resolve_command(&arguments.target)?;
-    let preset = profile::select(&command.requested_name);
+    let selected = profile::select(arguments.profile.as_ref(), &command.requested_name)?;
+    if selected.detected() {
+        eprintln!(
+            "sandy: applying detected agent profile '{}' (override with --profile)",
+            selected.name()
+        );
+    }
+    let paths = resolve_paths(selected.protected_templates())?;
     let session = Builder::new()
         .prefix("sandy-")
         .tempdir()
@@ -57,7 +63,7 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
         PathScope::Subtree,
         &paths.protected,
     )?);
-    files.extend(profile::grants(preset, &paths)?);
+    files.extend(selected.grants(&paths)?);
     for path in &arguments.read {
         files.push(grant(
             path,
@@ -75,7 +81,11 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
         )?);
     }
 
-    let kontext = kontext::resolve(preset, arguments.kontext, &paths)?;
+    let kontext = kontext::resolve(
+        &selected.kontext_hook_files(&paths),
+        arguments.kontext,
+        &paths,
+    )?;
     if kontext.enabled && arguments.block_net {
         return Err(AppError::Kontext(
             "--kontext with --block-net is not supported until exact Unix-socket policy is available"
@@ -84,7 +94,8 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
     }
     files.extend(kontext.grants.clone());
     deduplicate_grants(&mut files);
-    let protected_write_paths = profile::protected_write_paths(preset, &paths)?;
+    let protected_write_paths = selected.protected_write_paths(&paths);
+    let protected_paths = selected.protected_paths(&paths);
 
     let manifest = LaunchManifestV1 {
         schema_version: MANIFEST_SCHEMA_V1,
@@ -100,7 +111,7 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
         environment: sanitized_environment(session.path()),
         policy: PolicySpec {
             files,
-            protected_paths: paths.protected,
+            protected_paths,
             protected_write_paths,
             network: if arguments.block_net {
                 NetworkPolicy::BlockAll
@@ -124,6 +135,10 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
             "command": command.program.to_string_lossy(),
             "arguments": command.arguments.iter().map(|value| value.to_string_lossy()).collect::<Vec<_>>(),
             "working_directory": validated.manifest().working_directory.as_str(),
+            "profile": {
+                "name": selected.name(),
+                "detected": selected.detected(),
+            },
             "network": validated.manifest().policy.network,
             "file_grants": validated.manifest().policy.files,
             "kontext": {

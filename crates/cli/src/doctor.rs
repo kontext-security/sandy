@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::{
-    cli::DoctorArgs, error::AppError, integration::kontext, profile::Preset, resolve::resolve_paths,
+    cli::DoctorArgs, error::AppError, integration::kontext, profile, resolve::resolve_paths,
 };
 
 pub(crate) fn run(arguments: DoctorArgs) -> Result<i32, AppError> {
@@ -30,8 +30,9 @@ pub(crate) fn run(arguments: DoctorArgs) -> Result<i32, AppError> {
     println!("Seatbelt enforcement: available");
 
     if arguments.kontext {
-        let paths = resolve_paths()?;
-        let integration = kontext::resolve(Preset::Claude, true, &paths)?;
+        let selected = profile::select(Some(&"claude".to_owned()), std::ffi::OsStr::new("claude"))?;
+        let paths = resolve_paths(selected.protected_templates())?;
+        let integration = kontext::resolve(&selected.kontext_hook_files(&paths), true, &paths)?;
         let version = integration.version.as_deref().unwrap_or("unknown");
         println!("Kontext integration: available ({version})");
     } else {

@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use sandy_core::{AbsolutePath, AccessMode, FileGrant, PathScope};
+use sandy_core::{AbsolutePath, AccessMode, FileGrant, PathScope, TemplatePath};
 
 use crate::error::AppError;
 
@@ -14,7 +14,9 @@ pub(crate) struct ResolvedPaths {
     pub(crate) protected: Vec<AbsolutePath>,
 }
 
-pub(crate) fn resolve_paths() -> Result<ResolvedPaths, AppError> {
+pub(crate) fn resolve_paths(
+    protected_templates: &[TemplatePath],
+) -> Result<ResolvedPaths, AppError> {
     let working_directory = fs::canonicalize(
         env::current_dir().map_err(|error| AppError::io("read working directory", error))?,
     )
@@ -27,22 +29,23 @@ pub(crate) fn resolve_paths() -> Result<ResolvedPaths, AppError> {
         return Err(AppError::UnsafeWorkingDirectory);
     }
 
-    let protected_paths: Vec<AbsolutePath> = home
-        .as_ref()
-        .map(|home| {
-            [
-                home.join(".ssh"),
-                home.join(".gnupg"),
-                home.join(".aws"),
-                home.join("Library/Keychains"),
-            ]
-        })
-        .into_iter()
-        .flatten()
-        .filter_map(|path| absolute_if_utf8(&path).ok())
-        .collect();
+    let mut protected: Vec<AbsolutePath> = Vec::new();
+    for template in protected_templates {
+        let candidate = match template.as_str().strip_prefix("~/") {
+            Some(rest) => home.as_deref().map(|home| home.join(rest)),
+            None => Some(PathBuf::from(template.as_str())),
+        };
+        let Some(candidate) = candidate else {
+            continue;
+        };
+        if let Ok(candidate) = absolute_if_utf8(&candidate)
+            && !protected.contains(&candidate)
+        {
+            protected.push(candidate);
+        }
+    }
 
-    for path in &protected_paths {
+    for path in &protected {
         if working_directory.starts_with(path.as_path()) {
             return Err(AppError::ProtectedPath(working_directory));
         }
@@ -51,7 +54,7 @@ pub(crate) fn resolve_paths() -> Result<ResolvedPaths, AppError> {
     Ok(ResolvedPaths {
         working_directory: absolute_if_utf8(&working_directory)?,
         home,
-        protected: protected_paths,
+        protected,
     })
 }
 

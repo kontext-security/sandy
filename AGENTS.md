@@ -17,8 +17,13 @@ Sandy is a process sandbox, not a container or VM. Describe its guarantees
 narrowly.
 
 Version `0.1.x` is limited to macOS, one foreground `run` mode, Claude Code,
-Codex, and generic profiles, explicit filesystem grants, network allow/block,
-dry-run output, and optional self-serve Kontext compatibility.
+Codex, OpenCode, and generic profiles, explicit filesystem grants, network
+allow/block, dry-run output, and optional self-serve Kontext compatibility.
+
+Agent presets are versioned, strictly typed profile documents embedded in the
+CLI at compile time. Profiles resolve through deterministic inheritance in
+`sandy-core` and may express only existing typed capabilities. Adding an agent
+is a data change plus tests; it must not require renderer or bootstrap changes.
 
 Do not add Linux, detached sessions, a PTY proxy, domain filtering, credential
 brokering, dynamic grants, rollback, resource limits, raw Seatbelt input, or
