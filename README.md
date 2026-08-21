@@ -1,210 +1,169 @@
 # Sandy
 
-Native macOS sandboxing for AI coding agents. The command is `sandy`.
+Experimental, native macOS sandboxing for AI coding agents. The installed
+command is `sandy`.
 
-> [!IMPORTANT]
-> This repository currently contains the design for `v0.1.0`. The interface
-> below is planned, not yet released.
+Sandy uses macOS Seatbelt to restrict a foreground process and all of its
+descendants. It is a process sandbox, not a container or VM.
 
 ## Quick start
 
-Run an agent with read/write access to the current project and restricted
-access to the rest of the machine:
+Install from source with Rust 1.91.1:
 
 ```bash
+git clone https://github.com/kontext-security/sandy.git
+cd sandy
+cargo install --path crates/cli --locked
+```
+
+Run an agent with read/write access to the current project:
+
+```bash
+sandy doctor
 sandy run -- claude
 sandy run -- codex
 ```
 
-That is the default product. It does not require Kontext, a daemon, an account,
-or a second installation of the agent.
-
-Additional access is explicit:
+Sandy is standalone by default. It does not require Kontext, a daemon, an
+account, or a second copy of the target agent.
 
 ```bash
-# Read another project
+# Grant another directory read access.
 sandy run --read ../shared-library -- claude
 
-# Read and write an output directory
+# Grant an output directory read/write access.
 sandy run --read-write ~/Downloads/output -- codex
 
-# Disable network access
+# Block network access for the complete child process tree.
 sandy run --block-net -- cargo test
 
-# Inspect the resolved sandbox without running anything
+# Inspect the resolved manifest and Seatbelt profile without executing.
 sandy run --dry-run -- claude
 ```
 
-The explicit `run -- <command>` boundary is intentional in `v0.1.0`: agent
-arguments are passed through unchanged and cannot be confused with sandbox
-options.
+All Sandy options precede `--`. Everything after it is passed to the target
+unchanged.
 
-## Optional Kontext integration
+## Optional Kontext compatibility
 
-If [Kontext](https://github.com/kontext-security/kontext) is already installed,
-one flag enables its existing hooks and runtime governance inside the sandbox:
+Sandy and [Kontext](https://github.com/kontext-security/kontext) are installed
+and updated independently:
 
 ```bash
+# Sandy works without these steps.
+brew install kontext-security/tap/kontext
+kontext setup
+
 sandy run --kontext -- claude
-sandy run --kontext -- codex
 ```
 
-Kontext is entirely opt-in. Without `--kontext`, `sandy` does not locate the
-Kontext CLI, contact its daemon, read its configuration, or change the sandbox
-policy to accommodate it.
+`--kontext` requires an existing, configured, healthy host installation. Sandy
+does not download Kontext, run setup, repair it, or embed its daemon. When a
+known Claude Code or Codex profile already contains a verified Kontext hook,
+Sandy automatically preserves that host configuration; a broken configured
+hook fails before the agent starts. Generic commands do not trigger discovery.
 
-With `--kontext`:
-
-1. the trusted launcher checks the host installation with
-   `kontext doctor --json`;
-2. it starts the existing user LaunchAgent when it is configured but not yet
-   running;
-3. it validates the selected agent's hook configuration; and
-4. it adds narrow, read-only grants for the installed hook executable and
-   policy cache, plus an exact grant for the daemon's Unix socket.
-
-The `kontext` binary remains installed once on the host, normally through
-Homebrew. The Kontext daemon remains outside the sandbox. Nothing is copied or
-installed into the child process, because Seatbelt restricts ordinary host
-processes rather than creating a container filesystem.
+The host-installed hook executable runs as a sandboxed descendant, while the
+existing LaunchAgent daemon remains outside:
 
 ```text
-standalone
-
-user -> sandy -> sandboxed agent and descendants
-           |
-           +-> applies Seatbelt before the agent executes
-
-with --kontext
-
-user -> sandy -> sandboxed agent -> existing Kontext hooks
-           |                          |
-           |                    exact Unix socket
-           |                          v
-           |                   Kontext daemon
-           +-> applies Seatbelt policy and ledger
+user
+  |
+  v
+sandy (trusted foreground parent)
+  |
+  v
+bootstrap -- apply Seatbelt -- exec agent -- existing Kontext hook
+                                               |
+                                               v
+                                     host LaunchAgent daemon
 ```
 
-The integration does not grant the child access to Kontext's ledger database,
-installation token, Keychain items, or logs. Hook coverage remains distinct
-from the kernel boundary: Kontext evaluates supported hook events, while
-Seatbelt constrains the process even when an operation has no agent hook.
-
-## Why a separate repository?
-
-The two products have separate responsibilities:
-
-- `sandy` owns process launch and operating-system isolation;
-- Kontext owns identity, contextual tool policy, hook decisions, and the
-  authorization ledger.
-
-Keeping them separate makes the sandbox useful on its own and lets the current
-Kontext repository and installation model remain unchanged.
+Sandy grants only the resolved hook executable, selected hook/configuration
+files, cached policy needed for outage behavior, and the local daemon socket.
+It does not install Kontext in the child or grant its token, Keychain items,
+ledger database, or logs. Kontext hook coverage remains cooperative and is
+separate from the kernel-enforced process boundary.
 
 ## Architecture
 
-`v0.1.0` will be a small Rust workspace with one public CLI and a private
-Seatbelt wrapper:
+The repository is a Rust workspace with three boundaries:
 
 ```text
-sandy (trusted parent, not sandboxed)
-  |
-  | spawns the same binary in a hidden bootstrap mode
-  v
-bootstrap (fresh process)
-  | validate launch manifest
-  | apply Seatbelt
-  | report success or a bounded structured error
-  v
-exec target agent (sandbox inherited by every descendant)
+crates/core       validated capabilities, launch manifest, bounded wire format
+crates/seatbelt   typed Seatbelt compiler and the sole native/unsafe boundary
+crates/cli        `sandy` UX, resolution, bootstrap, supervision, integrations
 ```
 
-The parent resolves commands, paths, profiles, and optional Kontext resources
-before launch. A fresh bootstrap process applies Seatbelt and immediately
-executes the target. This avoids running general Rust code after `fork()` in a
-multithreaded process. The target can never execute if policy generation or
-sandbox initialization fails.
+`sandy run` resolves paths and the complete launch policy in an unsandboxed
+parent. It writes a mode-`0600` bounded manifest into a private session
+directory and starts the same executable in a hidden bootstrap mode. The
+bootstrap reads, validates, and removes the manifest, applies Seatbelt, then
+replaces itself with the target. The target never executes after an apply or
+validation failure.
 
-The session parent inherits the user's terminal, forwards termination signals,
-waits for the agent, and returns its exact exit status. `v0.1.0` does not add a
-PTY proxy, detached sessions, or an always-on sandbox daemon.
+There is no Sandy daemon, PTY proxy, detached session, runtime downloader, or
+unrestricted fallback.
+
+## Current security model
+
+- Filesystem policy is deny-first. The current project is read/write; explicit
+  additional grants are canonicalized before compilation.
+- SSH, cloud credential, Keychain, and other protected home locations remain
+  denied even when a broader grant overlaps them.
+- A private per-session `TMPDIR` is read/write. Broad temporary directories are
+  not granted.
+- `DYLD_*`, `SSH_AUTH_SOCK`, askpass, and Kontext routing overrides are removed
+  from the child environment.
+- Network is allowed by default for agent compatibility. `--block-net` blocks
+  it for the sandboxed process tree. Network-enabled mode can also reach other
+  same-user local services.
+- Standard input, output, and error are inherited. Deliberately redirecting an
+  already-open descriptor into Sandy can carry that capability across launch.
+- Descendants inherit the sandbox. Sandy returns normal target exit codes and
+  `128 + signal` for signal termination.
+
+The policy permits broad Mach service lookup for application compatibility,
+with explicit Keychain/security-service denies. Mach/XPC confused-deputy risk
+is not eliminated. Kontext's current local socket is also not a
+cryptographically authenticated Sandy session, so this release does not claim
+authenticated process-to-hook provenance.
+
+Apple's raw Seatbelt profile interface is private and deprecated. `sandy
+doctor` probes it in a sacrificial process and fails closed on unsupported or
+already-sandboxed environments.
+
+See [THREAT_MODEL.md](THREAT_MODEL.md) and [SECURITY.md](SECURITY.md) before
+depending on Sandy as a security boundary.
 
 ## `v0.1.0` scope
 
-Included:
+Included in this first implementation:
 
-- Apple Silicon and Intel macOS;
-- built-in Claude Code, Codex, and generic command profiles;
-- current-project read/write access for coding-agent profiles;
-- canonicalized, explicit additional filesystem grants;
-- sandbox inheritance across child processes;
-- normal network access by default and an explicit full-network block;
-- environment filtering;
-- local TOML profiles and resolved-manifest output;
-- optional self-serve Kontext integration; and
-- fail-closed startup when requested enforcement cannot be applied.
+- a standalone macOS runner for generic commands, Claude Code, and Codex;
+- typed filesystem grants and network allow/block;
+- byte-preserving arguments and a bounded, versioned launch manifest;
+- a fresh apply-before-exec bootstrap;
+- resolved-policy dry runs and a Seatbelt doctor;
+- optional compatibility with existing self-serve Kontext hooks; and
+- unit, CLI, renderer-injection, and sacrificial live Seatbelt tests.
 
-Deferred:
+Deferred: Linux and Windows, organization-managed Kontext, domain-filtered
+networking, credential brokering, dynamic grants, filesystem rollback,
+resource limits, detached sessions, PTY attachment, and VM isolation.
 
-- Linux and Windows;
-- organization-managed Kontext installations;
-- domain-filtered networking and network proxies;
-- credential injection or broad Keychain access;
-- dynamic permission expansion;
-- filesystem rollback and resource limits;
-- detached sessions and PTY attachment; and
-- VM-style memory or kernel isolation.
-
-## Security model
-
-The standalone default is deny-first for filesystem access. Coding-agent
-profiles allow the current project, required macOS runtime resources, the
-agent's narrowly identified runtime state, subprocess execution, terminal use,
-and outbound network access. Sensitive locations such as SSH material,
-Keychains, and Kontext state remain denied even if a broader parent directory
-is granted.
-
-Every path grant is resolved and validated before it enters the Seatbelt
-profile. Symlinks, profile-string escaping, inherited file descriptors, Unix
-sockets, signal behavior, and sandbox inheritance are security test targets,
-not implementation details to assume.
-
-The default network-enabled coding profiles may reach other same-user local
-services as well as the Internet. `sandy` strips sensitive inherited endpoints
-such as `SSH_AUTH_SOCK` and Kontext routing overrides, but isolation from all
-local sockets requires `--block-net`. Shell redirection can also deliberately
-hand the child an already-open file descriptor; `sandy` closes inherited file
-descriptors other than standard input, output, and error.
-
-Kontext compatibility does not provide cryptographic binding between a process
-and hook events. The current local daemon socket trusts same-user clients, and
-agent hook coverage is cooperative. `v0.1.0` therefore describes `--kontext`
-as compatibility with Kontext governance, not authenticated supervision.
-
-## macOS compatibility
-
-The practical per-process mechanism is Apple's Seatbelt raw-profile interface.
-That interface is private and deprecated, so `sandy` must probe it in a
-sacrificial process and fail closed on unsupported or already-sandboxed
-runtimes. Releases will run live end-to-end tests on supported macOS versions,
-including macOS 15 and 26, rather than relying on compilation alone.
-
-## Prior art
-
-[nono](https://github.com/nolabs-ai/nono) demonstrates that native,
-capability-based agent sandboxing can have container-free command-line UX.
-This project is an original macOS-focused implementation with optional Kontext
-interoperability. No nono source code is included.
-
-## Initial milestone
-
-The first milestone is successful end-to-end execution of:
+## Development
 
 ```bash
-sandy run -- claude
-sandy run --kontext -- claude
+make check
+
+# Must run on a host, not from inside another sandbox:
+cargo test -p sandy-cli --test live_macos -- --ignored
 ```
 
-with verified project access, denied sensitive access, inherited restrictions,
-normal terminal behavior, exact exit-status propagation, and no target
-execution when sandbox initialization fails.
+`make check` expects `cargo-deny` 0.20.2 to be installed.
+
+Only `crates/seatbelt/src/platform/macos/ffi.rs` may contain unsafe Rust or
+native declarations. See [AGENTS.md](AGENTS.md) for repository invariants.
+
+Sandy is licensed under the [MIT License](LICENSE).

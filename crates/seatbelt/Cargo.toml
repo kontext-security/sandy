@@ -1,0 +1,21 @@
+[package]
+name = "sandy-seatbelt"
+description = "Typed macOS Seatbelt policy compiler and native boundary for Sandy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+sandy-core.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc.workspace = true

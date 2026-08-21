@@ -6,10 +6,11 @@ This file governs the entire repository.
 
 Sandy is a macOS-native process sandbox for AI coding agents.
 
-- Cargo package: `sandy-cli`
+- Cargo workspace: `sandy-core`, `sandy-seatbelt`, and `sandy-cli`
 - Installed executable: `sandy`
 - Default mode: standalone sandboxing
-- Optional integration: Kontext through `--kontext`
+- Optional integration: preserve verified existing Kontext hooks;
+  `--kontext` requires them
 - Runtime model: one foreground supervisor per invocation, never a Sandy daemon
 
 Sandy is a process sandbox, not a container or VM. Describe its guarantees
@@ -27,35 +28,35 @@ Do not modify the separate Kontext repository as part of Sandy changes.
 
 ## Architecture
 
-Use one root package. Do not create a virtual workspace or internal crate until
-there is a demonstrated consumer, backend, publishing need, or independently
-reviewed trust boundary.
+Use a virtual workspace with three packages representing validation,
+native-code, and product boundaries.
 
 ```text
-Cargo.toml                 package sandy-cli; workspace root
-src/main.rs                thin sandy binary
-src/lib.rs                 testable application entry point
-src/platform/macos/        private platform implementation
+crates/core/               package sandy-core; validated security contract
+crates/seatbelt/           package sandy-seatbelt; macOS compiler and FFI
+crates/cli/                package sandy-cli; sandy binary and product UX
 ```
 
-Seatbelt is a private macOS module in `v0.1.x`, not a separate crate.
+Do not add more crates until a distinct owner, dependency direction, and second
+consumer or security boundary exists. Kontext and test support remain modules
+inside `sandy-cli` in `v0.1.x`.
 
 Keep dependencies flowing in one direction:
 
 ```text
 CLI
-  -> resolution and execution
-  -> typed capabilities
-  -> platform renderer and native wrapper
+  -> sandy-core
+  -> sandy-seatbelt -> sandy-core
 
 optional integrations
   -> typed capabilities
   -> never raw Seatbelt source
 ```
 
-The CLI does not render policy. The platform layer does not know about Clap,
-agent preset names, or Kontext configuration. Avoid vague modules such as
-`core`, `util`, or `common`; name modules for their responsibility.
+`sandy-core` performs deterministic validation but no ambient filesystem
+discovery. `sandy-seatbelt` receives only validated policy and does not see
+argv, environment, agent preset names, Clap, or Kontext configuration. The CLI
+does not render policy.
 
 ## Execution model
 
@@ -63,9 +64,9 @@ agent preset names, or Kontext configuration. Avoid vague modules such as
 private session directory, and spawns the same executable in a hidden bootstrap
 mode through `std::process::Command`.
 
-The fresh bootstrap validates a bounded, versioned manifest, applies Seatbelt,
-reports a bounded error on failure, and replaces itself with the target only
-after the sandbox succeeds.
+The fresh bootstrap validates and removes a bounded, versioned manifest,
+applies Seatbelt, and replaces itself with the target only after the sandbox
+succeeds. Failures are reported on standard error without executing the target.
 
 Do not use Rust `pre_exec` callbacks or run general Rust code in a
 fork-after-threads child. The hidden bootstrap must not appear in normal CLI
@@ -92,8 +93,8 @@ These rules are release-blocking:
 - Security configuration load failures are fatal. Never use a permissive
   default for missing protection data.
 - Sensitive terminal deny rules override broader grants.
-- Close inherited file descriptors except standard streams and temporary
-  bootstrap protocol descriptors.
+- Sandy-owned bootstrap resources must not survive target execution. Document
+  that caller-supplied, non-`CLOEXEC` descriptors remain inherited capabilities.
 - Give each session a mode-`0700` private `TMPDIR`; do not grant broad
   temporary-directory access.
 - Strip `DYLD_*`, `SSH_AUTH_SOCK`, and security-routing overrides unless a
@@ -113,7 +114,8 @@ add a blanket permission solely to make a smoke test pass.
 
 ## Unsafe Rust boundary
 
-`src/main.rs` uses `#![forbid(unsafe_code)]`. The library uses:
+`sandy-core` and `sandy-cli` use `#![forbid(unsafe_code)]`.
+`sandy-seatbelt` uses:
 
 ```rust
 #![deny(unsafe_code)]
@@ -123,7 +125,7 @@ add a blanket permission solely to make a smoke test pass.
 Unsafe code and native declarations are permitted only in:
 
 ```text
-src/platform/macos/seatbelt/ffi.rs
+crates/seatbelt/src/platform/macos/ffi.rs
 ```
 
 The parent module may lower the unsafe lint for exactly that private module.
@@ -173,22 +175,27 @@ secrets, full environments, or sensitive policy contents.
 Inherit standard input, output, error, terminal, and foreground process group.
 Do not add a PTY proxy in `v0.1.x`.
 
-Handle `INT`, `TERM`, `HUP`, and `QUIT` without leaving an orphaned target.
-Close the spawn-to-handler race, restore signal state before target execution,
-retry interrupted waits, preserve normal exit codes, and return `128 + signal`
-for signal termination.
+Keep the parent, bootstrap, and target in the user's foreground process group so
+terminal signals retain native behavior. Preserve normal exit codes and return
+`128 + signal` for signal termination. Any future independent process group or
+PTY mode must add race-free signal forwarding before it ships.
 
 Supervisor changes require exit, signal, Ctrl-C, and terminal regression tests.
 
 ## Kontext boundary
 
-Kontext remains a runtime-only integration behind `--kontext`, never a linked
-dependency or Cargo feature. Without the flag, Sandy does not discover, contact,
-or grant resources for Kontext.
+Kontext remains a runtime-only integration, never a linked dependency or Cargo
+feature. For known agent presets, Sandy may inspect normal hook configuration
+to preserve already-installed Kontext hooks; it must not infer integration from
+a binary merely appearing on `PATH`.
+
+`--kontext` means Kontext is required. Without the flag and without a verified
+Kontext-owned hook, Sandy performs no Kontext preflight or resource grant.
 
 The host-installed Kontext binary and LaunchAgent daemon remain outside the
-sandbox. Preflight fails before target execution when a supported installation
-cannot be established.
+sandbox. Preflight fails before target execution when a configured or
+explicitly required installation cannot be established. Sandy never installs,
+downloads, repairs, or uninstalls Kontext.
 
 Grant only exact resources required by the selected hook. Keep hook
 configuration, policy, databases, installation identity, logs, credentials,

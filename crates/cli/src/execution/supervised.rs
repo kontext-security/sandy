@@ -1,0 +1,183 @@
+use std::{
+    fs::OpenOptions,
+    io::Write as _,
+    os::unix::{fs::OpenOptionsExt as _, process::ExitStatusExt as _},
+    process::{Command, Stdio},
+};
+
+use sandy_core::{
+    AccessMode, CommandSpec, FileGrant, LaunchManifestV1, MANIFEST_SCHEMA_V1, NetworkPolicy,
+    OsValue, PathScope, PolicySpec, ValidatedLaunch, encode_launch,
+};
+use serde_json::json;
+use tempfile::Builder;
+
+use crate::{
+    cli::RunArgs,
+    error::AppError,
+    integration::kontext,
+    profile,
+    resolve::{grant, resolve_command, resolve_paths, sanitized_environment},
+};
+
+pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
+    if !cfg!(target_os = "macos") {
+        return Err(AppError::UnsupportedPlatform);
+    }
+    let paths = resolve_paths()?;
+    let command = resolve_command(&arguments.target)?;
+    let preset = profile::select(&command.requested_name);
+    let session = Builder::new()
+        .prefix("sandy-")
+        .tempdir()
+        .map_err(|error| AppError::io("create private Sandy session", error))?;
+
+    let mut files = vec![FileGrant {
+        path: paths.working_directory.clone(),
+        access: AccessMode::ReadWrite,
+        scope: PathScope::Subtree,
+    }];
+    files.push(grant(
+        &command.program,
+        AccessMode::Read,
+        PathScope::Exact,
+        &paths.protected,
+    )?);
+    if let Some(parent) = command.program.parent() {
+        files.push(grant(
+            parent,
+            AccessMode::Read,
+            PathScope::Subtree,
+            &paths.protected,
+        )?);
+    }
+    files.push(grant(
+        session.path(),
+        AccessMode::ReadWrite,
+        PathScope::Subtree,
+        &paths.protected,
+    )?);
+    files.extend(profile::grants(preset, &paths)?);
+    for path in &arguments.read {
+        files.push(grant(
+            path,
+            AccessMode::Read,
+            PathScope::Subtree,
+            &paths.protected,
+        )?);
+    }
+    for path in &arguments.read_write {
+        files.push(grant(
+            path,
+            AccessMode::ReadWrite,
+            PathScope::Subtree,
+            &paths.protected,
+        )?);
+    }
+
+    let kontext = kontext::resolve(preset, arguments.kontext, &paths)?;
+    if kontext.enabled && arguments.block_net {
+        return Err(AppError::Kontext(
+            "--kontext with --block-net is not supported until exact Unix-socket policy is available"
+                .to_owned(),
+        ));
+    }
+    files.extend(kontext.grants.clone());
+    deduplicate_grants(&mut files);
+    let protected_write_paths = profile::protected_write_paths(preset, &paths)?;
+
+    let manifest = LaunchManifestV1 {
+        schema_version: MANIFEST_SCHEMA_V1,
+        command: CommandSpec {
+            program: OsValue::from_os_str(command.program.as_os_str()),
+            arguments: command
+                .arguments
+                .iter()
+                .map(|value| OsValue::from_os_str(value))
+                .collect(),
+        },
+        working_directory: paths.working_directory,
+        environment: sanitized_environment(session.path()),
+        policy: PolicySpec {
+            files,
+            protected_paths: paths.protected,
+            protected_write_paths,
+            network: if arguments.block_net {
+                NetworkPolicy::BlockAll
+            } else {
+                NetworkPolicy::AllowAll
+            },
+        },
+    };
+    let validated = ValidatedLaunch::try_from(manifest.clone())?;
+
+    #[cfg(target_os = "macos")]
+    let profile_source = sandy_seatbelt::compile(validated.policy())?
+        .source()
+        .to_owned();
+    #[cfg(not(target_os = "macos"))]
+    let profile_source = String::new();
+
+    if arguments.dry_run {
+        let output = json!({
+            "schema_version": MANIFEST_SCHEMA_V1,
+            "command": command.program.to_string_lossy(),
+            "arguments": command.arguments.iter().map(|value| value.to_string_lossy()).collect::<Vec<_>>(),
+            "working_directory": validated.manifest().working_directory.as_str(),
+            "network": validated.manifest().policy.network,
+            "file_grants": validated.manifest().policy.files,
+            "kontext": {
+                "enabled": kontext.enabled,
+                "version": kontext.version,
+            },
+            "seatbelt_profile": profile_source,
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&output)
+                .map_err(|error| AppError::Kontext(format!("encode dry-run output: {error}")))?
+        );
+        return Ok(0);
+    }
+
+    let manifest_path = session.path().join("launch.json");
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&manifest_path)
+        .map_err(|error| AppError::io("create launch manifest", error))?;
+    file.write_all(&encode_launch(&manifest)?)
+        .map_err(|error| AppError::io("write launch manifest", error))?;
+    file.sync_all()
+        .map_err(|error| AppError::io("sync launch manifest", error))?;
+    drop(file);
+
+    let executable =
+        std::env::current_exe().map_err(|error| AppError::io("resolve Sandy executable", error))?;
+    let status = Command::new(executable)
+        .arg("__bootstrap")
+        .arg("--manifest")
+        .arg(&manifest_path)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .map_err(|error| AppError::io("start Sandy bootstrap", error))?;
+
+    if let Some(code) = status.code() {
+        return Ok(code);
+    }
+    Ok(status.signal().map_or(1, |signal| 128 + signal))
+}
+
+fn deduplicate_grants(grants: &mut Vec<FileGrant>) {
+    grants.sort_by(|left, right| {
+        (left.path.as_str(), left.scope, left.access).cmp(&(
+            right.path.as_str(),
+            right.scope,
+            right.access,
+        ))
+    });
+    grants.dedup_by(|left, right| left == right);
+}

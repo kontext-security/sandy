@@ -1,0 +1,4 @@
+disallowed-methods = [
+  { path = "std::env::set_var", reason = "process-wide environment mutation makes parallel tests unsafe; configure child commands instead" },
+  { path = "std::env::remove_var", reason = "process-wide environment mutation makes parallel tests unsafe; configure child commands instead" },
+]
