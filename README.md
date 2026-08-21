@@ -8,14 +8,13 @@ descendants. It is a process sandbox, not a container or VM.
 
 ## Quick start
 
-Install with Homebrew:
+Install from source with Rust 1.91.1:
 
 ```bash
-brew install kontext-security/tap/sandy
+git clone https://github.com/kontext-security/sandy.git
+cd sandy
+cargo install --path crates/cli --locked
 ```
-
-Or install from source with Rust 1.91.1 using `cargo install --path
-crates/cli --locked` from a checkout.
 
 Run an agent with read/write access to the current project:
 
