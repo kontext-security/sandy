@@ -7,6 +7,10 @@ on:
         description: Existing release tag to build and publish
         required: true
         type: string
+    secrets:
+      HOMEBREW_TAP_TOKEN:
+        description: Token with contents write access to kontext-security/homebrew-tap
+        required: true
   workflow_dispatch:
     inputs:
       tag_name:
@@ -26,7 +30,35 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      tag_commit: ${{ steps.verify-tag.outputs.tag_commit }}
     steps:
+      - name: Check out trusted release source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Verify release tag
+        id: verify-tag
+        env:
+          TAG_NAME: ${{ inputs.tag_name }}
+        run: |
+          if test "$GITHUB_REF" != "refs/heads/main"; then
+            echo "release workflows must run from main" >&2
+            exit 1
+          fi
+          if [[ ! "$TAG_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "invalid release tag: $TAG_NAME" >&2
+            exit 1
+          fi
+          git fetch --force --no-tags origin "refs/tags/${TAG_NAME}:refs/tags/${TAG_NAME}"
+          tag_commit="$(git rev-parse "${TAG_NAME}^{commit}")"
+          if ! git merge-base --is-ancestor "$tag_commit" HEAD; then
+            echo "release tag $TAG_NAME is not contained in the trusted main revision" >&2
+            exit 1
+          fi
+          echo "tag_commit=$tag_commit" >> "$GITHUB_OUTPUT"
       - name: Ensure draft release exists
         env:
           GH_TOKEN: ${{ github.token }}
@@ -58,7 +90,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-          ref: ${{ inputs.tag_name }}
+          ref: ${{ needs.prepare.outputs.tag_commit }}
       - name: Install Rust toolchain
         run: rustup toolchain install 1.91.1 --profile minimal --target "${{ matrix.target }}"
       - name: Verify tag version
@@ -91,10 +123,10 @@ jobs:
         run: |
           version="${TAG_NAME#v}"
           asset="sandy_${version}_darwin_${ARCH}.tar.gz"
-          gh release upload "$TAG_NAME" "dist/$asset" "dist/${asset}.sha256" --repo "$GITHUB_REPOSITORY"
+          gh release upload "$TAG_NAME" "dist/$asset" "dist/${asset}.sha256" --repo "$GITHUB_REPOSITORY" --clobber
 
   publish:
-    needs: build
+    needs: formula
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -106,16 +138,23 @@ jobs:
         run: gh release edit "$TAG_NAME" --repo "$GITHUB_REPOSITORY" --draft=false
 
   formula:
-    needs: publish
+    needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Check out Sandy
+      - name: Check out trusted release tooling
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-          ref: ${{ inputs.tag_name }}
+          ref: ${{ github.sha }}
+      - name: Check out Homebrew tap
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: kontext-security/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+          persist-credentials: false
       - name: Render Sandy formula
         env:
           GH_TOKEN: ${{ github.token }}
@@ -128,11 +167,43 @@ jobs:
           gh release download "$TAG_NAME" --repo "$GITHUB_REPOSITORY" --pattern "*.sha256" --dir checksums
           arm_sha="$(tr -d '[:space:]' < "checksums/$arm_asset")"
           amd_sha="$(tr -d '[:space:]' < "checksums/$amd_asset")"
-          ./scripts/render-homebrew-formula.sh "$version" "$arm_sha" "$amd_sha" > sandy.rb
-          ruby -c sandy.rb
+          ./scripts/render-homebrew-formula.sh "$version" "$arm_sha" "$amd_sha" > homebrew-tap/Formula/sandy.rb
+          ruby -c homebrew-tap/Formula/sandy.rb
+      - name: Verify formula update scope
+        id: formula-diff
+        run: |
+          changed="$(git -C homebrew-tap diff --name-only)"
+          if test -z "$changed"; then
+            echo "Formula/sandy.rb is already current"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          elif test "$changed" = "Formula/sandy.rb"; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "unexpected Homebrew tap changes:" >&2
+            echo "$changed" >&2
+            exit 1
+          fi
       - name: Upload generated formula
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ inputs.tag_name }}
         run: |
-          gh release upload "$TAG_NAME" sandy.rb --repo "$GITHUB_REPOSITORY"
+          gh release upload "$TAG_NAME" homebrew-tap/Formula/sandy.rb --repo "$GITHUB_REPOSITORY" --clobber
+      - name: Publish Homebrew formula
+        if: ${{ steps.formula-diff.outputs.changed == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG_NAME: ${{ inputs.tag_name }}
+        run: |
+          version="${TAG_NAME#v}"
+          formula_sha="$(git -C homebrew-tap rev-parse HEAD:Formula/sandy.rb)"
+          formula_content="$(base64 --wrap=0 homebrew-tap/Formula/sandy.rb)"
+          jq -n \
+            --arg message "chore: update sandy formula to ${version}" \
+            --arg content "$formula_content" \
+            --arg sha "$formula_sha" \
+            '{message: $message, content: $content, sha: $sha, branch: "main"}' \
+            > formula-update.json
+          gh api --method PUT \
+            repos/kontext-security/homebrew-tap/contents/Formula/sandy.rb \
+            --input formula-update.json
