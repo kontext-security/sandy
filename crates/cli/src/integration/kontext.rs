@@ -1,10 +1,12 @@
 use std::{
     ffi::OsString,
     fs,
-    io::Read as _,
+    io::{Read as _, Seek as _},
     os::unix::fs::{FileTypeExt as _, MetadataExt as _},
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    thread,
+    time::{Duration, Instant},
 };
 
 use sandy_core::{AbsolutePath, AccessMode, HookProtocol, PathScope};
@@ -21,6 +23,9 @@ use crate::{
 const SERVICE: &str = "Kontext";
 const MAX_HOOK_CONFIG_BYTES: u64 = 1024 * 1024;
 const MAX_DOCTOR_OUTPUT_BYTES: u64 = 64 * 1024;
+const DOCTOR_OUTPUT_KIB: u64 = MAX_DOCTOR_OUTPUT_BYTES / 1024;
+const DOCTOR_TIMEOUT: Duration = Duration::from_secs(5);
+const DOCTOR_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 #[derive(Debug, Deserialize)]
 struct DoctorReport {
@@ -58,6 +63,21 @@ pub(crate) fn resolve(
         return Ok(RuntimeControlBridge::inactive(SERVICE));
     }
 
+    match resolve_configured(configured, hook_sources, paths) {
+        Ok(bridge) => Ok(bridge),
+        Err(error) if mode.is_required() => Err(error),
+        Err(error) => Ok(RuntimeControlBridge::unavailable(
+            SERVICE,
+            unavailable_reason(&error),
+        )),
+    }
+}
+
+fn resolve_configured(
+    configured: Vec<PathBuf>,
+    hook_sources: &[ResolvedHookSource],
+    paths: &ResolvedPaths,
+) -> Result<RuntimeControlBridge, AppError> {
     let binaries = resolve_binaries(&configured)?;
     let binary = binaries
         .first()
@@ -350,33 +370,86 @@ fn resolve_binaries(configured: &[PathBuf]) -> Result<Vec<ResolvedCommand>, AppE
 }
 
 fn doctor(binary: &ResolvedCommand, home: &Path) -> Result<DoctorReport, AppError> {
-    let mut child = Command::new(&binary.program)
-        .args(["doctor", "--json"])
+    doctor_with_timeout(binary, home, DOCTOR_TIMEOUT)
+}
+
+fn doctor_with_timeout(
+    binary: &ResolvedCommand,
+    home: &Path,
+    timeout: Duration,
+) -> Result<DoctorReport, AppError> {
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .ok_or_else(|| error("kontext doctor timeout could not be represented"))?;
+    let mut output = tempfile::tempfile()
+        .map_err(|source| AppError::io("create bounded kontext doctor output", source))?;
+    let child_output = output
+        .try_clone()
+        .map_err(|source| AppError::io("prepare kontext doctor output", source))?;
+    // macOS `/bin/sh` expresses `ulimit -f` in KiB. Set both limits and abort
+    // the launcher if either operation fails. The fixed script never
+    // interpolates provider-controlled data; the resolved executable is passed
+    // as an opaque positional argument.
+    let limit_script = format!(
+        "ulimit -S -f {DOCTOR_OUTPUT_KIB} && ulimit -H -f {DOCTOR_OUTPUT_KIB} && exec \"$1\" doctor --json"
+    );
+    let mut child = Command::new("/bin/sh")
+        .args(["-c", &limit_script, "sandy-kontext-doctor"])
+        .arg(&binary.program)
         .env_clear()
         .env("HOME", home)
         .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
         .stdin(Stdio::null())
-        .stdout(Stdio::piped())
+        .stdout(Stdio::from(child_output))
         .stderr(Stdio::null())
         .spawn()
         .map_err(|source| AppError::io("run kontext doctor --json", source))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| error("kontext doctor output was unavailable"))?;
+    let status = loop {
+        let output_size = match output.metadata() {
+            Ok(metadata) => metadata.len(),
+            Err(source) => {
+                return Err(cleanup_doctor_after_error(
+                    &mut child,
+                    AppError::io("inspect kontext doctor output", source),
+                ));
+            }
+        };
+        if output_size > MAX_DOCTOR_OUTPUT_BYTES {
+            terminate_doctor(&mut child)?;
+            return Err(error("kontext doctor --json output exceeded the limit"));
+        }
+        let status = match child.try_wait() {
+            Ok(status) => status,
+            Err(source) => {
+                return Err(cleanup_doctor_after_error(
+                    &mut child,
+                    AppError::io("wait for kontext doctor --json", source),
+                ));
+            }
+        };
+        if let Some(status) = status {
+            break status;
+        }
+
+        let now = Instant::now();
+        if now >= deadline {
+            terminate_doctor(&mut child)?;
+            return Err(error("kontext doctor --json timed out"));
+        }
+        thread::sleep(DOCTOR_POLL_INTERVAL.min(deadline.duration_since(now)));
+    };
+
+    output
+        .rewind()
+        .map_err(|source| AppError::io("rewind kontext doctor output", source))?;
     let mut bytes = Vec::new();
-    stdout
+    output
         .take(MAX_DOCTOR_OUTPUT_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(|source| AppError::io("read kontext doctor --json output", source))?;
     if bytes.len() as u64 > MAX_DOCTOR_OUTPUT_BYTES {
-        let _ = child.kill();
-        let _ = child.wait();
         return Err(error("kontext doctor --json output exceeded the limit"));
     }
-    let status = child
-        .wait()
-        .map_err(|source| AppError::io("wait for kontext doctor --json", source))?;
     if !status.success() {
         return Err(error(
             "kontext doctor --json failed; update Kontext or run kontext doctor",
@@ -387,6 +460,31 @@ fn doctor(binary: &ResolvedCommand, home: &Path) -> Result<DoctorReport, AppErro
             "kontext doctor --json returned malformed output: {parse_error}"
         ))
     })
+}
+
+fn terminate_doctor(child: &mut std::process::Child) -> Result<(), AppError> {
+    let kill_error = child.kill().err();
+    let wait_result = child
+        .wait()
+        .map_err(|source| AppError::io("reap kontext doctor --json", source));
+    match (kill_error, wait_result) {
+        (_, Err(error)) => Err(error),
+        (_, Ok(_)) => Ok(()),
+    }
+}
+
+fn cleanup_doctor_after_error(child: &mut std::process::Child, error: AppError) -> AppError {
+    match terminate_doctor(child) {
+        Ok(()) => error,
+        Err(cleanup_error) => cleanup_error,
+    }
+}
+
+fn unavailable_reason(error: &AppError) -> String {
+    match error {
+        AppError::RuntimeControl { message, .. } => message.clone(),
+        _ => error.to_string(),
+    }
 }
 
 fn exact_existing(path: &Path) -> Result<AbsolutePath, AppError> {
@@ -490,6 +588,8 @@ mod tests {
     use std::os::unix::fs::PermissionsExt as _;
 
     use super::*;
+
+    const HEALTHY_DOCTOR_REPORT: &str = r#"{"healthy":true,"configured":true,"self_serve":true,"daemon_running":true,"active_profile":"test","legacy_install":false,"mode":"observe"}"#;
 
     #[test]
     fn recognizes_current_quoted_hook_commands() {
@@ -755,7 +855,7 @@ mod tests {
         let binary = root.path().join("kontext");
         fs::write(
             &binary,
-            "#!/bin/sh\nprintf '%s\\n' '{\"healthy\":true,\"configured\":true,\"self_serve\":true,\"daemon_running\":true,\"active_profile\":\"test\",\"legacy_install\":false,\"mode\":\"observe\"}'\n",
+            format!("#!/bin/sh\nprintf '%s\\n' '{HEALTHY_DOCTOR_REPORT}'\n"),
         )?;
         fs::set_permissions(&binary, fs::Permissions::from_mode(0o700))?;
         let command = ResolvedCommand {
@@ -771,6 +871,66 @@ mod tests {
             doctor(&command, root.path()),
             Err(AppError::RuntimeControl { .. })
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn doctor_accepts_valid_output_larger_than_32_kib() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let binary = root.path().join("kontext");
+        fs::write(
+            &binary,
+            format!("#!/bin/sh\nprintf '%s' '{HEALTHY_DOCTOR_REPORT}'\nprintf '%40000s' ''\n"),
+        )?;
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o700))?;
+        let command = ResolvedCommand {
+            requested_name: OsString::from("kontext"),
+            program: binary,
+            arguments: Vec::new(),
+        };
+
+        assert!(doctor(&command, root.path())?.healthy);
+        Ok(())
+    }
+
+    #[test]
+    fn doctor_timeout_returns_within_deadline() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let binary = root.path().join("kontext");
+        fs::write(&binary, "#!/bin/sh\nwhile :; do :; done\n")?;
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o700))?;
+        let command = ResolvedCommand {
+            requested_name: OsString::from("kontext"),
+            program: binary,
+            arguments: Vec::new(),
+        };
+        let started = Instant::now();
+
+        let result = doctor_with_timeout(&command, root.path(), Duration::from_millis(50));
+
+        assert!(matches!(result, Err(AppError::RuntimeControl { .. })));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        Ok(())
+    }
+
+    #[test]
+    fn doctor_output_flood_is_stopped_by_the_file_size_limit()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let binary = root.path().join("kontext");
+        fs::write(&binary, "#!/bin/sh\nexec /usr/bin/yes x\n")?;
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o700))?;
+        let command = ResolvedCommand {
+            requested_name: OsString::from("kontext"),
+            program: binary,
+            arguments: Vec::new(),
+        };
+        let started = Instant::now();
+
+        let result = doctor_with_timeout(&command, root.path(), Duration::from_secs(1));
+
+        assert!(matches!(result, Err(AppError::RuntimeControl { .. })));
+        assert!(started.elapsed() < Duration::from_secs(1));
         Ok(())
     }
 }

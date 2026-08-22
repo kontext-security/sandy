@@ -57,6 +57,11 @@ credentials, installation identity, databases, logs, and unrelated state remain
 outside that readable surface. Kontext setup, repair, and uninstall are trusted
 host operations and are not expected to work from inside Sandy.
 
+Compatibility preflight executes the hook-configured Kontext binary in the
+trusted parent before Seatbelt is applied. Its deadline and output are bounded,
+but Sandy does not authenticate that binary or contain descendants it creates.
+Only enable hooks installed through a trusted host workflow.
+
 Agent state directories may contain credentials and are granted for compatible
 known-agent profiles. This is a deliberate usability tradeoff and must not be
 described as credential isolation.
@@ -65,5 +70,8 @@ described as credential isolation.
 
 An unsupported platform, nested sandbox, malformed or oversized manifest,
 invalid path, profile compilation error, Seatbelt error, or required Kontext
-preflight failure must prevent target execution. Sandy never silently retries
-without enforcement or broadens policy to recover from a compatibility error.
+preflight failure must prevent target execution. A failure while preserving an
+automatically detected optional integration contributes no runtime-control
+capabilities, emits a warning, and does not prevent standalone execution. Sandy
+never silently retries without enforcement or broadens policy to recover from a
+compatibility error.
