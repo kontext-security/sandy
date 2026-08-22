@@ -7,8 +7,41 @@
   "include-component-in-tag": false,
   "packages": {
     ".": {
-      "release-type": "rust",
-      "package-name": "sandy"
+      "release-type": "simple",
+      "package-name": "sandy",
+      "version-file": ".release-please-version",
+      "extra-files": [
+        {
+          "type": "toml",
+          "path": "Cargo.toml",
+          "jsonpath": "$.workspace.package.version"
+        },
+        {
+          "type": "toml",
+          "path": "Cargo.toml",
+          "jsonpath": "$.workspace.dependencies['sandy-core'].version"
+        },
+        {
+          "type": "toml",
+          "path": "Cargo.toml",
+          "jsonpath": "$.workspace.dependencies['sandy-seatbelt'].version"
+        },
+        {
+          "type": "toml",
+          "path": "Cargo.lock",
+          "jsonpath": "$.package[?(@.name.value == 'sandy-cli')].version"
+        },
+        {
+          "type": "toml",
+          "path": "Cargo.lock",
+          "jsonpath": "$.package[?(@.name.value == 'sandy-core')].version"
+        },
+        {
+          "type": "toml",
+          "path": "Cargo.lock",
+          "jsonpath": "$.package[?(@.name.value == 'sandy-seatbelt')].version"
+        }
+      ]
     }
   }
 }
