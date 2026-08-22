@@ -145,3 +145,79 @@ fn opencode_profile_allows_state_but_protects_configuration_and_secrets()
         .failure();
     Ok(())
 }
+
+#[test]
+#[ignore = "irreversibly applies Seatbelt; run on a host, not inside another sandbox"]
+fn codex_control_files_are_readable_but_cannot_be_replaced_or_modified()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let root_path = fs::canonicalize(root.path())?;
+    let home = root_path.join("home");
+    let project = root_path.join("project");
+    let codex = home.join(".codex");
+    fs::create_dir_all(&codex)?;
+    fs::create_dir(&project)?;
+
+    let hooks_target = codex.join("hooks-target.json");
+    let hooks = codex.join("hooks.json");
+    let config = codex.join("config.toml");
+    fs::write(&hooks_target, "{\"hooks\":{}}\n")?;
+    std::os::unix::fs::symlink(&hooks_target, &hooks)?;
+    fs::write(&config, "[features]\nhooks = true\n")?;
+
+    let mut readable = Command::cargo_bin("sandy")?;
+    readable
+        .env("HOME", &home)
+        .current_dir(&project)
+        .args([
+            "run",
+            "--profile",
+            "codex",
+            "--",
+            "/bin/sh",
+            "-c",
+            "/bin/cat \"$HOME/.codex/hooks.json\" \"$HOME/.codex/config.toml\" >/dev/null",
+        ])
+        .assert()
+        .success();
+
+    for script in [
+        "printf changed > \"$HOME/.codex/hooks.json\"",
+        "/bin/rm \"$HOME/.codex/hooks.json\"",
+        "printf replacement > \"$HOME/.codex/replacement\" && /bin/mv -f \"$HOME/.codex/replacement\" \"$HOME/.codex/hooks.json\"",
+        "/bin/mv \"$HOME/.codex/hooks.json\" \"$HOME/.codex/hooks.disabled\"",
+        "/bin/chmod 0600 \"$HOME/.codex/hooks.json\"",
+        "printf changed > \"$HOME/.codex/hooks-target.json\"",
+        "printf changed > \"$HOME/.codex/config.toml\"",
+    ] {
+        let mut denied = Command::cargo_bin("sandy")?;
+        denied
+            .env("HOME", &home)
+            .current_dir(&project)
+            .args(["run", "--profile", "codex", "--", "/bin/sh", "-c", script])
+            .assert()
+            .failure();
+    }
+
+    let mut adjacent = Command::cargo_bin("sandy")?;
+    adjacent
+        .env("HOME", &home)
+        .current_dir(&project)
+        .args([
+            "run",
+            "--profile",
+            "codex",
+            "--",
+            "/bin/sh",
+            "-c",
+            "printf mutable > \"$HOME/.codex/session-state\"",
+        ])
+        .assert()
+        .success();
+
+    assert_eq!(fs::read_to_string(&hooks_target)?, "{\"hooks\":{}}\n");
+    assert_eq!(fs::read_link(&hooks)?, hooks_target);
+    assert_eq!(fs::read_to_string(&config)?, "[features]\nhooks = true\n");
+    assert_eq!(fs::read_to_string(codex.join("session-state"))?, "mutable");
+    Ok(())
+}

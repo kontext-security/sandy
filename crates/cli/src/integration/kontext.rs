@@ -1,28 +1,26 @@
 use std::{
     ffi::OsString,
     fs,
-    os::unix::fs::MetadataExt as _,
+    io::Read as _,
+    os::unix::fs::{FileTypeExt as _, MetadataExt as _},
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
 };
 
-use sandy_core::{AccessMode, FileGrant, PathScope};
+use sandy_core::{AbsolutePath, AccessMode, HookProtocol, PathScope};
 use serde::Deserialize;
 use serde_json::Value;
 
+use super::{IntegrationMode, RuntimeControlBridge, RuntimeControlFiles};
 use crate::{
     error::AppError,
-    resolve::{ResolvedCommand, ResolvedPaths, grant, resolve_command},
+    profile::ResolvedHookSource,
+    resolve::{ResolvedCommand, ResolvedPaths, grant, resolve_command, write_protections},
 };
 
+const SERVICE: &str = "Kontext";
 const MAX_HOOK_CONFIG_BYTES: u64 = 1024 * 1024;
-
-#[derive(Debug, Default)]
-pub(crate) struct KontextIntegration {
-    pub(crate) enabled: bool,
-    pub(crate) grants: Vec<FileGrant>,
-    pub(crate) version: Option<String>,
-}
+const MAX_DOCTOR_OUTPUT_BYTES: u64 = 64 * 1024;
 
 #[derive(Debug, Deserialize)]
 struct DoctorReport {
@@ -32,173 +30,747 @@ struct DoctorReport {
     daemon_running: bool,
     installed_version: Option<String>,
     config_path: Option<PathBuf>,
+    active_profile: Option<String>,
+    legacy_install: bool,
+    mode: Option<ManagedMode>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum ManagedMode {
+    Observe,
+    Enforce,
+    Remote,
 }
 
 pub(crate) fn resolve(
-    hook_files: &[PathBuf],
-    required: bool,
+    hook_sources: &[ResolvedHookSource],
+    mode: IntegrationMode,
     paths: &ResolvedPaths,
-) -> Result<KontextIntegration, AppError> {
-    let configured = find_configured_binary(hook_files)?;
-    let Some(configured_binary) = configured else {
-        if required {
-            return Err(AppError::Kontext(
-                "--kontext requires installed hooks; install Kontext and run kontext setup, or omit --kontext"
-                    .to_owned(),
+) -> Result<RuntimeControlBridge, AppError> {
+    let configured = find_configured_binaries(hook_sources)?;
+    if configured.is_empty() {
+        if mode.is_required() {
+            return Err(error(
+                "--kontext requires installed hooks; install Kontext and run kontext setup, or omit --kontext",
             ));
         }
-        return Ok(KontextIntegration::default());
-    };
+        return Ok(RuntimeControlBridge::inactive(SERVICE));
+    }
 
-    let binary = resolve_binary(&configured_binary)?;
-    let report = doctor(&binary)?;
-    if !report.configured || !report.self_serve || !report.daemon_running || !report.healthy {
-        return Err(AppError::Kontext(
-            "the configured self-serve installation is unhealthy; run kontext doctor".to_owned(),
+    let binaries = resolve_binaries(&configured)?;
+    let binary = binaries
+        .first()
+        .ok_or_else(|| error("configured hook executable could not be resolved"))?;
+    if binaries
+        .iter()
+        .any(|candidate| candidate.program != binary.program)
+    {
+        return Err(error(
+            "configured hooks resolve to different Kontext executables; rerun kontext setup",
         ));
     }
 
-    let mut grants = Vec::new();
-    add_existing(
-        &mut grants,
-        &configured_binary,
-        AccessMode::Read,
-        PathScope::Exact,
-    )?;
-    add_existing(
-        &mut grants,
-        &binary.program,
-        AccessMode::Read,
-        PathScope::Exact,
-    )?;
-    if let Some(parent) = binary.program.parent() {
-        add_existing(&mut grants, parent, AccessMode::Read, PathScope::Subtree)?;
-    }
-    for hook_file in hook_files {
-        add_existing(&mut grants, hook_file, AccessMode::Read, PathScope::Exact)?;
-    }
-    if let Some(config_path) = &report.config_path {
-        add_existing(&mut grants, config_path, AccessMode::Read, PathScope::Exact)?;
-        if let Some(directory) = config_path.parent() {
-            add_existing(
-                &mut grants,
-                &directory.join("managed-observe/cedar-policy.json"),
-                AccessMode::Read,
-                PathScope::Exact,
-            )?;
-        }
-    }
-    if let Some(home) = &paths.home {
-        add_existing(
-            &mut grants,
-            &home.join("Library/Application Support/Kontext/active"),
-            AccessMode::Read,
-            PathScope::Exact,
-        )?;
-        let uid = fs::metadata(home)
-            .map_err(|error| AppError::io("inspect home directory owner", error))?
-            .uid();
-        add_existing(
-            &mut grants,
-            &PathBuf::from(format!("/tmp/kontext-managed-observe-{uid}/kontext.sock")),
-            AccessMode::ReadWrite,
-            PathScope::Exact,
-        )?;
+    let home = paths
+        .home
+        .as_deref()
+        .ok_or_else(|| error("cannot resolve the home directory for Kontext resources"))?;
+    let report = doctor(binary, home)?;
+    if !report.configured || !report.self_serve || !report.daemon_running || !report.healthy {
+        return Err(error(
+            "the configured self-serve installation is unhealthy; run kontext doctor",
+        ));
     }
 
-    Ok(KontextIntegration {
-        enabled: true,
-        grants,
-        version: report.installed_version,
-    })
+    let executable = exact_existing(&binary.program)?;
+    let mut read_only = Vec::new();
+    let mut protection_inputs = configured;
+    protection_inputs.push(binary.program.clone());
+
+    for source in hook_sources {
+        push_existing(&mut read_only, &source.path)?;
+        protection_inputs.push(source.path.clone());
+    }
+
+    let kontext_root = home.join("Library/Application Support/Kontext");
+    if let Some(config_path) = &report.config_path {
+        validate_self_serve_config_path(
+            config_path,
+            &kontext_root,
+            report.active_profile.as_deref(),
+            report.legacy_install,
+        )?;
+        read_only.push(exact_existing_within(config_path, &kontext_root)?);
+        protection_inputs.push(config_path.clone());
+        if let Some(cache) = policy_cache_path(config_path, report.mode) {
+            push_existing_within(&mut read_only, &cache, &kontext_root)?;
+            protection_inputs.push(cache);
+        }
+    } else {
+        return Err(error(
+            "kontext doctor did not report the active self-serve configuration path",
+        ));
+    }
+
+    let active = kontext_root.join("active");
+    if !report.legacy_install {
+        read_only.push(exact_existing_within(&active, &kontext_root)?);
+    }
+    protection_inputs.push(active);
+
+    let uid = fs::metadata(home)
+        .map_err(|source| AppError::io("inspect home directory owner", source))?
+        .uid();
+    let socket = PathBuf::from(format!("/tmp/kontext-managed-observe-{uid}/kontext.sock"));
+    let socket_metadata = fs::metadata(&socket)
+        .map_err(|source| AppError::io("inspect Kontext daemon socket", source))?;
+    if !socket_metadata.file_type().is_socket() || socket_metadata.uid() != uid {
+        return Err(error(
+            "the Kontext daemon endpoint is not a same-user Unix socket",
+        ));
+    }
+    let socket = exact_existing(&socket)?;
+
+    read_only.retain(|path| path != &executable && path != &socket);
+    read_only.sort();
+    read_only.dedup();
+    let protected_from_write = write_protections(protection_inputs)?;
+
+    RuntimeControlBridge::active(
+        SERVICE,
+        report.installed_version,
+        RuntimeControlFiles {
+            executables: vec![executable],
+            read_only,
+            read_write: vec![socket],
+            protected_from_write,
+        },
+        true,
+    )
 }
 
-fn find_configured_binary(paths: &[PathBuf]) -> Result<Option<PathBuf>, AppError> {
-    for path in paths {
-        if !path.exists() {
-            continue;
+fn find_configured_binaries(sources: &[ResolvedHookSource]) -> Result<Vec<PathBuf>, AppError> {
+    let mut binaries = Vec::new();
+    for source in sources {
+        match fs::symlink_metadata(&source.path) {
+            Ok(_) => {}
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(source) => {
+                return Err(AppError::io(
+                    "inspect agent hook configuration entry",
+                    source,
+                ));
+            }
         }
-        let metadata = fs::metadata(path)
-            .map_err(|error| AppError::io("inspect agent hook configuration", error))?;
-        if metadata.len() > MAX_HOOK_CONFIG_BYTES {
-            return Err(AppError::Kontext(format!(
-                "hook configuration is unexpectedly large: {}",
-                path.display()
+        let file = fs::File::open(&source.path)
+            .map_err(|source| AppError::io("open agent hook configuration", source))?;
+        let metadata = file
+            .metadata()
+            .map_err(|source| AppError::io("inspect agent hook configuration", source))?;
+        if !metadata.is_file() {
+            return Err(error(format!(
+                "agent hook configuration is not a regular file: {}",
+                source.path.display()
             )));
         }
-        let data =
-            fs::read(path).map_err(|error| AppError::io("read agent hook configuration", error))?;
-        let value: Value = serde_json::from_slice(&data).map_err(|error| {
-            AppError::Kontext(format!(
-                "cannot parse hook configuration {}: {error}",
-                path.display()
+        if metadata.len() > MAX_HOOK_CONFIG_BYTES {
+            return Err(error(format!(
+                "hook configuration is unexpectedly large: {}",
+                source.path.display()
+            )));
+        }
+        let mut data = Vec::new();
+        file.take(MAX_HOOK_CONFIG_BYTES + 1)
+            .read_to_end(&mut data)
+            .map_err(|source| AppError::io("read agent hook configuration", source))?;
+        if data.len() as u64 > MAX_HOOK_CONFIG_BYTES {
+            return Err(error(format!(
+                "hook configuration is unexpectedly large: {}",
+                source.path.display()
+            )));
+        }
+        let value: Value = serde_json::from_slice(&data).map_err(|parse_error| {
+            error(format!(
+                "cannot parse hook configuration {}: {parse_error}",
+                source.path.display()
             ))
         })?;
-        if let Some(binary) = find_command(&value) {
-            return Ok(Some(binary));
+        let Some(commands) = hook_commands(&value) else {
+            continue;
+        };
+        for command in commands {
+            if let Some(binary) = parse_kontext_command(command, source.protocol)
+                && !binaries.contains(&binary)
+            {
+                binaries.push(binary);
+            }
         }
     }
-    Ok(None)
+    Ok(binaries)
 }
 
-fn find_command(value: &Value) -> Option<PathBuf> {
-    match value {
-        Value::String(value) => parse_kontext_command(value),
-        Value::Array(values) => values.iter().find_map(find_command),
-        Value::Object(values) => values.values().find_map(find_command),
-        _ => None,
+fn hook_commands(value: &Value) -> Option<Vec<&str>> {
+    let Some(hooks) = value.get("hooks") else {
+        return Some(Vec::new());
+    };
+    let hooks = hooks.as_object()?;
+    let mut commands = Vec::new();
+    for groups in hooks.values() {
+        let groups = groups.as_array()?;
+        for group in groups {
+            let handlers = group.get("hooks").and_then(Value::as_array)?;
+            for handler in handlers {
+                if handler.get("type").and_then(Value::as_str) == Some("command")
+                    && let Some(command) = handler.get("command").and_then(Value::as_str)
+                {
+                    commands.push(command);
+                }
+            }
+        }
     }
+    Some(commands)
 }
 
-fn parse_kontext_command(command: &str) -> Option<PathBuf> {
-    let fields: Vec<&str> = command.split_ascii_whitespace().collect();
-    if fields.len() < 2
-        || Path::new(fields[0]).file_name()?.to_str()? != "kontext"
-        || fields[1] != "hook"
-    {
+fn parse_kontext_command(command: &str, protocol: HookProtocol) -> Option<PathBuf> {
+    let words = shell_words(command)?;
+    let alias = words.last()?.as_str();
+    let valid_shape = match protocol {
+        HookProtocol::ClaudeSettings => {
+            words.len() == 3
+                && matches!(
+                    alias,
+                    "session-start"
+                        | "pre-tool-use"
+                        | "post-tool-use"
+                        | "post-tool-use-failure"
+                        | "session-end"
+                )
+        }
+        HookProtocol::CodexHooks => {
+            words.len() == 5
+                && words[2] == "--agent"
+                && words[3] == "codex"
+                && matches!(
+                    alias,
+                    "session-start"
+                        | "pre-tool-use"
+                        | "post-tool-use"
+                        | "user-prompt-submit"
+                        | "stop"
+                )
+        }
+    };
+    if !valid_shape || words[1] != "hook" {
         return None;
     }
-    Some(PathBuf::from(fields[0]))
+    let binary = PathBuf::from(&words[0]);
+    if !binary.is_absolute() || binary.file_name()?.to_str()? != "kontext" {
+        return None;
+    }
+    Some(binary)
 }
 
-fn resolve_binary(configured: &Path) -> Result<ResolvedCommand, AppError> {
-    resolve_command(&[OsString::from(configured)])
+fn shell_words(command: &str) -> Option<Vec<String>> {
+    #[derive(Clone, Copy)]
+    enum Quote {
+        None,
+        Single,
+        Double,
+    }
+
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut quote = Quote::None;
+    let mut started = false;
+    let mut characters = command.chars();
+    while let Some(character) = characters.next() {
+        match quote {
+            Quote::Single => {
+                if character == '\'' {
+                    quote = Quote::None;
+                } else {
+                    word.push(character);
+                }
+            }
+            Quote::Double => match character {
+                '"' => quote = Quote::None,
+                '\\' => {
+                    let escaped = characters.next()?;
+                    if matches!(escaped, '$' | '`' | '"' | '\\') {
+                        word.push(escaped);
+                    } else {
+                        word.push('\\');
+                        word.push(escaped);
+                    }
+                }
+                '$' | '`' => return None,
+                _ => word.push(character),
+            },
+            Quote::None => match character {
+                '\'' => {
+                    quote = Quote::Single;
+                    started = true;
+                }
+                '"' => {
+                    quote = Quote::Double;
+                    started = true;
+                }
+                '\\' => {
+                    word.push(characters.next()?);
+                    started = true;
+                }
+                character if character.is_ascii_whitespace() => {
+                    if started {
+                        words.push(std::mem::take(&mut word));
+                        started = false;
+                    }
+                }
+                ';' | '|' | '&' | '<' | '>' | '$' | '`' | '(' | ')' => return None,
+                _ => {
+                    word.push(character);
+                    started = true;
+                }
+            },
+        }
+    }
+    if !matches!(quote, Quote::None) {
+        return None;
+    }
+    if started {
+        words.push(word);
+    }
+    Some(words)
 }
 
-fn doctor(binary: &ResolvedCommand) -> Result<DoctorReport, AppError> {
-    let output = Command::new(&binary.program)
+fn resolve_binaries(configured: &[PathBuf]) -> Result<Vec<ResolvedCommand>, AppError> {
+    configured
+        .iter()
+        .map(|path| resolve_command(&[OsString::from(path)]))
+        .collect()
+}
+
+fn doctor(binary: &ResolvedCommand, home: &Path) -> Result<DoctorReport, AppError> {
+    let mut child = Command::new(&binary.program)
         .args(["doctor", "--json"])
-        .output()
-        .map_err(|error| AppError::io("run kontext doctor --json", error))?;
-    serde_json::from_slice(&output.stdout).map_err(|error| {
-        AppError::Kontext(format!(
-            "kontext doctor --json returned malformed output: {error}"
+        .env_clear()
+        .env("HOME", home)
+        .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|source| AppError::io("run kontext doctor --json", source))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| error("kontext doctor output was unavailable"))?;
+    let mut bytes = Vec::new();
+    stdout
+        .take(MAX_DOCTOR_OUTPUT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|source| AppError::io("read kontext doctor --json output", source))?;
+    if bytes.len() as u64 > MAX_DOCTOR_OUTPUT_BYTES {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error("kontext doctor --json output exceeded the limit"));
+    }
+    let status = child
+        .wait()
+        .map_err(|source| AppError::io("wait for kontext doctor --json", source))?;
+    if !status.success() {
+        return Err(error(
+            "kontext doctor --json failed; update Kontext or run kontext doctor",
+        ));
+    }
+    serde_json::from_slice(&bytes).map_err(|parse_error| {
+        error(format!(
+            "kontext doctor --json returned malformed output: {parse_error}"
         ))
     })
 }
 
-fn add_existing(
-    grants: &mut Vec<FileGrant>,
+fn exact_existing(path: &Path) -> Result<AbsolutePath, AppError> {
+    Ok(grant(path, AccessMode::Read, PathScope::Exact, &[])?.path)
+}
+
+fn exact_existing_within(path: &Path, root: &Path) -> Result<AbsolutePath, AppError> {
+    let root = fs::canonicalize(root)
+        .map_err(|source| AppError::io("canonicalize Kontext resource root", source))?;
+    let resolved = exact_existing(path)?;
+    if !resolved.as_path().starts_with(&root) {
+        return Err(error(format!(
+            "Kontext resource resolves outside its expected root: {}",
+            path.display()
+        )));
+    }
+    Ok(resolved)
+}
+
+fn validate_self_serve_config_path(
     path: &Path,
-    access: AccessMode,
-    scope: PathScope,
+    root: &Path,
+    active_profile: Option<&str>,
+    legacy_install: bool,
 ) -> Result<(), AppError> {
-    if path.exists() {
-        grants.push(grant(path, access, scope, &[])?);
+    // The trusted parent supplies Kontext with the canonical HOME used to build
+    // `root`. Requiring the doctor response to reproduce this exact lexical path
+    // rejects aliases and `..` spellings before any resource is granted.
+    let expected = if legacy_install {
+        if active_profile.is_some() {
+            return Err(error(
+                "kontext doctor reported both legacy and active-profile state",
+            ));
+        }
+        root.join("managed.json")
+    } else {
+        let active_profile = active_profile
+            .filter(|name| valid_profile_name(std::ffi::OsStr::new(name)))
+            .ok_or_else(|| error("kontext doctor did not report a valid active profile"))?;
+        root.join("profiles")
+            .join(active_profile)
+            .join("managed.json")
+    };
+    if path != expected {
+        return Err(error(
+            "kontext doctor reported a configuration outside the active self-serve profile",
+        ));
     }
     Ok(())
 }
 
+fn policy_cache_path(config_path: &Path, mode: Option<ManagedMode>) -> Option<PathBuf> {
+    (mode == Some(ManagedMode::Remote))
+        .then(|| config_path.parent())
+        .flatten()
+        .map(|directory| directory.join("managed-observe/cedar-policy.json"))
+}
+
+fn valid_profile_name(name: &std::ffi::OsStr) -> bool {
+    let Some(name) = name.to_str() else {
+        return false;
+    };
+    !name.is_empty()
+        && name.len() <= 32
+        && name.chars().enumerate().all(|(index, character)| {
+            character.is_ascii_lowercase()
+                || character.is_ascii_digit()
+                || (index > 0 && matches!(character, '-' | '_'))
+        })
+}
+
+fn push_required(paths: &mut Vec<AbsolutePath>, path: &Path) -> Result<(), AppError> {
+    paths.push(exact_existing(path)?);
+    Ok(())
+}
+
+fn push_existing(paths: &mut Vec<AbsolutePath>, path: &Path) -> Result<(), AppError> {
+    if path.exists() {
+        push_required(paths, path)?;
+    }
+    Ok(())
+}
+
+fn push_existing_within(
+    paths: &mut Vec<AbsolutePath>,
+    path: &Path,
+    root: &Path,
+) -> Result<(), AppError> {
+    if path.exists() {
+        paths.push(exact_existing_within(path, root)?);
+    }
+    Ok(())
+}
+
+fn error(message: impl Into<String>) -> AppError {
+    AppError::runtime_control(SERVICE, message)
+}
+
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::PermissionsExt as _;
+
     use super::*;
 
     #[test]
-    fn recognizes_owned_hook_commands() {
+    fn recognizes_current_quoted_hook_commands() {
         assert_eq!(
-            parse_kontext_command("/opt/homebrew/bin/kontext hook --agent claude pre-tool-use"),
+            parse_kontext_command(
+                "'/opt/homebrew/bin/kontext' hook 'pre-tool-use'",
+                HookProtocol::ClaudeSettings,
+            ),
             Some(PathBuf::from("/opt/homebrew/bin/kontext"))
         );
-        assert_eq!(parse_kontext_command("other hook"), None);
+        assert_eq!(
+            parse_kontext_command(
+                "'/usr/local/bin/kontext' hook --agent 'codex' 'session-start'",
+                HookProtocol::CodexHooks,
+            ),
+            Some(PathBuf::from("/usr/local/bin/kontext"))
+        );
+    }
+
+    #[test]
+    fn accepts_spaces_and_shell_quoted_apostrophes() {
+        let command = "'/Applications/Control'\\''s Tools/kontext' hook 'session-end'";
+        assert_eq!(
+            shell_words(command),
+            Some(vec![
+                "/Applications/Control's Tools/kontext".to_owned(),
+                "hook".to_owned(),
+                "session-end".to_owned(),
+            ])
+        );
+        assert_eq!(
+            parse_kontext_command(command, HookProtocol::ClaudeSettings),
+            Some(PathBuf::from("/Applications/Control's Tools/kontext"))
+        );
+    }
+
+    #[test]
+    fn rejects_wrong_protocol_shapes_and_shell_operators() {
+        assert_eq!(
+            parse_kontext_command(
+                "'/opt/homebrew/bin/kontext' hook --agent codex stop",
+                HookProtocol::ClaudeSettings,
+            ),
+            None
+        );
+        assert_eq!(
+            parse_kontext_command(
+                "'/opt/homebrew/bin/kontext' hook stop; other",
+                HookProtocol::ClaudeSettings,
+            ),
+            None
+        );
+        assert_eq!(
+            parse_kontext_command("kontext hook stop", HookProtocol::ClaudeSettings),
+            None
+        );
+        assert_eq!(
+            parse_kontext_command(
+                "'/opt/homebrew/bin/kontext' hook 'not-a-kontext-event'",
+                HookProtocol::ClaudeSettings,
+            ),
+            None
+        );
+        assert_eq!(
+            parse_kontext_command(
+                r#""/tmp/kon\text" hook pre-tool-use"#,
+                HookProtocol::ClaudeSettings,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn reads_commands_only_from_the_hook_schema() -> Result<(), Box<dyn std::error::Error>> {
+        let value: Value = serde_json::from_str(
+            r#"{
+                "description": "/tmp/kontext hook ignored",
+                "hooks": {
+                    "PreToolUse": [{
+                        "matcher": "",
+                        "hooks": [{"type": "command", "command": "'/opt/homebrew/bin/kontext' hook 'pre-tool-use'"}]
+                    }]
+                }
+            }"#,
+        )?;
+        assert_eq!(
+            hook_commands(&value),
+            Some(vec!["'/opt/homebrew/bin/kontext' hook 'pre-tool-use'"])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn unfamiliar_hook_shapes_are_not_positive_proof() -> Result<(), Box<dyn std::error::Error>> {
+        for document in [
+            r#"{"hooks": "managed-by-another-agent"}"#,
+            r#"{"hooks": {"PreToolUse": {}}}"#,
+            r#"{"hooks": {"PreToolUse": [{"hooks": {}}]}}"#,
+            r#"{
+                "hooks": {
+                    "PreToolUse": [{
+                        "hooks": [{"type": "command", "command": "'/opt/homebrew/bin/kontext' hook 'pre-tool-use'"}]
+                    }],
+                    "Unknown": {}
+                }
+            }"#,
+        ] {
+            let value: Value = serde_json::from_str(document)?;
+            assert_eq!(hook_commands(&value), None);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn discovers_only_protocol_owned_command_fields() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let hooks = root.path().join("hooks.json");
+        fs::write(
+            &hooks,
+            r#"{
+                "note": "'/tmp/ignored/kontext' hook 'stop'",
+                "hooks": {
+                    "SessionEnd": [{
+                        "hooks": [{"type": "command", "command": "'/opt/homebrew/bin/kontext' hook 'session-end'"}]
+                    }]
+                }
+            }"#,
+        )?;
+        let binaries = find_configured_binaries(&[ResolvedHookSource {
+            protocol: HookProtocol::ClaudeSettings,
+            path: hooks,
+        }])?;
+        assert_eq!(binaries, [PathBuf::from("/opt/homebrew/bin/kontext")]);
+        Ok(())
+    }
+
+    #[test]
+    fn broken_hook_symlinks_fail_closed() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let hooks = root.path().join("hooks.json");
+        std::os::unix::fs::symlink(root.path().join("missing.json"), &hooks)?;
+
+        let result = find_configured_binaries(&[ResolvedHookSource {
+            protocol: HookProtocol::CodexHooks,
+            path: hooks,
+        }]);
+        assert!(matches!(result, Err(AppError::Io { .. })));
+        Ok(())
+    }
+
+    #[test]
+    fn hook_configuration_read_is_bounded() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let hooks = root.path().join("hooks.json");
+        fs::write(&hooks, vec![b' '; MAX_HOOK_CONFIG_BYTES as usize + 1])?;
+
+        let result = find_configured_binaries(&[ResolvedHookSource {
+            protocol: HookProtocol::ClaudeSettings,
+            path: hooks,
+        }]);
+        assert!(matches!(result, Err(AppError::RuntimeControl { .. })));
+        Ok(())
+    }
+
+    #[test]
+    fn accepts_only_bounded_self_serve_config_paths() {
+        let root = Path::new("/test-home/Library/Application Support/Kontext");
+        assert!(
+            validate_self_serve_config_path(&root.join("managed.json"), root, None, true).is_ok()
+        );
+        assert!(
+            validate_self_serve_config_path(
+                &root.join("profiles/production_1/managed.json"),
+                root,
+                Some("production_1"),
+                false,
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_self_serve_config_path(
+                &root.join("profiles/../managed.json"),
+                root,
+                Some("production_1"),
+                false,
+            )
+            .is_err()
+        );
+        assert!(
+            validate_self_serve_config_path(
+                &root.join("profiles/production_1/../production_1/managed.json"),
+                root,
+                Some("production_1"),
+                false,
+            )
+            .is_err()
+        );
+        assert!(
+            validate_self_serve_config_path(
+                Path::new("/test-home/private/credentials.json"),
+                root,
+                None,
+                true,
+            )
+            .is_err()
+        );
+        assert!(
+            validate_self_serve_config_path(
+                &root.join("profiles/invalid.profile/managed.json"),
+                root,
+                Some("invalid.profile"),
+                false,
+            )
+            .is_err()
+        );
+        assert!(
+            validate_self_serve_config_path(
+                &root.join("managed.json"),
+                root,
+                Some("production"),
+                true,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn grants_cached_policy_only_for_remote_mode() {
+        let config = Path::new("/test-home/profiles/production/managed.json");
+        let expected =
+            PathBuf::from("/test-home/profiles/production/managed-observe/cedar-policy.json");
+
+        assert_eq!(
+            policy_cache_path(config, Some(ManagedMode::Remote)),
+            Some(expected)
+        );
+        assert_eq!(policy_cache_path(config, Some(ManagedMode::Observe)), None);
+        assert_eq!(policy_cache_path(config, Some(ManagedMode::Enforce)), None);
+        assert_eq!(policy_cache_path(config, None), None);
+    }
+
+    #[test]
+    fn rejects_resources_that_symlink_outside_provider_root()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let provider = root.path().join("provider");
+        let outside = root.path().join("outside.json");
+        fs::create_dir(&provider)?;
+        fs::write(&outside, "sensitive")?;
+        let link = provider.join("managed.json");
+        std::os::unix::fs::symlink(&outside, &link)?;
+
+        assert!(matches!(
+            exact_existing_within(&link, &provider),
+            Err(AppError::RuntimeControl { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn doctor_output_is_bounded_and_requires_success() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let binary = root.path().join("kontext");
+        fs::write(
+            &binary,
+            "#!/bin/sh\nprintf '%s\\n' '{\"healthy\":true,\"configured\":true,\"self_serve\":true,\"daemon_running\":true,\"active_profile\":\"test\",\"legacy_install\":false,\"mode\":\"observe\"}'\n",
+        )?;
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o700))?;
+        let command = ResolvedCommand {
+            requested_name: OsString::from("kontext"),
+            program: binary.clone(),
+            arguments: Vec::new(),
+        };
+        assert!(doctor(&command, root.path())?.healthy);
+
+        fs::write(&binary, "#!/bin/sh\nexit 1\n")?;
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o700))?;
+        assert!(matches!(
+            doctor(&command, root.path()),
+            Err(AppError::RuntimeControl { .. })
+        ));
+        Ok(())
     }
 }

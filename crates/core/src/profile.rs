@@ -6,7 +6,7 @@ use thiserror::Error;
 
 use crate::{AccessMode, PathScope};
 
-pub const PROFILE_SCHEMA_V1: u32 = 1;
+pub const PROFILE_SCHEMA_V2: u32 = 2;
 pub const GENERIC_PROFILE_NAME: &str = "generic";
 
 const MAX_PROFILE_SOURCE_BYTES: usize = 64 * 1024;
@@ -95,6 +95,20 @@ pub struct GrantTemplate {
     pub if_exists: bool,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(rename_all = "snake_case")]
+pub enum HookProtocol {
+    ClaudeSettings,
+    CodexHooks,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(deny_unknown_fields)]
+pub struct HookSourceTemplate {
+    pub protocol: HookProtocol,
+    pub path: TemplatePath,
+}
+
 impl<'de> Deserialize<'de> for GrantTemplate {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(Deserialize)]
@@ -125,7 +139,7 @@ pub struct DetectSpec {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ProfileDocumentV1 {
+pub struct ProfileDocumentV2 {
     pub schema_version: u32,
     pub name: String,
     #[serde(default, rename = "abstract")]
@@ -141,7 +155,7 @@ pub struct ProfileDocumentV1 {
     #[serde(default)]
     pub protected_write_paths: Vec<TemplatePath>,
     #[serde(default)]
-    pub kontext_hook_files: Vec<TemplatePath>,
+    pub hook_sources: Vec<HookSourceTemplate>,
 }
 
 fn deserialize_extends<'de, D: Deserializer<'de>>(
@@ -166,7 +180,7 @@ pub struct ResolvedProfile {
     grants: Vec<GrantTemplate>,
     protected_paths: Vec<TemplatePath>,
     protected_write_paths: Vec<TemplatePath>,
-    kontext_hook_files: Vec<TemplatePath>,
+    hook_sources: Vec<HookSourceTemplate>,
 }
 
 impl ResolvedProfile {
@@ -196,14 +210,14 @@ impl ResolvedProfile {
     }
 
     #[must_use]
-    pub fn kontext_hook_files(&self) -> &[TemplatePath] {
-        &self.kontext_hook_files
+    pub fn hook_sources(&self) -> &[HookSourceTemplate] {
+        &self.hook_sources
     }
 }
 
 #[derive(Debug)]
 pub struct ProfileRegistry {
-    documents: BTreeMap<String, ProfileDocumentV1>,
+    documents: BTreeMap<String, ProfileDocumentV2>,
     detection: BTreeMap<String, String>,
 }
 
@@ -218,7 +232,7 @@ impl ProfileRegistry {
             if source.len() > MAX_PROFILE_SOURCE_BYTES {
                 return Err(ProfileError::TooLarge((*source_name).to_owned()));
             }
-            let document: ProfileDocumentV1 = serde_json::from_str(source)
+            let document: ProfileDocumentV2 = serde_json::from_str(source)
                 .map_err(|error| ProfileError::Parse((*source_name).to_owned(), error))?;
             check_schema(source_name, &document)?;
             validate_name(&document.name)?;
@@ -297,7 +311,7 @@ impl ProfileRegistry {
         self.resolve(name)
     }
 
-    fn extend_chain(&self, name: &str) -> Result<Vec<&ProfileDocumentV1>, ProfileError> {
+    fn extend_chain(&self, name: &str) -> Result<Vec<&ProfileDocumentV2>, ProfileError> {
         let mut chain = Vec::new();
         let mut visited = HashSet::new();
         let mut cursor = Some(name);
@@ -326,11 +340,11 @@ struct MergedProfile {
     grants: Vec<GrantTemplate>,
     protected_paths: Vec<TemplatePath>,
     protected_write_paths: Vec<TemplatePath>,
-    kontext_hook_files: Vec<TemplatePath>,
+    hook_sources: Vec<HookSourceTemplate>,
 }
 
 impl MergedProfile {
-    fn absorb(&mut self, document: &ProfileDocumentV1) {
+    fn absorb(&mut self, document: &ProfileDocumentV2) {
         for binary in &document.detect.binary_names {
             if !self.detect.binary_names.contains(binary) {
                 self.detect.binary_names.push(binary.clone());
@@ -342,7 +356,7 @@ impl MergedProfile {
             &mut self.protected_write_paths,
             &document.protected_write_paths,
         );
-        push_unique(&mut self.kontext_hook_files, &document.kontext_hook_files);
+        push_unique(&mut self.hook_sources, &document.hook_sources);
     }
 
     fn finish(self, name: &str) -> Result<ResolvedProfile, ProfileError> {
@@ -352,7 +366,6 @@ impl MergedProfile {
         for (field, paths) in [
             ("protected_paths", &self.protected_paths),
             ("protected_write_paths", &self.protected_write_paths),
-            ("kontext_hook_files", &self.kontext_hook_files),
         ] {
             if paths.len() > MAX_RESOLVED_PATHS {
                 return Err(ProfileError::TooManyPaths {
@@ -361,13 +374,19 @@ impl MergedProfile {
                 });
             }
         }
+        if self.hook_sources.len() > MAX_RESOLVED_PATHS {
+            return Err(ProfileError::TooManyPaths {
+                profile: name.to_owned(),
+                field: "hook_sources".to_owned(),
+            });
+        }
         Ok(ResolvedProfile {
             name: name.to_owned(),
             detect: self.detect,
             grants: self.grants,
             protected_paths: self.protected_paths,
             protected_write_paths: self.protected_write_paths,
-            kontext_hook_files: self.kontext_hook_files,
+            hook_sources: self.hook_sources,
         })
     }
 }
@@ -380,8 +399,8 @@ fn push_unique<T: Clone + PartialEq>(target: &mut Vec<T>, values: &[T]) {
     }
 }
 
-fn check_schema(source_name: &str, document: &ProfileDocumentV1) -> Result<(), ProfileError> {
-    if document.schema_version != PROFILE_SCHEMA_V1 {
+fn check_schema(source_name: &str, document: &ProfileDocumentV2) -> Result<(), ProfileError> {
+    if document.schema_version != PROFILE_SCHEMA_V2 {
         return Err(ProfileError::UnsupportedSchema {
             name: document.name.clone(),
             version: document.schema_version,

@@ -203,9 +203,12 @@ sandbox. Preflight fails before target execution when a configured or
 explicitly required installation cannot be established. Sandy never installs,
 downloads, repairs, or uninstalls Kontext.
 
-Grant only exact resources required by the selected hook. Keep hook
-configuration, policy, databases, installation identity, logs, credentials,
-and Keychain material protected from writes or disclosure.
+Grant only exact resources required by the selected hook. Agent-visible hook
+registration and the active self-serve configuration are readable for
+compatibility but protected from writes. A cached enforcement policy is also
+readable and immutable only in remote mode. Keep databases, installation
+identity, logs, credentials, Keychain material, and unrelated Kontext state
+protected from writes or disclosure.
 
 Tests use fake executables, fixture output, temporary configuration roots, and
 mock sockets. They never inspect or modify a developer's real Kontext
