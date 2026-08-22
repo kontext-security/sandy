@@ -18,6 +18,8 @@ pub(crate) enum AppError {
     NonUtf8Path(PathBuf),
     #[error("refusing to sandbox the filesystem root or home directory")]
     UnsafeWorkingDirectory,
+    #[error("write-protected path must be absolute and must not be the filesystem root: {0}")]
+    InvalidWriteProtection(PathBuf),
     #[error("requested path overlaps protected data: {0}")]
     ProtectedPath(PathBuf),
     #[error("launch manifest is invalid: {0}")]
@@ -29,8 +31,15 @@ pub(crate) enum AppError {
     Seatbelt(#[from] sandy_seatbelt::SeatbeltError),
     #[error("Sandy enforcement is currently supported only on macOS")]
     UnsupportedPlatform,
-    #[error("Kontext integration failed: {0}")]
-    Kontext(String),
+    #[error("{service} runtime control failed: {message}")]
+    RuntimeControl {
+        service: &'static str,
+        message: String,
+    },
+    #[error("sandbox support probe failed: {0}")]
+    Probe(String),
+    #[error("launch preparation failed: {0}")]
+    Launch(String),
     #[error("agent profile failed: {0}")]
     Profile(String),
     #[error("unknown agent profile {name:?}; available profiles: {}", available.join(", "))]
@@ -50,10 +59,21 @@ impl AppError {
         }
     }
 
+    pub(crate) fn runtime_control(service: &'static str, message: impl Into<String>) -> Self {
+        Self::RuntimeControl {
+            service,
+            message: message.into(),
+        }
+    }
+
     #[must_use]
     pub(crate) fn exit_code(&self) -> i32 {
         match self {
-            Self::Seatbelt(_) | Self::UnsupportedPlatform | Self::Wire(_) | Self::Core(_) => 126,
+            Self::Seatbelt(_)
+            | Self::UnsupportedPlatform
+            | Self::Wire(_)
+            | Self::Core(_)
+            | Self::Launch(_) => 126,
             _ => 1,
         }
     }

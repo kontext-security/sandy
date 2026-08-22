@@ -36,8 +36,8 @@ error so it is never silent.
 
 Profiles are versioned typed documents compiled into the binary
 (`crates/cli/profiles/*.json`) and listed in the CLI's embedded registry. They
-declare filesystem grants, protected paths, and Kontext hook locations; they
-never carry raw Seatbelt source.
+declare filesystem grants, protected paths, and typed agent hook sources; they
+never carry raw Seatbelt source or service-specific runtime policy.
 
 Sandy is standalone by default. It does not require Kontext, a daemon, an
 account, or a second copy of the target agent.
@@ -95,10 +95,23 @@ bootstrap -- apply Seatbelt -- exec agent -- existing Kontext hook
 ```
 
 Sandy grants only the resolved hook executable, selected hook/configuration
-files, cached policy needed for outage behavior, and the local daemon socket.
+files, the cached policy needed for remote-mode outage behavior, and the local
+daemon socket.
 It does not install Kontext in the child or grant its token, Keychain items,
 ledger database, or logs. Kontext hook coverage remains cooperative and is
 separate from the kernel-enforced process boundary.
+
+`kontext setup` owns hook installation and repair outside Sandy. During an
+agent session, Sandy keeps the hook registration readable but denies writes to
+its lexical path and canonical target, including when it is a symlink. Normal
+Homebrew upgrades keep the stable hook path and require no in-sandbox edit.
+
+The CLI resolves Kontext into a provider-independent runtime-control bridge:
+one exact executable, disjoint read-only and read/write resources, immutable
+paths, and declared network requirements. Agent profiles describe hook
+protocols and locations; the Kontext adapter verifies those protocols and
+translates the existing host installation into typed capabilities. Core policy
+validation and the Seatbelt compiler never receive a Kontext or agent name.
 
 ## Architecture
 
@@ -126,6 +139,9 @@ unrestricted fallback.
   additional grants are canonicalized before compilation.
 - SSH, cloud credential, Keychain, and other protected home locations remain
   denied even when a broader grant overlaps them.
+- Agent control files such as Claude settings and Codex hook/configuration
+  files remain readable for compatibility but are protected from writes,
+  replacement, and deletion by the sandbox policy.
 - A private per-session `TMPDIR` is read/write. Broad temporary directories are
   not granted.
 - `DYLD_*`, `SSH_AUTH_SOCK`, askpass, and Kontext routing overrides are removed

@@ -8,7 +8,7 @@ pub(crate) fn run(arguments: BootstrapArgs) -> Result<i32, AppError> {
     let metadata = fs::metadata(&arguments.manifest)
         .map_err(|error| AppError::io("inspect launch manifest", error))?;
     if metadata.len() > MAX_WIRE_BYTES as u64 {
-        return Err(AppError::Kontext(
+        return Err(AppError::Launch(
             "launch manifest exceeds the bootstrap limit".to_owned(),
         ));
     }

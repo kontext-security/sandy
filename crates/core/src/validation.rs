@@ -101,6 +101,19 @@ impl TryFrom<LaunchManifestV1> for ValidatedLaunch {
         {
             return Err(ValidationError::RootGrant);
         }
+        if manifest
+            .policy
+            .protected_paths
+            .iter()
+            .any(AbsolutePath::is_root)
+            || manifest
+                .policy
+                .protected_write_paths
+                .iter()
+                .any(AbsolutePath::is_root)
+        {
+            return Err(ValidationError::RootProtectedPath);
+        }
 
         let mut seen = BTreeSet::new();
         for grant in &manifest.policy.files {
@@ -109,10 +122,22 @@ impl TryFrom<LaunchManifestV1> for ValidatedLaunch {
                 return Err(ValidationError::DuplicateGrant(grant.path.clone()));
             }
         }
+        reject_duplicate_paths(&manifest.policy.protected_paths)?;
+        reject_duplicate_paths(&manifest.policy.protected_write_paths)?;
 
         let policy = ValidatedPolicy(manifest.policy.clone());
         Ok(Self { manifest, policy })
     }
+}
+
+fn reject_duplicate_paths(paths: &[AbsolutePath]) -> Result<(), ValidationError> {
+    let mut seen = BTreeSet::new();
+    for path in paths {
+        if !seen.insert(path) {
+            return Err(ValidationError::DuplicateProtectedPath(path.clone()));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Error)]
@@ -141,6 +166,10 @@ pub enum ValidationError {
     RootWorkingDirectory,
     #[error("the filesystem root cannot be granted")]
     RootGrant,
+    #[error("the filesystem root cannot be protected as a path capability")]
+    RootProtectedPath,
     #[error("duplicate filesystem grant for {0:?}")]
     DuplicateGrant(AbsolutePath),
+    #[error("duplicate protected path for {0:?}")]
+    DuplicateProtectedPath(AbsolutePath),
 }

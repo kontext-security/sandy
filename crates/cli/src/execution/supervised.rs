@@ -15,7 +15,7 @@ use tempfile::Builder;
 use crate::{
     cli::RunArgs,
     error::AppError,
-    integration::kontext,
+    integration::{IntegrationMode, kontext},
     profile,
     resolve::{grant, resolve_command, resolve_paths, sanitized_environment},
 };
@@ -82,19 +82,25 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
     }
 
     let kontext = kontext::resolve(
-        &selected.kontext_hook_files(&paths),
-        arguments.kontext,
+        &selected.hook_sources(&paths),
+        if arguments.kontext {
+            IntegrationMode::Required
+        } else {
+            IntegrationMode::Detect
+        },
         &paths,
     )?;
-    if kontext.enabled && arguments.block_net {
-        return Err(AppError::Kontext(
-            "--kontext with --block-net is not supported until exact Unix-socket policy is available"
-                .to_owned(),
+    if kontext.requires_network() && arguments.block_net {
+        return Err(AppError::runtime_control(
+            kontext.service(),
+            "--block-net is not supported until exact Unix-socket policy is available",
         ));
     }
-    files.extend(kontext.grants.clone());
+    let mut protected_write_paths = selected.protected_write_paths(&paths)?;
+    kontext.contribute(&mut files, &mut protected_write_paths);
     deduplicate_grants(&mut files);
-    let protected_write_paths = selected.protected_write_paths(&paths);
+    protected_write_paths.sort();
+    protected_write_paths.dedup();
     let protected_paths = selected.protected_paths(&paths);
 
     let manifest = LaunchManifestV1 {
@@ -142,15 +148,15 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
             "network": validated.manifest().policy.network,
             "file_grants": validated.manifest().policy.files,
             "kontext": {
-                "enabled": kontext.enabled,
-                "version": kontext.version,
+                "enabled": kontext.is_active(),
+                "version": kontext.version(),
             },
             "seatbelt_profile": profile_source,
         });
         println!(
             "{}",
             serde_json::to_string_pretty(&output)
-                .map_err(|error| AppError::Kontext(format!("encode dry-run output: {error}")))?
+                .map_err(|error| AppError::Launch(format!("encode dry-run output: {error}")))?
         );
         return Ok(0);
     }

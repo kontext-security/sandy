@@ -4,7 +4,11 @@ use std::{
 };
 
 use crate::{
-    cli::DoctorArgs, error::AppError, integration::kontext, profile, resolve::resolve_paths,
+    cli::DoctorArgs,
+    error::AppError,
+    integration::{IntegrationMode, kontext},
+    profile,
+    resolve::resolve_paths,
 };
 
 pub(crate) fn run(arguments: DoctorArgs) -> Result<i32, AppError> {
@@ -22,7 +26,7 @@ pub(crate) fn run(arguments: DoctorArgs) -> Result<i32, AppError> {
         .status()
         .map_err(|error| AppError::io("run Seatbelt support probe", error))?;
     if !status.success() {
-        return Err(AppError::Kontext(
+        return Err(AppError::Probe(
             "the macOS Seatbelt runtime probe failed; Sandy cannot enforce a sandbox here"
                 .to_owned(),
         ));
@@ -32,8 +36,12 @@ pub(crate) fn run(arguments: DoctorArgs) -> Result<i32, AppError> {
     if arguments.kontext {
         let selected = profile::select(Some(&"claude".to_owned()), std::ffi::OsStr::new("claude"))?;
         let paths = resolve_paths(selected.protected_templates())?;
-        let integration = kontext::resolve(&selected.kontext_hook_files(&paths), true, &paths)?;
-        let version = integration.version.as_deref().unwrap_or("unknown");
+        let integration = kontext::resolve(
+            &selected.hook_sources(&paths),
+            IntegrationMode::Required,
+            &paths,
+        )?;
+        let version = integration.version().unwrap_or("unknown");
         println!("Kontext integration: available ({version})");
     } else {
         println!("Kontext integration: not checked (optional)");

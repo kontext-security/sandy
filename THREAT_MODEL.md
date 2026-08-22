@@ -30,6 +30,8 @@ in `sandy-seatbelt`.
 - network access when `--block-net` is selected;
 - environment-based dynamic-loader and security-routing injection;
 - symlink and policy-string injection at launch;
+- mutation, removal, or replacement of configured agent control hooks while a
+  sandboxed session is running;
 - execution before successful validation and Seatbelt application; and
 - restriction inheritance by child processes.
 
@@ -45,6 +47,15 @@ in `sandy-seatbelt`.
 - mutation between path canonicalization and later use;
 - authenticated provenance for optional Kontext hook events; and
 - complete agent behavior visibility through cooperative hook surfaces.
+
+Agent-visible hook registration and the active self-serve configuration are
+intentionally readable and are therefore not confidential from the sandboxed
+process tree. In remote mode this surface also includes the cached enforcement
+policy required for outage behavior. Their integrity is protected: Sandy
+resolves both lexical entries and canonical targets and denies writes. Kontext
+credentials, installation identity, databases, logs, and unrelated state remain
+outside that readable surface. Kontext setup, repair, and uninstall are trusted
+host operations and are not expected to work from inside Sandy.
 
 Agent state directories may contain credentials and are granted for compatible
 known-agent profiles. This is a deliberate usability tradeoff and must not be

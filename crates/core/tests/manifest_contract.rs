@@ -34,3 +34,18 @@ fn rejects_unknown_schema_versions() -> Result<(), Box<dyn std::error::Error>> {
     assert!(ValidatedLaunch::try_from(value).is_err());
     Ok(())
 }
+
+#[test]
+fn rejects_root_and_duplicate_protected_paths() -> Result<(), Box<dyn std::error::Error>> {
+    let mut root = manifest()?;
+    root.policy
+        .protected_write_paths
+        .push(AbsolutePath::new("/")?);
+    assert!(ValidatedLaunch::try_from(root).is_err());
+
+    let mut duplicate = manifest()?;
+    let path = AbsolutePath::new("/tmp/project/settings.json")?;
+    duplicate.policy.protected_write_paths = vec![path.clone(), path];
+    assert!(ValidatedLaunch::try_from(duplicate).is_err());
+    Ok(())
+}

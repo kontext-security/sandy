@@ -5,13 +5,13 @@ use std::{
 };
 
 use sandy_core::{
-    AbsolutePath, GENERIC_PROFILE_NAME, ProfileError, ProfileRegistry, ResolvedProfile,
-    TemplatePath,
+    AbsolutePath, GENERIC_PROFILE_NAME, HookProtocol, ProfileError, ProfileRegistry,
+    ResolvedProfile, TemplatePath,
 };
 
 use crate::{
     error::AppError,
-    resolve::{ResolvedPaths, absolute_if_utf8, grant},
+    resolve::{ResolvedPaths, absolute_if_utf8, grant, write_protections},
 };
 
 const EMBEDDED_PROFILES: &[(&str, &str)] = &[
@@ -34,6 +34,12 @@ fn registry() -> Result<&'static ProfileRegistry, AppError> {
 pub(crate) struct SelectedProfile {
     resolved: ResolvedProfile,
     detected: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ResolvedHookSource {
+    pub(crate) protocol: HookProtocol,
+    pub(crate) path: PathBuf,
 }
 
 impl SelectedProfile {
@@ -77,15 +83,28 @@ impl SelectedProfile {
         expand_all(self.resolved.protected_paths(), paths)
     }
 
-    pub(crate) fn protected_write_paths(&self, paths: &ResolvedPaths) -> Vec<AbsolutePath> {
-        expand_all(self.resolved.protected_write_paths(), paths)
+    pub(crate) fn protected_write_paths(
+        &self,
+        paths: &ResolvedPaths,
+    ) -> Result<Vec<AbsolutePath>, AppError> {
+        write_protections(
+            self.resolved
+                .protected_write_paths()
+                .iter()
+                .filter_map(|template| expand(template, paths)),
+        )
     }
 
-    pub(crate) fn kontext_hook_files(&self, paths: &ResolvedPaths) -> Vec<PathBuf> {
+    pub(crate) fn hook_sources(&self, paths: &ResolvedPaths) -> Vec<ResolvedHookSource> {
         self.resolved
-            .kontext_hook_files()
+            .hook_sources()
             .iter()
-            .filter_map(|template| expand(template, paths))
+            .filter_map(|source| {
+                Some(ResolvedHookSource {
+                    protocol: source.protocol,
+                    path: expand(&source.path, paths)?,
+                })
+            })
             .collect()
     }
 }
@@ -190,18 +209,18 @@ mod tests {
     fn agent_profiles_declare_expected_surfaces() -> Result<(), Box<dyn std::error::Error>> {
         let claude = resolve_by_name("claude")?;
         assert_eq!(claude.binary_names(), ["claude"]);
-        assert_eq!(claude.kontext_hook_files().len(), 3);
+        assert_eq!(claude.hook_sources().len(), 3);
         assert_eq!(claude.grants().len(), 2);
         assert_eq!(claude.protected_write_paths().len(), 2);
 
         let codex = resolve_by_name("codex")?;
         assert_eq!(codex.binary_names(), ["codex"]);
-        assert_eq!(codex.kontext_hook_files().len(), 1);
+        assert_eq!(codex.hook_sources().len(), 1);
         assert_eq!(codex.grants().len(), 1);
 
         let opencode = resolve_by_name("opencode")?;
         assert_eq!(opencode.binary_names(), ["opencode"]);
-        assert!(opencode.kontext_hook_files().is_empty());
+        assert!(opencode.hook_sources().is_empty());
         assert_eq!(opencode.grants().len(), 2);
         assert_eq!(opencode.protected_write_paths().len(), 2);
         Ok(())

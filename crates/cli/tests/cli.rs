@@ -1,3 +1,5 @@
+use std::fs;
+
 use assert_cmd::Command;
 use predicates::prelude::*;
 
@@ -84,9 +86,12 @@ fn inheritance_only_profile_cannot_be_selected() -> Result<(), Box<dyn std::erro
 #[test]
 fn detected_agent_profile_is_announced() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
+    let home = directory.path().join("home");
+    fs::create_dir(&home)?;
     std::os::unix::fs::symlink("/bin/echo", directory.path().join("codex"))?;
     let mut command = Command::cargo_bin("sandy")?;
     command
+        .env("HOME", home)
         .env("PATH", directory.path())
         .args(["run", "--dry-run", "--", "codex"])
         .assert()
