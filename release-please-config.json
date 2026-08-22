@@ -29,17 +29,17 @@
         {
           "type": "toml",
           "path": "Cargo.lock",
-          "jsonpath": "$.package[?(@.name == 'sandy-cli')].version"
+          "jsonpath": "$.package[?(@.name.value == 'sandy-cli')].version"
         },
         {
           "type": "toml",
           "path": "Cargo.lock",
-          "jsonpath": "$.package[?(@.name == 'sandy-core')].version"
+          "jsonpath": "$.package[?(@.name.value == 'sandy-core')].version"
         },
         {
           "type": "toml",
           "path": "Cargo.lock",
-          "jsonpath": "$.package[?(@.name == 'sandy-seatbelt')].version"
+          "jsonpath": "$.package[?(@.name.value == 'sandy-seatbelt')].version"
         }
       ]
     }
