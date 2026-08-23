@@ -37,6 +37,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
+          # Fetch tags before checkout removes its ephemeral credentials.
+          fetch-tags: true
           persist-credentials: false
           ref: ${{ github.sha }}
       - name: Verify release tag
@@ -52,8 +54,10 @@ jobs:
             echo "invalid release tag: $TAG_NAME" >&2
             exit 1
           fi
-          git fetch --force --no-tags origin "refs/tags/${TAG_NAME}:refs/tags/${TAG_NAME}"
-          tag_commit="$(git rev-parse "${TAG_NAME}^{commit}")"
+          if ! tag_commit="$(git rev-parse --verify "refs/tags/${TAG_NAME}^{commit}")"; then
+            echo "release tag $TAG_NAME was not fetched by the trusted checkout" >&2
+            exit 1
+          fi
           if ! git merge-base --is-ancestor "$tag_commit" HEAD; then
             echo "release tag $TAG_NAME is not contained in the trusted main revision" >&2
             exit 1
