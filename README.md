@@ -25,8 +25,18 @@ Run an agent with read/write access to the current project:
 ```bash
 sandy doctor
 sandy run -- claude
-sandy run -- codex
+sandy run -- codex --sandbox danger-full-access
 sandy run -- opencode
+```
+
+Codex's internal macOS sandbox cannot be nested reliably inside Sandy's
+Seatbelt sandbox. Start Codex with `--sandbox danger-full-access` so Sandy is
+the single kernel-enforced boundary. This disables only Codex's internal
+sandbox; it does not disable Codex's approval flow. For example, require
+on-request approvals explicitly with:
+
+```bash
+sandy run -- codex --sandbox danger-full-access --ask-for-approval on-request
 ```
 
 Sandy recognizes known agents from the command name and applies a matching
