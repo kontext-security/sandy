@@ -51,6 +51,36 @@ fn allows_project_writes_and_denies_sibling_reads() -> Result<(), Box<dyn std::e
 
 #[test]
 #[ignore = "irreversibly applies Seatbelt; run on a host, not inside another sandbox"]
+fn allows_timezone_runtime_data_without_opening_adjacent_databases()
+-> Result<(), Box<dyn std::error::Error>> {
+    let project = tempfile::tempdir()?;
+
+    let mut timezone = Command::cargo_bin("sandy")?;
+    timezone
+        .current_dir(project.path())
+        .args([
+            "run",
+            "--",
+            "/usr/bin/head",
+            "-c",
+            "1",
+            "/private/var/db/timezone/zoneinfo/UTC",
+        ])
+        .assert()
+        .success();
+
+    let mut adjacent = Command::cargo_bin("sandy")?;
+    adjacent
+        .current_dir(project.path())
+        .args(["run", "--", "/bin/ls", "/private/var/db/receipts"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Operation not permitted"));
+    Ok(())
+}
+
+#[test]
+#[ignore = "irreversibly applies Seatbelt; run on a host, not inside another sandbox"]
 fn blocks_outbound_connect_when_network_is_disabled() -> Result<(), Box<dyn std::error::Error>> {
     let project = tempfile::tempdir()?;
     let script = "begin; Socket.tcp('1.1.1.1', 80, connect_timeout: 1); rescue Errno::EPERM; exit 0; end; exit 1";

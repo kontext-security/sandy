@@ -21,8 +21,12 @@ const SYSTEM_READ_SUBPATHS: &[&str] = &[
     "/sbin",
     "/Library/Apple",
     "/private/etc",
-    "/private/var/db/dyld",
 ];
+
+// Public, read-only macOS databases required by language runtimes and dynamic linking. Keep each
+// grant at the narrowest stable root so operating-system updates can replace versioned contents
+// without opening unrelated data under /private/var/db.
+const SYSTEM_RUNTIME_READ_SUBPATHS: &[&str] = &["/private/var/db/dyld", "/private/var/db/timezone"];
 
 // Character devices needed by ordinary command-line programs. Granting the node itself does not
 // grant a subtree beneath `/dev`.
@@ -110,6 +114,9 @@ pub fn compile(policy: &ValidatedPolicy) -> Result<CompiledProfile, SeatbeltErro
     source.push_str("(allow file-read* (literal \"/\"))\n");
 
     for path in SYSTEM_READ_SUBPATHS {
+        write_rule(&mut source, "allow", "file-read*", PathScope::Subtree, path)?;
+    }
+    for path in SYSTEM_RUNTIME_READ_SUBPATHS {
         write_rule(&mut source, "allow", "file-read*", PathScope::Subtree, path)?;
     }
     for path in SYSTEM_READ_LITERALS {
@@ -292,6 +299,27 @@ mod tests {
             compile(launch.policy())?
                 .source()
                 .contains("(allow network*)")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn renders_narrow_system_runtime_reads() -> Result<(), Box<dyn std::error::Error>> {
+        let source = compile(policy(NetworkPolicy::BlockAll)?.policy())?;
+        assert!(
+            source
+                .source()
+                .contains(r#"(allow file-read* (subpath "/private/var/db/timezone"))"#)
+        );
+        assert!(
+            !source
+                .source()
+                .contains(r#"(allow file-read* (subpath "/private/var/db"))"#)
+        );
+        assert!(
+            !source
+                .source()
+                .contains(r#"(allow file-write* (subpath "/private/var/db/timezone"))"#)
         );
         Ok(())
     }
