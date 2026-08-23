@@ -1,13 +1,22 @@
+//! Lexically validated paths used by the platform-neutral security contract.
+
 use std::path::{Component, Path};
 
 use serde::{Deserialize, Deserializer, Serialize, de};
 use thiserror::Error;
 
+/// Absolute UTF-8 path with NUL and parent traversal rejected.
+///
+/// This type proves lexical properties only. It deliberately does not access the filesystem and
+/// therefore does not prove existence, canonical form, file type, ownership, or freedom from
+/// symlink races. The trusted CLI resolver establishes those ambient properties before building a
+/// launch manifest.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
 pub struct AbsolutePath(String);
 
 impl AbsolutePath {
+    /// Creates a lexically safe absolute path without consulting the filesystem.
     pub fn new(value: impl Into<String>) -> Result<Self, PathValidationError> {
         let value = value.into();
         let path = Path::new(&value);
@@ -27,16 +36,19 @@ impl AbsolutePath {
     }
 
     #[must_use]
+    /// Returns the validated UTF-8 representation.
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
     #[must_use]
+    /// Borrows the validated value as a [`Path`].
     pub fn as_path(&self) -> &Path {
         Path::new(&self.0)
     }
 
     #[must_use]
+    /// Returns whether the path names the filesystem root.
     pub fn is_root(&self) -> bool {
         self.as_path().parent().is_none()
     }
@@ -55,12 +67,16 @@ impl<'de> Deserialize<'de> for AbsolutePath {
     }
 }
 
+/// Failure to establish the lexical invariants of [`AbsolutePath`].
 #[derive(Debug, Error)]
 pub enum PathValidationError {
+    /// The supplied path is relative.
     #[error("path must be absolute: {0}")]
     NotAbsolute(String),
+    /// Native path use would be truncated at an embedded NUL.
     #[error("path contains a NUL byte")]
     ContainsNul,
+    /// Parent traversal would make component-based policy reasoning ambiguous.
     #[error("path contains parent traversal: {0}")]
     ParentTraversal(String),
 }
