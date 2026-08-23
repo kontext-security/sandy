@@ -201,8 +201,15 @@ Please pull request. The pull request updates the workspace version,
 workspace-internal dependency versions, `Cargo.lock`, and `CHANGELOG.md` from
 conventional commit messages since the previous release. Merging it creates a
 draft `vX.Y.Z` release and runs the macOS release workflow; the release becomes
-public only after both architecture builds and checksums have been uploaded.
-The release workflow can also be dispatched manually for an existing tag.
+public only after both architecture builds and checksums have been uploaded and
+`Formula/sandy.rb` has been updated in `kontext-security/homebrew-tap`. No other
+tap file is modified. The release workflow can also be dispatched manually for
+an existing tag; release asset and formula updates are idempotent.
+Manual dispatch must run from `main`, and the selected tag must resolve to a
+commit contained in that trusted `main` revision.
+
+Automated releases require a `HOMEBREW_TAP_TOKEN` Actions secret with contents
+write access limited to `kontext-security/homebrew-tap`.
 
 `make check` expects `cargo-deny` 0.20.2 to be installed.
 
