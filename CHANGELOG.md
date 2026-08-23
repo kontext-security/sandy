@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.4](https://github.com/kontext-security/sandy/compare/v0.1.3...v0.1.4) (2026-08-23)
+
+
+### Bug Fixes
+
+* preserve agent provider TLS trust ([#18](https://github.com/kontext-security/sandy/issues/18)) ([6b2daae](https://github.com/kontext-security/sandy/commit/6b2daae67aba06a54ff60242d91bce54fe344b00))
+
 ## [0.1.3](https://github.com/kontext-security/sandy/compare/v0.1.2...v0.1.3) (2026-08-23)
 
 
