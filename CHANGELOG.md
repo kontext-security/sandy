@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.1.2](https://github.com/kontext-security/sandy/compare/v0.1.1...v0.1.2) (2026-08-23)
+
+
+### Bug Fixes
+
+* keep standalone runs independent of Kontext ([c472503](https://github.com/kontext-security/sandy/commit/c4725034da615699598f2622d24f268d779cfaa3))
+* keep standalone runs independent of Kontext ([77587d3](https://github.com/kontext-security/sandy/commit/77587d3b0ceec67c60e7e460961038b1d770b0e5))
+* publish releases to Homebrew tap ([e624437](https://github.com/kontext-security/sandy/commit/e624437e749589fa5114372ee730eba2f540abe1))
+* publish releases to Homebrew tap ([d5520b6](https://github.com/kontext-security/sandy/commit/d5520b6eda2f057dfb4277bad6bbbd5b7136045a))
+
 ## [0.1.1](https://github.com/kontext-security/sandy/compare/v0.1.0...v0.1.1) (2026-08-22)
 
 
