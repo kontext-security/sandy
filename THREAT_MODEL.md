@@ -27,7 +27,8 @@ in `sandy-seatbelt`.
 
 - reads and writes outside explicit filesystem grants;
 - common sensitive home paths, including SSH, cloud credentials, and Keychains;
-- network access when `--block-net` is selected;
+- IP networking and connections to ungranted Unix sockets when `--block-net`
+  is selected;
 - environment-based dynamic-loader and security-routing injection;
 - symlink and policy-string injection at launch;
 - mutation, removal, or replacement of configured agent control hooks while a
@@ -46,6 +47,10 @@ in `sandy-seatbelt`.
 - all confused-deputy behavior through allowed Mach/XPC services;
 - outbound data disclosure while network is enabled;
 - mutation between path canonicalization and later use;
+- replacement of an explicitly granted Unix socket after the trusted parent
+  verifies its path, type, and owner;
+- access to Kontext's exact Unix socket when the integration is active, even
+  under `--block-net`;
 - authenticated provenance for optional Kontext hook events; and
 - complete agent behavior visibility through cooperative hook surfaces.
 
@@ -62,6 +67,13 @@ Compatibility preflight executes the hook-configured Kontext binary in the
 trusted parent before Seatbelt is applied. Its deadline and output are bounded,
 but Sandy does not authenticate that binary or contain descendants it creates.
 Only enable hooks installed through a trusted host workflow.
+
+Kontext compatibility grants read-only filesystem access and a separate
+connect-only Unix-socket capability for the verified daemon endpoint. The
+lexical `/tmp` path and its canonical `/private/tmp` alias identify the same
+endpoint on macOS and are both emitted as exact rules. This does not authorize
+socket bind, sibling sockets, IP networking, or a cryptographically bound
+session identity.
 
 Agent state directories may contain credentials and are granted for compatible
 known-agent profiles. This is a deliberate usability tradeoff and must not be

@@ -59,7 +59,7 @@ sandy run --read ../shared-library -- claude
 # Grant an output directory read/write access.
 sandy run --read-write ~/Downloads/output -- codex
 
-# Block network access for the complete child process tree.
+# Block IP networking and ungranted Unix-socket connections.
 sandy run --block-net -- cargo test
 
 # Inspect the resolved manifest and Seatbelt profile without executing.
@@ -109,7 +109,11 @@ bootstrap -- apply Seatbelt -- exec agent -- existing Kontext hook
 
 Sandy grants only the resolved hook executable, selected hook/configuration
 files, the cached policy needed for remote-mode outage behavior, and the local
-daemon socket.
+daemon socket. Filesystem access to that socket node is read-only and remains a
+separate capability from connect authority. With `--block-net`, Seatbelt allows
+`network-outbound` only to the socket's exact verified `/tmp` and canonical
+`/private/tmp` paths; IP networking and unrelated Unix-socket services remain
+denied.
 It does not install Kontext in the child or grant its token, Keychain items,
 ledger database, or logs. Kontext hook coverage remains cooperative and is
 separate from the kernel-enforced process boundary.
@@ -121,7 +125,7 @@ Homebrew upgrades keep the stable hook path and require no in-sandbox edit.
 
 The CLI resolves Kontext into a provider-independent runtime-control bridge:
 one exact executable, disjoint read-only and read/write resources, immutable
-paths, and declared network requirements. Agent profiles describe hook
+paths, and exact Unix-socket connect grants. Agent profiles describe hook
 protocols and locations; the Kontext adapter verifies those protocols and
 translates the existing host installation into typed capabilities. Core policy
 validation and the Seatbelt compiler never receive a Kontext or agent name.
@@ -159,9 +163,12 @@ unrestricted fallback.
   not granted.
 - `DYLD_*`, `SSH_AUTH_SOCK`, askpass, and Kontext routing overrides are removed
   from the child environment.
-- Network is allowed by default for agent compatibility. `--block-net` blocks
-  it for the sandboxed process tree. Network-enabled mode can also reach other
-  same-user local services.
+- Network is allowed by default for agent compatibility. `--block-net` denies
+  IP networking and ungranted Unix-socket connections for the sandboxed process
+  tree. An active Kontext bridge contributes a typed exception for its exact
+  Unix socket only. Sandy does not add an implicit exception for the macOS
+  resolver socket, so network-dependent DNS resolution is expected to fail in
+  this mode. Network-enabled mode can reach other same-user local services.
 - Standard input, output, and error are inherited. Deliberately redirecting an
   already-open descriptor into Sandy can carry that capability across launch.
 - Foreground terminal control is preserved with ioctls restricted to macOS TTY
@@ -188,7 +195,7 @@ Included in this first implementation:
 
 - a standalone macOS runner for generic commands, Claude Code, Codex, and
   OpenCode;
-- typed filesystem grants and network allow/block;
+- typed filesystem, exact Unix-socket connect, and network allow/block grants;
 - byte-preserving arguments and a bounded, versioned launch manifest;
 - a fresh apply-before-exec bootstrap;
 - resolved-policy dry runs and a Seatbelt doctor;

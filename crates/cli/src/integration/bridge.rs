@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use sandy_core::{AbsolutePath, AccessMode, FileGrant, PathScope};
+use sandy_core::{AbsolutePath, AccessMode, FileGrant, PathScope, UnixSocketGrant};
 
 use crate::error::AppError;
 
@@ -33,7 +33,7 @@ enum RuntimeControlState {
     Active {
         version: Option<String>,
         files: RuntimeControlFiles,
-        requires_network: bool,
+        unix_sockets: Vec<UnixSocketGrant>,
     },
 }
 
@@ -58,15 +58,16 @@ impl RuntimeControlBridge {
         service: &'static str,
         version: Option<String>,
         files: RuntimeControlFiles,
-        requires_network: bool,
+        unix_sockets: Vec<UnixSocketGrant>,
     ) -> Result<Self, AppError> {
         files.validate(service)?;
+        validate_unix_sockets(service, &files, &unix_sockets)?;
         Ok(Self {
             service,
             state: RuntimeControlState::Active {
                 version,
                 files,
-                requires_network,
+                unix_sockets,
             },
         })
     }
@@ -86,16 +87,6 @@ impl RuntimeControlBridge {
         }
     }
 
-    pub(crate) fn requires_network(&self) -> bool {
-        matches!(
-            &self.state,
-            RuntimeControlState::Active {
-                requires_network: true,
-                ..
-            }
-        )
-    }
-
     pub(crate) fn unavailable_reason(&self) -> Option<&str> {
         match &self.state {
             RuntimeControlState::Unavailable { reason } => Some(reason),
@@ -107,8 +98,14 @@ impl RuntimeControlBridge {
         &self,
         grants: &mut Vec<FileGrant>,
         protected_write_paths: &mut Vec<AbsolutePath>,
+        unix_sockets: &mut Vec<UnixSocketGrant>,
     ) {
-        let RuntimeControlState::Active { files, .. } = &self.state else {
+        let RuntimeControlState::Active {
+            files,
+            unix_sockets: bridge_sockets,
+            ..
+        } = &self.state
+        else {
             return;
         };
         grants.extend(files.executables.iter().cloned().map(|path| FileGrant {
@@ -127,6 +124,7 @@ impl RuntimeControlBridge {
             scope: PathScope::Exact,
         }));
         protected_write_paths.extend(files.protected_from_write.iter().cloned());
+        unix_sockets.extend(bridge_sockets.iter().cloned());
     }
 }
 
@@ -164,6 +162,39 @@ fn overlapping_files(service: &'static str) -> AppError {
     )
 }
 
+fn validate_unix_sockets(
+    service: &'static str,
+    files: &RuntimeControlFiles,
+    unix_sockets: &[UnixSocketGrant],
+) -> Result<(), AppError> {
+    let mut seen = BTreeSet::new();
+    for grant in unix_sockets {
+        if !seen.insert(grant) {
+            return Err(AppError::runtime_control(
+                service,
+                "resolved Unix-socket grants overlap; refusing to broaden the runtime policy",
+            ));
+        }
+        if !files.read_only.iter().any(|path| path == &grant.path) {
+            return Err(AppError::runtime_control(
+                service,
+                "a Unix-socket grant is missing its separate read-only filesystem intent",
+            ));
+        }
+        if !files
+            .protected_from_write
+            .iter()
+            .any(|path| path == &grant.path)
+        {
+            return Err(AppError::runtime_control(
+                service,
+                "a Unix-socket grant is not protected from overlapping filesystem writes",
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,7 +211,7 @@ mod tests {
                 read_write: Vec::new(),
                 protected_from_write: Vec::new(),
             },
-            false,
+            Vec::new(),
         );
         assert!(matches!(result, Err(AppError::RuntimeControl { .. })));
         Ok(())
@@ -191,9 +222,11 @@ mod tests {
         let bridge = RuntimeControlBridge::inactive("test");
         let mut grants = Vec::new();
         let mut protected = Vec::new();
-        bridge.contribute(&mut grants, &mut protected);
+        let mut sockets = Vec::new();
+        bridge.contribute(&mut grants, &mut protected, &mut sockets);
         assert!(grants.is_empty());
         assert!(protected.is_empty());
+        assert!(sockets.is_empty());
     }
 
     #[test]
@@ -201,9 +234,11 @@ mod tests {
         let bridge = RuntimeControlBridge::unavailable("test", "provider is unavailable");
         let mut grants = Vec::new();
         let mut protected = Vec::new();
-        bridge.contribute(&mut grants, &mut protected);
+        let mut sockets = Vec::new();
+        bridge.contribute(&mut grants, &mut protected, &mut sockets);
         assert!(grants.is_empty());
         assert!(protected.is_empty());
+        assert!(sockets.is_empty());
         assert_eq!(bridge.unavailable_reason(), Some("provider is unavailable"));
     }
 
@@ -217,15 +252,19 @@ mod tests {
             Some("1.0.0".to_owned()),
             RuntimeControlFiles {
                 executables: vec![executable.clone()],
-                read_only: vec![readable.clone()],
-                read_write: vec![socket.clone()],
-                protected_from_write: vec![readable.clone()],
+                read_only: vec![readable.clone(), socket.clone()],
+                read_write: Vec::new(),
+                protected_from_write: vec![readable.clone(), socket.clone()],
             },
-            true,
+            vec![UnixSocketGrant {
+                path: socket.clone(),
+                operation: sandy_core::UnixSocketOperation::Connect,
+            }],
         )?;
         let mut grants = Vec::new();
         let mut protected = Vec::new();
-        bridge.contribute(&mut grants, &mut protected);
+        let mut sockets = Vec::new();
+        bridge.contribute(&mut grants, &mut protected, &mut sockets);
 
         assert_eq!(grants.len(), 3);
         assert!(
@@ -241,10 +280,55 @@ mod tests {
         assert!(
             grants
                 .iter()
-                .any(|grant| { grant.path == socket && grant.access == AccessMode::ReadWrite })
+                .any(|grant| { grant.path == socket && grant.access == AccessMode::Read })
         );
-        assert_eq!(protected, [readable]);
-        assert!(bridge.requires_network());
+        assert_eq!(protected, [readable, socket.clone()]);
+        assert_eq!(sockets.len(), 1);
+        assert_eq!(sockets[0].path, socket);
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_socket_authority_without_a_separate_file_intent()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let socket = AbsolutePath::new("/private/tmp/control.sock")?;
+        let result = RuntimeControlBridge::active(
+            "test",
+            None,
+            RuntimeControlFiles {
+                executables: Vec::new(),
+                read_only: Vec::new(),
+                read_write: Vec::new(),
+                protected_from_write: Vec::new(),
+            },
+            vec![UnixSocketGrant {
+                path: socket,
+                operation: sandy_core::UnixSocketOperation::Connect,
+            }],
+        );
+        assert!(matches!(result, Err(AppError::RuntimeControl { .. })));
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_connect_only_socket_with_a_write_file_intent()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let socket = AbsolutePath::new("/private/tmp/control.sock")?;
+        let result = RuntimeControlBridge::active(
+            "test",
+            None,
+            RuntimeControlFiles {
+                executables: Vec::new(),
+                read_only: Vec::new(),
+                read_write: vec![socket.clone()],
+                protected_from_write: Vec::new(),
+            },
+            vec![UnixSocketGrant {
+                path: socket,
+                operation: sandy_core::UnixSocketOperation::Connect,
+            }],
+        );
+        assert!(matches!(result, Err(AppError::RuntimeControl { .. })));
         Ok(())
     }
 }

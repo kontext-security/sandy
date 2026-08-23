@@ -29,6 +29,20 @@ fn dry_run_does_not_require_kontext() -> Result<(), Box<dyn std::error::Error>> 
 }
 
 #[test]
+fn blocked_network_dry_run_has_no_implicit_socket_authority()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut command = Command::cargo_bin("sandy")?;
+    command
+        .args(["run", "--dry-run", "--block-net", "--", "/bin/echo"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#""network": "block_all""#))
+        .stdout(predicate::str::contains(r#""unix_socket_grants": []"#))
+        .stdout(predicate::str::contains("(allow network-outbound").not());
+    Ok(())
+}
+
+#[test]
 fn unknown_target_falls_back_to_generic_profile() -> Result<(), Box<dyn std::error::Error>> {
     let mut command = Command::cargo_bin("sandy")?;
     command

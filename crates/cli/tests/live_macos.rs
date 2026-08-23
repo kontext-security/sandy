@@ -1,9 +1,26 @@
 #![cfg(target_os = "macos")]
 
-use std::fs;
+use std::{
+    env, fs,
+    net::{SocketAddr, TcpListener, TcpStream},
+    os::unix::net::{UnixListener, UnixStream},
+    path::{Path, PathBuf},
+    process::Command as StdCommand,
+};
 
 use assert_cmd::Command;
 use predicates::prelude::*;
+use sandy_core::{
+    AbsolutePath, AccessMode, CommandSpec, FileGrant, LaunchManifestV1, MANIFEST_SCHEMA_V1,
+    NetworkPolicy, OsValue, PathScope, PolicySpec, UnixSocketGrant, UnixSocketOperation,
+    ValidatedLaunch,
+};
+
+const SOCKET_PROBE_MODE: &str = "SANDY_TEST_EXACT_SOCKET_PROBE";
+const SOCKET_PROBE_ROOT: &str = "SANDY_TEST_SOCKET_ROOT";
+const SOCKET_PROBE_ALLOWED: &str = "SANDY_TEST_SOCKET_ALLOWED";
+const SOCKET_PROBE_DENIED: &str = "SANDY_TEST_SOCKET_DENIED";
+const SOCKET_PROBE_TCP: &str = "SANDY_TEST_SOCKET_TCP";
 
 #[test]
 #[ignore = "irreversibly applies Seatbelt; run on a host, not inside another sandbox"]
@@ -52,6 +69,126 @@ fn blocks_outbound_connect_when_network_is_disabled() -> Result<(), Box<dyn std:
         ])
         .assert()
         .success();
+    Ok(())
+}
+
+#[test]
+#[ignore = "irreversibly applies Seatbelt; run on a host, not inside another sandbox"]
+fn exact_unix_socket_connect_does_not_open_adjacent_services_or_ip_networking()
+-> Result<(), Box<dyn std::error::Error>> {
+    if env::var_os(SOCKET_PROBE_MODE).is_some() {
+        return run_exact_socket_probe();
+    }
+
+    let root = tempfile::Builder::new()
+        .prefix("sandy-exact-socket-")
+        .tempdir_in("/tmp")?;
+    let allowed = root.path().join("allowed.sock");
+    let denied = root.path().join("denied.sock");
+    let _allowed_listener = UnixListener::bind(&allowed)?;
+    let _denied_listener = UnixListener::bind(&denied)?;
+    let tcp_listener = TcpListener::bind("127.0.0.1:0")?;
+    let tcp_address = tcp_listener.local_addr()?;
+
+    let status = StdCommand::new(env::current_exe()?)
+        .args([
+            "--ignored",
+            "--exact",
+            "exact_unix_socket_connect_does_not_open_adjacent_services_or_ip_networking",
+        ])
+        .env(SOCKET_PROBE_MODE, "1")
+        .env(SOCKET_PROBE_ROOT, root.path())
+        .env(SOCKET_PROBE_ALLOWED, &allowed)
+        .env(SOCKET_PROBE_DENIED, &denied)
+        .env(SOCKET_PROBE_TCP, tcp_address.to_string())
+        .status()?;
+
+    assert!(
+        status.success(),
+        "sacrificial socket probe failed: {status}"
+    );
+    Ok(())
+}
+
+fn run_exact_socket_probe() -> Result<(), Box<dyn std::error::Error>> {
+    let root = required_probe_path(SOCKET_PROBE_ROOT)?;
+    let allowed = required_probe_path(SOCKET_PROBE_ALLOWED)?;
+    let denied = required_probe_path(SOCKET_PROBE_DENIED)?;
+    let tcp_address: SocketAddr = env::var(SOCKET_PROBE_TCP)?.parse()?;
+    let canonical_root = fs::canonicalize(&root)?;
+    let mut socket_paths = vec![absolute(&allowed)?, absolute(&fs::canonicalize(&allowed)?)?];
+    socket_paths.sort();
+    socket_paths.dedup();
+
+    let manifest = LaunchManifestV1 {
+        schema_version: MANIFEST_SCHEMA_V1,
+        command: CommandSpec {
+            program: OsValue::from_os_str(std::ffi::OsStr::new("/bin/true")),
+            arguments: Vec::new(),
+        },
+        working_directory: absolute(&canonical_root)?,
+        environment: Vec::new(),
+        policy: PolicySpec {
+            files: vec![FileGrant {
+                path: absolute(&canonical_root)?,
+                access: AccessMode::ReadWrite,
+                scope: PathScope::Subtree,
+            }],
+            protected_paths: Vec::new(),
+            protected_write_paths: socket_paths.clone(),
+            unix_sockets: socket_paths
+                .into_iter()
+                .map(|path| UnixSocketGrant {
+                    path,
+                    operation: UnixSocketOperation::Connect,
+                })
+                .collect(),
+            network: NetworkPolicy::BlockAll,
+        },
+    };
+    let launch = ValidatedLaunch::try_from(manifest)?;
+    let profile = sandy_seatbelt::compile(launch.policy())?;
+    sandy_seatbelt::apply(&profile)?;
+
+    let _allowed_stream = UnixStream::connect(&allowed)?;
+    assert_permission_denied(
+        fs::remove_file(&allowed),
+        "write to the read-only socket path",
+    )?;
+    assert_permission_denied(UnixStream::connect(&denied), "sibling Unix socket connect")?;
+    assert_permission_denied(
+        UnixListener::bind(root.join("bind.sock")),
+        "Unix socket bind with connect-only authority",
+    )?;
+    assert_permission_denied(TcpStream::connect(tcp_address), "loopback TCP connect")?;
+    Ok(())
+}
+
+fn required_probe_path(name: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    env::var_os(name)
+        .map(PathBuf::from)
+        .ok_or_else(|| format!("missing {name}").into())
+}
+
+fn absolute(path: &Path) -> Result<AbsolutePath, Box<dyn std::error::Error>> {
+    let value = path
+        .to_str()
+        .ok_or_else(|| format!("non-UTF-8 test path: {}", path.display()))?;
+    Ok(AbsolutePath::new(value.to_owned())?)
+}
+
+fn assert_permission_denied<T>(
+    result: std::io::Result<T>,
+    operation: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let error = result
+        .err()
+        .ok_or_else(|| format!("{operation} unexpectedly succeeded"))?;
+    assert_eq!(
+        error.kind(),
+        std::io::ErrorKind::PermissionDenied,
+        "{operation} failed for an unexpected reason: {error}"
+    );
     Ok(())
 }
 

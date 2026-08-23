@@ -7,6 +7,7 @@ use crate::{AbsolutePath, LaunchManifestV1, MANIFEST_SCHEMA_V1, OsValueError, Po
 const MAX_ARGUMENTS: usize = 4_096;
 const MAX_ENVIRONMENT_ENTRIES: usize = 4_096;
 const MAX_FILE_GRANTS: usize = 1_024;
+const MAX_UNIX_SOCKET_GRANTS: usize = 128;
 const MAX_PROTECTED_PATHS: usize = 1_024;
 
 #[derive(Clone, Debug)]
@@ -84,6 +85,9 @@ impl TryFrom<LaunchManifestV1> for ValidatedLaunch {
         if manifest.policy.files.len() > MAX_FILE_GRANTS {
             return Err(ValidationError::TooManyFileGrants);
         }
+        if manifest.policy.unix_sockets.len() > MAX_UNIX_SOCKET_GRANTS {
+            return Err(ValidationError::TooManyUnixSocketGrants);
+        }
         if manifest.policy.protected_paths.len() > MAX_PROTECTED_PATHS {
             return Err(ValidationError::TooManyProtectedPaths);
         }
@@ -100,6 +104,14 @@ impl TryFrom<LaunchManifestV1> for ValidatedLaunch {
             .any(|grant| grant.path.is_root())
         {
             return Err(ValidationError::RootGrant);
+        }
+        if manifest
+            .policy
+            .unix_sockets
+            .iter()
+            .any(|grant| grant.path.is_root())
+        {
+            return Err(ValidationError::RootUnixSocketGrant);
         }
         if manifest
             .policy
@@ -120,6 +132,15 @@ impl TryFrom<LaunchManifestV1> for ValidatedLaunch {
             let identity = (grant.path.clone(), grant.access, grant.scope);
             if !seen.insert(identity) {
                 return Err(ValidationError::DuplicateGrant(grant.path.clone()));
+            }
+        }
+        let mut seen_sockets = BTreeSet::new();
+        for grant in &manifest.policy.unix_sockets {
+            let identity = (grant.path.clone(), grant.operation);
+            if !seen_sockets.insert(identity) {
+                return Err(ValidationError::DuplicateUnixSocketGrant(
+                    grant.path.clone(),
+                ));
             }
         }
         reject_duplicate_paths(&manifest.policy.protected_paths)?;
@@ -160,16 +181,22 @@ pub enum ValidationError {
     TooManyEnvironmentEntries,
     #[error("launch contains too many file grants")]
     TooManyFileGrants,
+    #[error("launch contains too many Unix-socket grants")]
+    TooManyUnixSocketGrants,
     #[error("launch contains too many protected paths")]
     TooManyProtectedPaths,
     #[error("the filesystem root cannot be used as the working directory")]
     RootWorkingDirectory,
     #[error("the filesystem root cannot be granted")]
     RootGrant,
+    #[error("the filesystem root cannot be granted as a Unix socket")]
+    RootUnixSocketGrant,
     #[error("the filesystem root cannot be protected as a path capability")]
     RootProtectedPath,
     #[error("duplicate filesystem grant for {0:?}")]
     DuplicateGrant(AbsolutePath),
+    #[error("duplicate Unix-socket grant for {0:?}")]
+    DuplicateUnixSocketGrant(AbsolutePath),
     #[error("duplicate protected path for {0:?}")]
     DuplicateProtectedPath(AbsolutePath),
 }

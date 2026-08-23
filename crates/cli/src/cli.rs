@@ -40,7 +40,8 @@ pub(crate) struct RunArgs {
     #[arg(long = "read-write", value_name = "PATH")]
     pub(crate) read_write: Vec<PathBuf>,
 
-    /// Block network access for the sandboxed process tree.
+    /// Block IP networking and ungranted Unix-socket connections. An active
+    /// Kontext integration retains its exact verified socket connection.
     #[arg(long)]
     pub(crate) block_net: bool,
 
