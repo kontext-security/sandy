@@ -42,6 +42,7 @@ in `sandy-seatbelt`.
 - side channels and denial of service;
 - data already present in inherited standard streams or explicitly opened file
   descriptors;
+- terminal-control ioctls on inherited macOS TTY and PTY descriptors;
 - all confused-deputy behavior through allowed Mach/XPC services;
 - outbound data disclosure while network is enabled;
 - mutation between path canonicalization and later use;

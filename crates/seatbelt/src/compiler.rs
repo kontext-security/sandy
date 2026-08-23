@@ -22,6 +22,13 @@ const SYSTEM_READ_LITERALS: &[&str] = &[
     "/dev/ptmx",
 ];
 
+const FOREGROUND_TERMINAL_RULES: &str = "\
+(allow pseudo-tty)\n\
+(allow file-ioctl\n\
+    (literal \"/dev/tty\")\n\
+    (literal \"/dev/ptmx\")\n\
+    (regex #\"^/dev/ttys[0-9]+$\"))\n";
+
 #[derive(Clone, Debug)]
 pub struct CompiledProfile {
     source: String,
@@ -61,10 +68,10 @@ pub fn compile(policy: &ValidatedPolicy) -> Result<CompiledProfile, SeatbeltErro
          (allow ipc-posix-shm-write-data)\n\
          (allow ipc-posix-shm-write-create)\n\
          (allow system-fsctl)\n\
-         (allow system-info)\n\
-         (allow pseudo-tty)\n\
-         (allow file-read* (literal \"/\"))\n",
+         (allow system-info)\n",
     );
+    source.push_str(FOREGROUND_TERMINAL_RULES);
+    source.push_str("(allow file-read* (literal \"/\"))\n");
 
     for path in SYSTEM_READ_SUBPATHS {
         write_rule(&mut source, "allow", "file-read*", PathScope::Subtree, path)?;
@@ -212,6 +219,16 @@ mod tests {
                 .source()
                 .contains("(allow network*)")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn scopes_foreground_terminal_ioctls_to_tty_devices() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let source = compile(policy(NetworkPolicy::BlockAll)?.policy())?;
+        assert!(source.source().contains(FOREGROUND_TERMINAL_RULES));
+        assert!(!source.source().contains("(allow file-ioctl)"));
+        assert!(!source.source().contains("file-ioctl (subpath \"/dev\")"));
         Ok(())
     }
 }
