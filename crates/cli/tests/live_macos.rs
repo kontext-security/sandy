@@ -70,6 +70,43 @@ fn preserves_target_exit_code() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 #[ignore = "irreversibly applies Seatbelt; run on a host, not inside another sandbox"]
+fn allows_terminal_control_but_denies_unrelated_device_ioctls()
+-> Result<(), Box<dyn std::error::Error>> {
+    let project = tempfile::tempdir()?;
+    let sandy = Command::cargo_bin("sandy")?;
+    let sandy_program = sandy.get_program().to_owned();
+
+    let mut terminal = Command::new("/usr/bin/script");
+    terminal
+        .current_dir(project.path())
+        .args(["-q", "/dev/null"])
+        .arg(&sandy_program)
+        .args(["run", "--", "/bin/stty", "-a"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("speed"));
+
+    let script = r#"begin
+  File.open("/dev/null") { |file| file.ioctl(0) }
+rescue Errno::EPERM
+  exit 0
+rescue SystemCallError => error
+  warn error.full_message
+  exit 1
+end
+exit 2
+"#;
+    let mut unrelated_device = Command::cargo_bin("sandy")?;
+    unrelated_device
+        .current_dir(project.path())
+        .args(["run", "--", "/usr/bin/ruby", "--disable-gems", "-e", script])
+        .assert()
+        .success();
+    Ok(())
+}
+
+#[test]
+#[ignore = "irreversibly applies Seatbelt; run on a host, not inside another sandbox"]
 fn optional_kontext_failure_does_not_prevent_target_execution()
 -> Result<(), Box<dyn std::error::Error>> {
     use std::os::unix::fs::PermissionsExt as _;

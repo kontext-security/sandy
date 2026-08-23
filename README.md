@@ -154,6 +154,8 @@ unrestricted fallback.
   same-user local services.
 - Standard input, output, and error are inherited. Deliberately redirecting an
   already-open descriptor into Sandy can carry that capability across launch.
+- Foreground terminal control is preserved with ioctls restricted to macOS TTY
+  and PTY device paths; Sandy does not grant blanket device-ioctl access.
 - Descendants inherit the sandbox. Sandy returns normal target exit codes and
   `128 + signal` for signal termination.
 
