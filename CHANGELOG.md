@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.5](https://github.com/kontext-security/sandy/compare/v0.1.4...v0.1.5) (2026-08-23)
+
+
+### Bug Fixes
+
+* allow read-only macOS runtime timezone data ([#23](https://github.com/kontext-security/sandy/issues/23)) ([488b3f8](https://github.com/kontext-security/sandy/commit/488b3f85bbaa3aff1ca3b7f4262faa1ba30d3473))
+
 ## [0.1.4](https://github.com/kontext-security/sandy/compare/v0.1.3...v0.1.4) (2026-08-23)
 
 
