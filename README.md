@@ -2,6 +2,13 @@
 
 # Sandy
 
+[![Follow Sandy on X](https://img.shields.io/badge/X-Follow-000000?logo=x&logoColor=white)](https://x.com/kontextsecurity)
+[![Follow Sandy on LinkedIn](https://img.shields.io/badge/LinkedIn-Follow-0A66C2?logo=linkedin&logoColor=white)](https://www.linkedin.com/company/kontextdev)
+
+> [!WARNING]
+> Sandy `0.1.x` is experimental and has not completed an independent security
+> audit. See [Security and support](#security-and-support).
+
 Run AI coding agents in a sandbox.
 
 Sandy gives an agent access to your project without giving it unrestricted
