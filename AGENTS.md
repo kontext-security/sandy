@@ -18,7 +18,8 @@ narrowly.
 
 Version `0.1.x` is limited to macOS, one foreground `run` mode, Claude Code,
 Codex, OpenCode, and generic profiles, explicit filesystem grants, network
-allow/block, dry-run output, and optional self-serve Kontext compatibility.
+allow/block with exact runtime Unix-socket exceptions, dry-run output, and
+optional self-serve Kontext compatibility.
 
 Agent presets are versioned, strictly typed profile documents embedded in the
 CLI at compile time. Profiles resolve through deterministic inheritance in
@@ -107,6 +108,8 @@ These rules are release-blocking:
   reviewed capability explicitly requires them.
 - Do not silently grant the home directory, Keychains, SSH material, Docker
   sockets, agent sockets, or unrelated local services.
+- Filesystem access to a Unix socket never implies connect authority. Exact
+  socket connections require a separate typed capability.
 - Network-enabled profiles may reach same-user local services as well as the
   Internet; treat that as an explicit compatibility tradeoff.
 

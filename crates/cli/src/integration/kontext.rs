@@ -9,7 +9,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use sandy_core::{AbsolutePath, AccessMode, HookProtocol, PathScope};
+use sandy_core::{
+    AbsolutePath, AccessMode, HookProtocol, PathScope, UnixSocketGrant, UnixSocketOperation,
+};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -17,7 +19,9 @@ use super::{IntegrationMode, RuntimeControlBridge, RuntimeControlFiles};
 use crate::{
     error::AppError,
     profile::ResolvedHookSource,
-    resolve::{ResolvedCommand, ResolvedPaths, grant, resolve_command, write_protections},
+    resolve::{
+        ResolvedCommand, ResolvedPaths, absolute_if_utf8, grant, resolve_command, write_protections,
+    },
 };
 
 const SERVICE: &str = "Kontext";
@@ -141,20 +145,24 @@ fn resolve_configured(
     let uid = fs::metadata(home)
         .map_err(|source| AppError::io("inspect home directory owner", source))?
         .uid();
-    let socket = PathBuf::from(format!("/tmp/kontext-managed-observe-{uid}/kontext.sock"));
-    let socket_metadata = fs::metadata(&socket)
-        .map_err(|source| AppError::io("inspect Kontext daemon socket", source))?;
-    if !socket_metadata.file_type().is_socket() || socket_metadata.uid() != uid {
-        return Err(error(
-            "the Kontext daemon endpoint is not a same-user Unix socket",
-        ));
-    }
-    let socket = exact_existing(&socket)?;
+    let socket_path = PathBuf::from(format!("/tmp/kontext-managed-observe-{uid}/kontext.sock"));
+    let socket_paths = verified_socket_paths(&socket_path, uid)?;
 
-    read_only.retain(|path| path != &executable && path != &socket);
+    read_only.retain(|path| path != &executable && !socket_paths.contains(path));
+    read_only.extend(socket_paths.iter().cloned());
     read_only.sort();
     read_only.dedup();
-    let protected_from_write = write_protections(protection_inputs)?;
+    let mut protected_from_write = write_protections(protection_inputs)?;
+    protected_from_write.extend(socket_paths.iter().cloned());
+    protected_from_write.sort();
+    protected_from_write.dedup();
+    let unix_sockets = socket_paths
+        .into_iter()
+        .map(|path| UnixSocketGrant {
+            path,
+            operation: UnixSocketOperation::Connect,
+        })
+        .collect();
 
     RuntimeControlBridge::active(
         SERVICE,
@@ -162,11 +170,30 @@ fn resolve_configured(
         RuntimeControlFiles {
             executables: vec![executable],
             read_only,
-            read_write: vec![socket],
+            read_write: Vec::new(),
             protected_from_write,
         },
-        true,
+        unix_sockets,
     )
+}
+
+fn verified_socket_paths(path: &Path, uid: u32) -> Result<Vec<AbsolutePath>, AppError> {
+    // Do not follow a final-component symlink: the lexical exact-connect rule
+    // must name the verified socket node, not an attacker-replaceable alias.
+    // Parent aliases such as macOS `/tmp` are handled by emitting both this
+    // lexical path and the canonical path below.
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|source| AppError::io("inspect Kontext daemon socket", source))?;
+    if !metadata.file_type().is_socket() || metadata.uid() != uid {
+        return Err(error(
+            "the Kontext daemon endpoint is not a same-user Unix socket",
+        ));
+    }
+
+    let mut paths = vec![exact_existing(path)?, absolute_if_utf8(path)?];
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
 }
 
 fn find_configured_binaries(sources: &[ResolvedHookSource]) -> Result<Vec<PathBuf>, AppError> {
@@ -844,6 +871,22 @@ mod tests {
 
         assert!(matches!(
             exact_existing_within(&link, &provider),
+            Err(AppError::RuntimeControl { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_final_component_socket_symlinks() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let socket = root.path().join("control.sock");
+        let alias = root.path().join("control-link.sock");
+        fs::write(&socket, "not a socket")?;
+        std::os::unix::fs::symlink(&socket, &alias)?;
+        let uid = fs::symlink_metadata(&alias)?.uid();
+
+        assert!(matches!(
+            verified_socket_paths(&alias, uid),
             Err(AppError::RuntimeControl { .. })
         ));
         Ok(())

@@ -1,9 +1,9 @@
 use std::path::{Component, Path};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
 use thiserror::Error;
 
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
 pub struct AbsolutePath(String);
 
@@ -48,6 +48,13 @@ impl AsRef<Path> for AbsolutePath {
     }
 }
 
+impl<'de> Deserialize<'de> for AbsolutePath {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        Self::new(value).map_err(de::Error::custom)
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum PathValidationError {
     #[error("path must be absolute: {0}")]
@@ -78,5 +85,12 @@ mod tests {
             AbsolutePath::new("/tmp/../etc"),
             Err(PathValidationError::ParentTraversal(_))
         ));
+    }
+
+    #[test]
+    fn rejects_invalid_paths_during_manifest_deserialization() {
+        for candidate in [r#""relative""#, r#""/tmp/../secret""#, r#""/tmp/\u0000""#] {
+            assert!(serde_json::from_str::<AbsolutePath>(candidate).is_err());
+        }
     }
 }

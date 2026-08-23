@@ -1,6 +1,9 @@
 use std::fmt::Write as _;
 
-use sandy_core::{AccessMode, FileGrant, NetworkPolicy, PathScope, ValidatedPolicy};
+use sandy_core::{
+    AccessMode, FileGrant, NetworkPolicy, PathScope, UnixSocketGrant, UnixSocketOperation,
+    ValidatedPolicy,
+};
 
 use crate::{SeatbeltError, escape::quoted};
 
@@ -28,6 +31,9 @@ const FOREGROUND_TERMINAL_RULES: &str = "\
     (literal \"/dev/tty\")\n\
     (literal \"/dev/ptmx\")\n\
     (regex #\"^/dev/ttys[0-9]+$\"))\n";
+
+const UNIX_STREAM_SOCKET_SETUP: &str =
+    "(allow system-socket (socket-domain AF_UNIX) (socket-type SOCK_STREAM))\n";
 
 #[derive(Clone, Debug)]
 pub struct CompiledProfile {
@@ -85,8 +91,15 @@ pub fn compile(policy: &ValidatedPolicy) -> Result<CompiledProfile, SeatbeltErro
         render_grant(&mut source, grant)?;
     }
 
-    if policy.spec().network == NetworkPolicy::AllowAll {
-        source.push_str("(allow network*)\n");
+    match policy.spec().network {
+        NetworkPolicy::AllowAll => source.push_str("(allow network*)\n"),
+        NetworkPolicy::BlockAll if !policy.spec().unix_sockets.is_empty() => {
+            source.push_str(UNIX_STREAM_SOCKET_SETUP);
+            for grant in &policy.spec().unix_sockets {
+                render_unix_socket_grant(&mut source, grant)?;
+            }
+        }
+        NetworkPolicy::BlockAll => {}
     }
 
     for path in &policy.spec().protected_paths {
@@ -138,6 +151,22 @@ fn render_grant(source: &mut String, grant: &FileGrant) -> Result<(), SeatbeltEr
     Ok(())
 }
 
+fn render_unix_socket_grant(
+    source: &mut String,
+    grant: &UnixSocketGrant,
+) -> Result<(), SeatbeltError> {
+    match grant.operation {
+        UnixSocketOperation::Connect => {
+            // Seatbelt classifies connect(2) to a pathname AF_UNIX endpoint as
+            // network-outbound. Its `path` filter is exact; filesystem
+            // `literal` rules remain a separate policy layer.
+            let path = quoted(grant.path.as_str())?;
+            let _ = writeln!(source, "(allow network-outbound (path {path}))");
+        }
+    }
+    Ok(())
+}
+
 fn write_rule(
     output: &mut String,
     decision: &str,
@@ -160,12 +189,20 @@ mod tests {
 
     use sandy_core::{
         AbsolutePath, AccessMode, CommandSpec, FileGrant, LaunchManifestV1, MANIFEST_SCHEMA_V1,
-        NetworkPolicy, OsValue, PathScope, PolicySpec, ValidatedLaunch,
+        NetworkPolicy, OsValue, PathScope, PolicySpec, UnixSocketGrant, UnixSocketOperation,
+        ValidatedLaunch,
     };
 
     use super::*;
 
     fn policy(network: NetworkPolicy) -> Result<ValidatedLaunch, Box<dyn std::error::Error>> {
+        policy_with_sockets(network, Vec::new())
+    }
+
+    fn policy_with_sockets(
+        network: NetworkPolicy,
+        unix_sockets: Vec<UnixSocketGrant>,
+    ) -> Result<ValidatedLaunch, Box<dyn std::error::Error>> {
         let manifest = LaunchManifestV1 {
             schema_version: MANIFEST_SCHEMA_V1,
             command: CommandSpec {
@@ -182,6 +219,7 @@ mod tests {
                 }],
                 protected_paths: vec![AbsolutePath::new("/tmp/project/.secret")?],
                 protected_write_paths: vec![AbsolutePath::new("/tmp/project/config.toml")?],
+                unix_sockets,
                 network,
             },
         };
@@ -218,6 +256,67 @@ mod tests {
             compile(launch.policy())?
                 .source()
                 .contains("(allow network*)")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn renders_only_exact_connect_authority_when_network_is_blocked()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let socket = UnixSocketGrant {
+            path: AbsolutePath::new("/private/tmp/control.sock")?,
+            operation: UnixSocketOperation::Connect,
+        };
+        let launch = policy_with_sockets(NetworkPolicy::BlockAll, vec![socket])?;
+        let source = compile(launch.policy())?;
+
+        assert!(source.source().contains(UNIX_STREAM_SOCKET_SETUP));
+        assert!(
+            source
+                .source()
+                .contains(r#"(allow network-outbound (path "/private/tmp/control.sock"))"#)
+        );
+        assert!(
+            !source
+                .source()
+                .lines()
+                .any(|line| line == "(allow network*)")
+        );
+        assert!(!source.source().contains("(allow network-bind"));
+        assert!(!source.source().contains("/private/tmp/sibling.sock"));
+        Ok(())
+    }
+
+    #[test]
+    fn filesystem_access_does_not_imply_socket_connect_authority()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = compile(policy(NetworkPolicy::BlockAll)?.policy())?;
+        assert!(!source.source().contains("(allow network-outbound"));
+        assert!(!source.source().contains(UNIX_STREAM_SOCKET_SETUP));
+        Ok(())
+    }
+
+    #[test]
+    fn escapes_unix_socket_paths_through_the_central_renderer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let socket = UnixSocketGrant {
+            path: AbsolutePath::new(r#"/private/tmp/control\") (allow network*) ("#)?,
+            operation: UnixSocketOperation::Connect,
+        };
+        let expected_path = quoted(socket.path.as_str())?;
+        let launch = policy_with_sockets(NetworkPolicy::BlockAll, vec![socket])?;
+        let source = compile(launch.policy())?;
+
+        assert!(
+            source
+                .source()
+                .contains(&format!("(allow network-outbound (path {expected_path}))"))
+        );
+        assert!(
+            !source
+                .source()
+                .lines()
+                .any(|line| line == "(allow network*)")
         );
         Ok(())
     }

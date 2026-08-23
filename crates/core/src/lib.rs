@@ -9,7 +9,10 @@ mod profile;
 mod validation;
 mod wire;
 
-pub use capability::{AccessMode, FileGrant, NetworkPolicy, PathScope, PolicySpec};
+pub use capability::{
+    AccessMode, FileGrant, NetworkPolicy, PathScope, PolicySpec, UnixSocketGrant,
+    UnixSocketOperation,
+};
 pub use command::{CommandSpec, EnvironmentEntry};
 pub use manifest::{LaunchManifestV1, MANIFEST_SCHEMA_V1};
 pub use os_value::{OsValue, OsValueError};
