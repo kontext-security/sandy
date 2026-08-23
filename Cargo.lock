@@ -354,7 +354,7 @@ dependencies = [
 
 [[package]]
 name = "sandy-cli"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "assert_cmd",
  "clap",
@@ -369,7 +369,7 @@ dependencies = [
 
 [[package]]
 name = "sandy-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -378,7 +378,7 @@ dependencies = [
 
 [[package]]
 name = "sandy-seatbelt"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "libc",
  "sandy-core",
