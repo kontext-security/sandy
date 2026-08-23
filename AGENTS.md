@@ -199,9 +199,10 @@ a binary merely appearing on `PATH`.
 Kontext-owned hook, Sandy performs no Kontext preflight or resource grant.
 
 The host-installed Kontext binary and LaunchAgent daemon remain outside the
-sandbox. Preflight fails before target execution when a configured or
-explicitly required installation cannot be established. Sandy never installs,
-downloads, repairs, or uninstalls Kontext.
+sandbox. An automatically detected installation that cannot be established is
+disabled atomically with a warning and contributes no Kontext capabilities.
+Preflight fails before target execution when Kontext is explicitly required.
+Sandy never installs, downloads, repairs, or uninstalls Kontext.
 
 Grant only exact resources required by the selected hook. Agent-visible hook
 registration and the active self-serve configuration are readable for

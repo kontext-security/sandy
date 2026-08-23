@@ -21,18 +21,36 @@ impl IntegrationMode {
 #[derive(Clone, Debug)]
 pub(crate) struct RuntimeControlBridge {
     service: &'static str,
-    version: Option<String>,
-    files: Option<RuntimeControlFiles>,
-    requires_network: bool,
+    state: RuntimeControlState,
+}
+
+#[derive(Clone, Debug)]
+enum RuntimeControlState {
+    Inactive,
+    Unavailable {
+        reason: String,
+    },
+    Active {
+        version: Option<String>,
+        files: RuntimeControlFiles,
+        requires_network: bool,
+    },
 }
 
 impl RuntimeControlBridge {
     pub(crate) fn inactive(service: &'static str) -> Self {
         Self {
             service,
-            version: None,
-            files: None,
-            requires_network: false,
+            state: RuntimeControlState::Inactive,
+        }
+    }
+
+    pub(crate) fn unavailable(service: &'static str, reason: impl Into<String>) -> Self {
+        Self {
+            service,
+            state: RuntimeControlState::Unavailable {
+                reason: reason.into(),
+            },
         }
     }
 
@@ -45,9 +63,11 @@ impl RuntimeControlBridge {
         files.validate(service)?;
         Ok(Self {
             service,
-            version,
-            files: Some(files),
-            requires_network,
+            state: RuntimeControlState::Active {
+                version,
+                files,
+                requires_network,
+            },
         })
     }
 
@@ -56,15 +76,31 @@ impl RuntimeControlBridge {
     }
 
     pub(crate) fn is_active(&self) -> bool {
-        self.files.is_some()
+        matches!(&self.state, RuntimeControlState::Active { .. })
     }
 
     pub(crate) fn version(&self) -> Option<&str> {
-        self.version.as_deref()
+        match &self.state {
+            RuntimeControlState::Active { version, .. } => version.as_deref(),
+            RuntimeControlState::Inactive | RuntimeControlState::Unavailable { .. } => None,
+        }
     }
 
     pub(crate) fn requires_network(&self) -> bool {
-        self.requires_network
+        matches!(
+            &self.state,
+            RuntimeControlState::Active {
+                requires_network: true,
+                ..
+            }
+        )
+    }
+
+    pub(crate) fn unavailable_reason(&self) -> Option<&str> {
+        match &self.state {
+            RuntimeControlState::Unavailable { reason } => Some(reason),
+            RuntimeControlState::Inactive | RuntimeControlState::Active { .. } => None,
+        }
     }
 
     pub(crate) fn contribute(
@@ -72,7 +108,7 @@ impl RuntimeControlBridge {
         grants: &mut Vec<FileGrant>,
         protected_write_paths: &mut Vec<AbsolutePath>,
     ) {
-        let Some(files) = &self.files else {
+        let RuntimeControlState::Active { files, .. } = &self.state else {
             return;
         };
         grants.extend(files.executables.iter().cloned().map(|path| FileGrant {
@@ -158,6 +194,17 @@ mod tests {
         bridge.contribute(&mut grants, &mut protected);
         assert!(grants.is_empty());
         assert!(protected.is_empty());
+    }
+
+    #[test]
+    fn unavailable_bridge_contributes_nothing_and_preserves_reason() {
+        let bridge = RuntimeControlBridge::unavailable("test", "provider is unavailable");
+        let mut grants = Vec::new();
+        let mut protected = Vec::new();
+        bridge.contribute(&mut grants, &mut protected);
+        assert!(grants.is_empty());
+        assert!(protected.is_empty());
+        assert_eq!(bridge.unavailable_reason(), Some("provider is unavailable"));
     }
 
     #[test]

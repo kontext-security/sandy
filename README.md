@@ -75,8 +75,11 @@ sandy run --kontext -- claude
 `--kontext` requires an existing, configured, healthy host installation. Sandy
 does not download Kontext, run setup, repair it, or embed its daemon. When a
 known Claude Code or Codex profile already contains a verified Kontext hook,
-Sandy automatically preserves that host configuration; a broken configured
-hook fails before the agent starts. Generic commands do not trigger discovery.
+Sandy attempts to preserve that host configuration. Without `--kontext`, an
+unavailable, incompatible, or unhealthy Kontext runtime produces a warning and
+Sandy continues standalone without any Kontext resource grants. Installed hooks
+may then fail when the agent invokes them. `--kontext` makes the same preflight
+failure fatal. Generic commands do not trigger discovery.
 
 The host-installed hook executable runs as a sandboxed descendant, while the
 existing LaunchAgent daemon remains outside:

@@ -1,4 +1,4 @@
-use std::fs;
+use std::{fs, os::unix::fs::PermissionsExt as _};
 
 use assert_cmd::Command;
 use predicates::prelude::*;
@@ -101,5 +101,73 @@ fn detected_agent_profile_is_announced() -> Result<(), Box<dyn std::error::Error
         .stderr(predicate::str::contains(
             "applying detected agent profile 'codex'",
         ));
+    Ok(())
+}
+
+#[test]
+fn detected_kontext_failure_does_not_make_codex_depend_on_kontext()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let home = directory.path().join("home");
+    let codex_config = home.join(".codex");
+    let bin = directory.path().join("bin");
+    fs::create_dir_all(&codex_config)?;
+    fs::create_dir(&bin)?;
+
+    let kontext = bin.join("kontext");
+    fs::write(&kontext, "#!/bin/sh\nexit 1\n")?;
+    fs::set_permissions(&kontext, fs::Permissions::from_mode(0o700))?;
+    std::os::unix::fs::symlink("/bin/echo", bin.join("codex"))?;
+    fs::write(
+        codex_config.join("hooks.json"),
+        format!(
+            r#"{{"hooks":{{"Stop":[{{"hooks":[{{"type":"command","command":"'{}' hook --agent codex stop"}}]}}]}}}}"#,
+            kontext.display()
+        ),
+    )?;
+
+    let mut optional = Command::cargo_bin("sandy")?;
+    optional
+        .env("HOME", &home)
+        .env("PATH", &bin)
+        .args(["run", "--dry-run", "--", "codex"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#""enabled": false"#))
+        .stderr(predicate::str::contains(
+            "optional Kontext runtime control unavailable; continuing without it",
+        ));
+
+    let mut required = Command::cargo_bin("sandy")?;
+    required
+        .env("HOME", &home)
+        .env("PATH", &bin)
+        .args(["run", "--dry-run", "--kontext", "--", "codex"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "Kontext runtime control failed: kontext doctor --json failed",
+        ));
+    Ok(())
+}
+
+#[test]
+fn malformed_detected_hook_configuration_still_fails_closed()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let home = directory.path().join("home");
+    let codex_config = home.join(".codex");
+    fs::create_dir_all(&codex_config)?;
+    fs::write(codex_config.join("hooks.json"), "not json")?;
+    std::os::unix::fs::symlink("/bin/echo", directory.path().join("codex"))?;
+
+    let mut command = Command::cargo_bin("sandy")?;
+    command
+        .env("HOME", &home)
+        .env("PATH", directory.path())
+        .args(["run", "--dry-run", "--", "codex"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot parse hook configuration"));
     Ok(())
 }

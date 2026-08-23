@@ -81,20 +81,18 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
         )?);
     }
 
-    let kontext = kontext::resolve(
-        &selected.hook_sources(&paths),
-        if arguments.kontext {
-            IntegrationMode::Required
-        } else {
-            IntegrationMode::Detect
-        },
-        &paths,
-    )?;
-    if kontext.requires_network() && arguments.block_net {
-        return Err(AppError::runtime_control(
-            kontext.service(),
-            "--block-net is not supported until exact Unix-socket policy is available",
-        ));
+    let integration_mode = if arguments.kontext {
+        IntegrationMode::Required
+    } else {
+        IntegrationMode::Detect
+    };
+    let kontext = kontext::resolve(&selected.hook_sources(&paths), integration_mode, &paths)?;
+    let kontext = reconcile_network_policy(kontext, integration_mode, arguments.block_net)?;
+    if let Some(reason) = kontext.unavailable_reason() {
+        eprintln!(
+            "sandy: optional {} runtime control unavailable; continuing without it: {reason}",
+            kontext.service()
+        );
     }
     let mut protected_write_paths = selected.protected_write_paths(&paths)?;
     kontext.contribute(&mut files, &mut protected_write_paths);
@@ -192,6 +190,25 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
     Ok(status.signal().map_or(1, |signal| 128 + signal))
 }
 
+fn reconcile_network_policy(
+    bridge: crate::integration::RuntimeControlBridge,
+    mode: IntegrationMode,
+    block_network: bool,
+) -> Result<crate::integration::RuntimeControlBridge, AppError> {
+    if !bridge.requires_network() || !block_network {
+        return Ok(bridge);
+    }
+
+    let reason = "--block-net is not supported until exact Unix-socket policy is available";
+    if mode.is_required() {
+        return Err(AppError::runtime_control(bridge.service(), reason));
+    }
+    Ok(crate::integration::RuntimeControlBridge::unavailable(
+        bridge.service(),
+        reason,
+    ))
+}
+
 fn deduplicate_grants(grants: &mut Vec<FileGrant>) {
     grants.sort_by(|left, right| {
         (left.path.as_str(), left.scope, left.access).cmp(&(
@@ -201,4 +218,50 @@ fn deduplicate_grants(grants: &mut Vec<FileGrant>) {
         ))
     });
     grants.dedup_by(|left, right| left == right);
+}
+
+#[cfg(test)]
+mod tests {
+    use sandy_core::AbsolutePath;
+
+    use super::*;
+    use crate::integration::{RuntimeControlBridge, RuntimeControlFiles};
+
+    fn network_bridge() -> Result<RuntimeControlBridge, Box<dyn std::error::Error>> {
+        Ok(RuntimeControlBridge::active(
+            "test",
+            None,
+            RuntimeControlFiles {
+                executables: vec![AbsolutePath::new("/opt/test/control")?],
+                read_only: Vec::new(),
+                read_write: Vec::new(),
+                protected_from_write: Vec::new(),
+            },
+            true,
+        )?)
+    }
+
+    #[test]
+    fn blocked_network_disables_detected_integration_atomically()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let bridge = reconcile_network_policy(network_bridge()?, IntegrationMode::Detect, true)?;
+        let mut grants = Vec::new();
+        let mut protected = Vec::new();
+        bridge.contribute(&mut grants, &mut protected);
+
+        assert!(!bridge.is_active());
+        assert!(bridge.unavailable_reason().is_some());
+        assert!(grants.is_empty());
+        assert!(protected.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn blocked_network_rejects_required_integration() -> Result<(), Box<dyn std::error::Error>> {
+        assert!(matches!(
+            reconcile_network_policy(network_bridge()?, IntegrationMode::Required, true),
+            Err(AppError::RuntimeControl { .. })
+        ));
+        Ok(())
+    }
 }
