@@ -74,6 +74,97 @@ fn blocks_outbound_connect_when_network_is_disabled() -> Result<(), Box<dyn std:
 
 #[test]
 #[ignore = "irreversibly applies Seatbelt; run on a host, not inside another sandbox"]
+fn supplies_public_tls_roots_without_exposing_keychain_items()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let project = root.path().join("project");
+    fs::create_dir(&project)?;
+    let keychain = project.join("test.keychain-db");
+    let account = "sandy-test-account";
+    let service = "sandy-test-service";
+    let sentinel = "non-secret-test-value";
+
+    security(&["create-keychain", "-p", "test-password"], &keychain)?;
+    security(
+        &[
+            "add-generic-password",
+            "-a",
+            account,
+            "-s",
+            service,
+            "-w",
+            sentinel,
+        ],
+        &keychain,
+    )?;
+    security(&["unlock-keychain", "-p", "test-password"], &keychain)?;
+    assert_eq!(read_test_keychain(account, service, &keychain)?, sentinel);
+
+    let mut roots = Command::cargo_bin("sandy")?;
+    roots
+        .env_remove("SSL_CERT_FILE")
+        .current_dir(&project)
+        .args([
+            "run",
+            "--",
+            "/bin/sh",
+            "-c",
+            "test -n \"$SSL_CERT_FILE\" && /usr/bin/grep -q 'BEGIN CERTIFICATE' \"$SSL_CERT_FILE\"",
+        ])
+        .assert()
+        .success();
+
+    let mut denied = Command::cargo_bin("sandy")?;
+    denied
+        .env_remove("SSL_CERT_FILE")
+        .current_dir(&project)
+        .args([
+            "run",
+            "--",
+            "/usr/bin/security",
+            "find-generic-password",
+            "-a",
+            account,
+            "-s",
+            service,
+            "-w",
+        ])
+        .arg(&keychain)
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains(sentinel).not());
+    assert_eq!(read_test_keychain(account, service, &keychain)?, sentinel);
+    Ok(())
+}
+
+fn security(arguments: &[&str], keychain: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let status = StdCommand::new("/usr/bin/security")
+        .args(arguments)
+        .arg(keychain)
+        .status()?;
+    if !status.success() {
+        return Err(format!("test Keychain setup failed: {status}").into());
+    }
+    Ok(())
+}
+
+fn read_test_keychain(
+    account: &str,
+    service: &str,
+    keychain: &Path,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let output = StdCommand::new("/usr/bin/security")
+        .args(["find-generic-password", "-a", account, "-s", service, "-w"])
+        .arg(keychain)
+        .output()?;
+    if !output.status.success() {
+        return Err(format!("test Keychain read failed: {}", output.status).into());
+    }
+    Ok(String::from_utf8(output.stdout)?.trim_end().to_owned())
+}
+
+#[test]
+#[ignore = "irreversibly applies Seatbelt; run on a host, not inside another sandbox"]
 fn exact_unix_socket_connect_does_not_open_adjacent_services_or_ip_networking()
 -> Result<(), Box<dyn std::error::Error>> {
     if env::var_os(SOCKET_PROBE_MODE).is_some() {

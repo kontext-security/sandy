@@ -17,7 +17,7 @@ use crate::{
     error::AppError,
     integration::{IntegrationMode, kontext},
     profile,
-    resolve::{grant, resolve_command, resolve_paths, sanitized_environment},
+    resolve::{default_ca_bundle, grant, resolve_command, resolve_paths, sanitized_environment},
 };
 
 pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
@@ -63,6 +63,17 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
         PathScope::Subtree,
         &paths.protected,
     )?);
+    let ca_bundle = if arguments.block_net {
+        None
+    } else {
+        default_ca_bundle()
+    };
+    let ca_bundle = ca_bundle
+        .map(|path| grant(path, AccessMode::Read, PathScope::Exact, &paths.protected))
+        .transpose()?;
+    if let Some(bundle) = &ca_bundle {
+        files.push(bundle.clone());
+    }
     files.extend(selected.grants(&paths)?);
     for path in &arguments.read {
         files.push(grant(
@@ -114,7 +125,10 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
                 .collect(),
         },
         working_directory: paths.working_directory,
-        environment: sanitized_environment(session.path()),
+        environment: sanitized_environment(
+            session.path(),
+            ca_bundle.as_ref().map(|bundle| bundle.path.as_path()),
+        ),
         policy: PolicySpec {
             files,
             protected_paths,

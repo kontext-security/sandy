@@ -79,6 +79,13 @@ Agent state directories may contain credentials and are granted for compatible
 known-agent profiles. This is a deliberate usability tradeoff and must not be
 described as credential isolation.
 
+For network-enabled launches, Sandy supplies the macOS public PEM root bundle
+through `SSL_CERT_FILE` when the caller did not select another certificate
+source. This lets Rust TLS clients validate ordinary provider certificates
+without querying user trust settings through Keychain services. A caller-set
+bundle remains subject to the normal filesystem policy; Sandy does not infer a
+read grant from an environment variable.
+
 ## Fail-closed requirements
 
 An unsupported platform, nested sandbox, malformed or oversized manifest,
