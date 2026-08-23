@@ -18,3 +18,7 @@ cargo test -p sandy-cli --test live_macos -- --ignored
 ```
 
 Those tests must run directly on macOS, not from inside another sandbox.
+
+Use a Conventional Commit title for each pull request. Pull requests are
+squash-merged so Release Please sees exactly one changelog-bearing commit per
+change; do not use merge commits or rebase merges on `main`.
