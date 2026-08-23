@@ -156,8 +156,9 @@ unrestricted fallback.
 - Network is allowed by default for agent compatibility. `--block-net` denies
   IP networking and ungranted Unix-socket connections for the sandboxed process
   tree. An active Kontext bridge contributes a typed exception for its exact
-  Unix socket only. Network-enabled mode can reach other same-user local
-  services.
+  Unix socket only. Sandy does not add an implicit exception for the macOS
+  resolver socket, so network-dependent DNS resolution is expected to fail in
+  this mode. Network-enabled mode can reach other same-user local services.
 - Standard input, output, and error are inherited. Deliberately redirecting an
   already-open descriptor into Sandy can carry that capability across launch.
 - Foreground terminal control is preserved with ioctls restricted to macOS TTY

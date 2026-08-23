@@ -284,6 +284,7 @@ mod tests {
         );
         assert!(!source.source().contains("(allow network-bind"));
         assert!(!source.source().contains("/private/tmp/sibling.sock"));
+        assert!(!source.source().contains("mDNSResponder"));
         Ok(())
     }
 
