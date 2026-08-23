@@ -1,3 +1,5 @@
+![Sandy wordmark](assets/sandy-wordmark-dotbuild.gif)
+
 # Sandy
 
 Run AI coding agents in a sandbox.
