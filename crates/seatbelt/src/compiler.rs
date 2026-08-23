@@ -1,3 +1,8 @@
+//! Pure lowering from Sandy's validated capability vocabulary to SBPL source.
+//!
+//! Every policy value interpolated into SBPL passes through the single escaping path in
+//! [`crate::escape`]. This module never accepts caller-provided SBPL fragments.
+
 use std::fmt::Write as _;
 
 use sandy_core::{
@@ -7,6 +12,8 @@ use sandy_core::{
 
 use crate::{SeatbeltError, escape::quoted};
 
+// These are runtime files shipped by macOS and required to resolve and load ordinary executables.
+// They are a backend compatibility baseline, not user grants, and remain read-only.
 const SYSTEM_READ_SUBPATHS: &[&str] = &[
     "/System",
     "/usr",
@@ -17,6 +24,8 @@ const SYSTEM_READ_SUBPATHS: &[&str] = &[
     "/private/var/db/dyld",
 ];
 
+// Character devices needed by ordinary command-line programs. Granting the node itself does not
+// grant a subtree beneath `/dev`.
 const SYSTEM_READ_LITERALS: &[&str] = &[
     "/dev/null",
     "/dev/random",
@@ -25,6 +34,9 @@ const SYSTEM_READ_LITERALS: &[&str] = &[
     "/dev/ptmx",
 ];
 
+// Terminal attribute and window-size operations are separate from file reads/writes in Seatbelt.
+// Keep this list device-shaped and narrow; the adjacent-negative live test proves unrelated
+// device ioctls remain denied. Issue #4 will replace the device pattern with an exact typed device.
 const FOREGROUND_TERMINAL_RULES: &str = "\
 (allow pseudo-tty)\n\
 (allow file-ioctl\n\
@@ -35,19 +47,30 @@ const FOREGROUND_TERMINAL_RULES: &str = "\
 const UNIX_STREAM_SOCKET_SETUP: &str =
     "(allow system-socket (socket-domain AF_UNIX) (socket-type SOCK_STREAM))\n";
 
+/// SBPL source produced exclusively from a [`ValidatedPolicy`].
+///
+/// The source is readable for dry-run diagnostics, but the private field prevents callers from
+/// constructing an unchecked profile and passing it to [`crate::apply`].
 #[derive(Clone, Debug)]
 pub struct CompiledProfile {
     source: String,
 }
 
 impl CompiledProfile {
+    /// Returns the generated SBPL for diagnostics and tests.
     #[must_use]
     pub fn source(&self) -> &str {
         &self.source
     }
 }
 
+/// Deterministically compiles a validated platform-neutral policy into SBPL.
+///
+/// This function performs no filesystem access and has no unrestricted fallback. Rendering errors
+/// are returned before the bootstrap attempts to apply the sandbox or execute the target.
 pub fn compile(policy: &ValidatedPolicy) -> Result<CompiledProfile, SeatbeltError> {
+    // Start deny-first, then add the process operations required for an agent to execute tools and
+    // supervise descendants inside the same inherited sandbox domain.
     let mut source = String::from(
         "(version 1)\n\
          (deny default)\n\
@@ -61,6 +84,8 @@ pub fn compile(policy: &ValidatedPolicy) -> Result<CompiledProfile, SeatbeltErro
          (allow file-read-metadata)\n\
          (allow mach-lookup)\n",
     );
+    // Broad Mach lookup is a documented compatibility tradeoff. Explicit security-service denies
+    // prevent common Keychain APIs from turning an allowed host daemon into a credential deputy.
     source.push_str(
         "(deny mach-lookup (global-name \"com.apple.SecurityServer\"))\n\
          (deny mach-lookup (global-name \"com.apple.securityd\"))\n\
@@ -77,6 +102,8 @@ pub fn compile(policy: &ValidatedPolicy) -> Result<CompiledProfile, SeatbeltErro
          (allow system-info)\n",
     );
     source.push_str(FOREGROUND_TERMINAL_RULES);
+    // Literal root metadata is needed to begin absolute path traversal; it does not grant subtree
+    // contents because the filter is `literal`, not `subpath`.
     source.push_str("(allow file-read* (literal \"/\"))\n");
 
     for path in SYSTEM_READ_SUBPATHS {
@@ -102,6 +129,8 @@ pub fn compile(policy: &ValidatedPolicy) -> Result<CompiledProfile, SeatbeltErro
         NetworkPolicy::BlockAll => {}
     }
 
+    // Terminal denies are emitted after positive grants. Renderer and live tests pin their ability
+    // to protect narrow paths even when a broader parent directory was granted.
     for path in &policy.spec().protected_paths {
         write_rule(
             &mut source,
@@ -125,6 +154,8 @@ pub fn compile(policy: &ValidatedPolicy) -> Result<CompiledProfile, SeatbeltErro
 }
 
 fn render_grant(source: &mut String, grant: &FileGrant) -> Result<(), SeatbeltError> {
+    // Mapping an executable is a distinct Seatbelt operation from reading its bytes. Restrict it
+    // to the same exact/subtree boundary instead of granting executable mapping globally.
     write_rule(
         source,
         "allow",
@@ -174,6 +205,8 @@ fn write_rule(
     scope: PathScope,
     path: &str,
 ) -> Result<(), SeatbeltError> {
+    // Keep filter selection and value escaping centralized. Adding another renderer-side path
+    // interpolation would create a second policy-injection boundary.
     let filter = match scope {
         PathScope::Exact => "literal",
         PathScope::Subtree => "subpath",
