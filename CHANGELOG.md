@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.3](https://github.com/kontext-security/sandy/compare/v0.1.2...v0.1.3) (2026-08-23)
+
+
+### Features
+
+* allow exact Kontext socket access with --block-net ([#16](https://github.com/kontext-security/sandy/issues/16)) ([d56d78f](https://github.com/kontext-security/sandy/commit/d56d78f0f0db41674bf82d9205950ccb1175ad43))
+
+
+### Bug Fixes
+
+* preserve foreground terminal controls ([#14](https://github.com/kontext-security/sandy/issues/14)) ([d961399](https://github.com/kontext-security/sandy/commit/d96139979b1eea1a6084c839836516b38845153d))
+* verify release tags without persisted credentials ([#12](https://github.com/kontext-security/sandy/issues/12)) ([5f3740a](https://github.com/kontext-security/sandy/commit/5f3740a845e6359712fc9ec14281d3e18df89bf0))
+
 ## [0.1.2](https://github.com/kontext-security/sandy/compare/v0.1.1...v0.1.2) (2026-08-23)
 
 
