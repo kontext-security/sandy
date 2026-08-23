@@ -169,6 +169,11 @@ unrestricted fallback.
   Unix socket only. Sandy does not add an implicit exception for the macOS
   resolver socket, so network-dependent DNS resolution is expected to fail in
   this mode. Network-enabled mode can reach other same-user local services.
+- When the caller has not set `SSL_CERT_FILE`, network-enabled launches use
+  macOS's public PEM root bundle for provider TLS. This avoids exposing user
+  Keychain databases or credential services to native TLS clients. An explicit
+  caller value is preserved and must be covered by an explicit filesystem
+  grant when it is outside an already readable path.
 - Standard input, output, and error are inherited. Deliberately redirecting an
   already-open descriptor into Sandy can carry that capability across launch.
 - Foreground terminal control is preserved with ioctls restricted to macOS TTY

@@ -89,6 +89,9 @@ pub fn compile(policy: &ValidatedPolicy) -> Result<CompiledProfile, SeatbeltErro
     source.push_str(
         "(deny mach-lookup (global-name \"com.apple.SecurityServer\"))\n\
          (deny mach-lookup (global-name \"com.apple.securityd\"))\n\
+         (deny mach-lookup (global-name \"com.apple.securityd.xpc\"))\n\
+         (deny mach-lookup (global-name \"com.apple.securityd.general\"))\n\
+         (deny mach-lookup (global-name \"com.apple.securityd.systemkeychain\"))\n\
          (deny mach-lookup (global-name \"com.apple.security.keychaind\"))\n\
          (deny mach-lookup (global-name \"com.apple.secd\"))\n\
          (deny mach-lookup (global-name \"com.apple.security.agent\"))\n\
@@ -290,6 +293,29 @@ mod tests {
                 .source()
                 .contains("(allow network*)")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn terminally_denies_current_and_legacy_keychain_services()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let profile = compile(policy(NetworkPolicy::AllowAll)?.policy())?;
+        for service in [
+            "com.apple.SecurityServer",
+            "com.apple.securityd",
+            "com.apple.securityd.xpc",
+            "com.apple.securityd.general",
+            "com.apple.securityd.systemkeychain",
+            "com.apple.security.keychaind",
+            "com.apple.secd",
+            "com.apple.security.agent",
+        ] {
+            assert!(
+                profile
+                    .source()
+                    .contains(&format!("(deny mach-lookup (global-name \"{service}\"))"))
+            );
+        }
         Ok(())
     }
 
