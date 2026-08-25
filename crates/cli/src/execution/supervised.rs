@@ -6,16 +6,18 @@ use std::{
 };
 
 use sandy_core::{
-    AccessMode, CommandSpec, FileGrant, LaunchManifestV1, MANIFEST_SCHEMA_V1, NetworkPolicy,
+    AccessMode, CommandSpec, FileGrant, LaunchManifestV2, MANIFEST_SCHEMA_V2, NetworkPolicy,
     OsValue, PathScope, PolicySpec, ValidatedLaunch, encode_launch,
 };
 use serde_json::json;
 use tempfile::Builder;
 
+const DRY_RUN_SCHEMA_VERSION: u32 = 1;
+
 use crate::{
     cli::RunArgs,
     error::AppError,
-    integration::{IntegrationMode, kontext},
+    integration::{IntegrationMode, RuntimeControlPlan, kontext},
     profile,
     resolve::{default_ca_bundle, grant, resolve_command, resolve_paths, sanitized_environment},
 };
@@ -97,25 +99,40 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
     } else {
         IntegrationMode::Detect
     };
-    let kontext = kontext::resolve(&selected.hook_sources(&paths), integration_mode, &paths)?;
-    if let Some(reason) = kontext.unavailable_reason() {
-        eprintln!(
-            "sandy: optional {} runtime control unavailable; continuing without it: {reason}",
-            kontext.service()
-        );
+    let runtime_controls = RuntimeControlPlan::new(vec![kontext::resolve(
+        &selected.hook_sources(&paths),
+        integration_mode,
+        &paths,
+    )?]);
+    for contribution in runtime_controls.iter() {
+        if let Some(reason) = contribution.unavailable_reason() {
+            eprintln!(
+                "sandy: optional {} runtime control unavailable; continuing without it: {reason}",
+                contribution.service()
+            );
+        }
     }
-    let mut protected_write_paths = selected.protected_write_paths(&paths)?;
-    let mut unix_sockets = Vec::new();
-    kontext.contribute(&mut files, &mut protected_write_paths, &mut unix_sockets);
-    deduplicate_grants(&mut files);
-    unix_sockets.sort();
-    unix_sockets.dedup();
-    protected_write_paths.sort();
-    protected_write_paths.dedup();
+    let mut write_protections = selected.protected_write_paths(&paths)?;
+    let network = if arguments.block_net {
+        NetworkPolicy::BlockAll
+    } else {
+        NetworkPolicy::AllowAll
+    };
+    write_protections.sort();
+    write_protections.dedup();
     let protected_paths = selected.protected_paths(&paths);
+    let mut policy = PolicySpec {
+        files,
+        protected_paths,
+        write_protections,
+        unix_sockets: Vec::new(),
+        network,
+    };
+    runtime_controls.apply(&mut policy)?;
+    normalize_policy(&mut policy);
 
-    let manifest = LaunchManifestV1 {
-        schema_version: MANIFEST_SCHEMA_V1,
+    let manifest = LaunchManifestV2 {
+        schema_version: MANIFEST_SCHEMA_V2,
         command: CommandSpec {
             program: OsValue::from_os_str(command.program.as_os_str()),
             arguments: command
@@ -129,17 +146,7 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
             session.path(),
             ca_bundle.as_ref().map(|bundle| bundle.path.as_path()),
         ),
-        policy: PolicySpec {
-            files,
-            protected_paths,
-            protected_write_paths,
-            unix_sockets,
-            network: if arguments.block_net {
-                NetworkPolicy::BlockAll
-            } else {
-                NetworkPolicy::AllowAll
-            },
-        },
+        policy,
     };
     let validated = ValidatedLaunch::try_from(manifest.clone())?;
 
@@ -152,7 +159,7 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
 
     if arguments.dry_run {
         let output = json!({
-            "schema_version": MANIFEST_SCHEMA_V1,
+            "dry_run_schema_version": DRY_RUN_SCHEMA_VERSION,
             "command": command.program.to_string_lossy(),
             "arguments": command.arguments.iter().map(|value| value.to_string_lossy()).collect::<Vec<_>>(),
             "working_directory": validated.manifest().working_directory.as_str(),
@@ -163,10 +170,14 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
             "network": validated.manifest().policy.network,
             "file_grants": validated.manifest().policy.files,
             "unix_socket_grants": validated.manifest().policy.unix_sockets,
-            "kontext": {
-                "enabled": kontext.is_active(),
-                "version": kontext.version(),
-            },
+            "runtime_controls": runtime_controls
+                .iter()
+                .map(|contribution| json!({
+                    "service": contribution.service(),
+                    "enabled": contribution.is_active(),
+                    "version": contribution.version(),
+                }))
+                .collect::<Vec<_>>(),
             "seatbelt_profile": profile_source,
         });
         println!(
@@ -208,13 +219,11 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
     Ok(status.signal().map_or(1, |signal| 128 + signal))
 }
 
-fn deduplicate_grants(grants: &mut Vec<FileGrant>) {
-    grants.sort_by(|left, right| {
-        (left.path.as_str(), left.scope, left.access).cmp(&(
-            right.path.as_str(),
-            right.scope,
-            right.access,
-        ))
-    });
-    grants.dedup_by(|left, right| left == right);
+fn normalize_policy(policy: &mut PolicySpec) {
+    policy.files.sort();
+    policy.files.dedup();
+    policy.unix_sockets.sort();
+    policy.unix_sockets.dedup();
+    policy.write_protections.sort();
+    policy.write_protections.dedup();
 }

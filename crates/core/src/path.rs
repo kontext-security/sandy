@@ -52,6 +52,20 @@ impl AbsolutePath {
     pub fn is_root(&self) -> bool {
         self.as_path().parent().is_none()
     }
+
+    /// Returns the lexical parent, or `None` for the filesystem root.
+    ///
+    /// This is deliberately lexical: callers that need filesystem identity
+    /// must still resolve aliases and symlinks before constructing an
+    /// [`AbsolutePath`]. Because this type contains valid UTF-8, every parent
+    /// component is also representable without a lossy conversion.
+    #[must_use]
+    pub fn parent(&self) -> Option<Self> {
+        self.as_path()
+            .parent()
+            .and_then(Path::to_str)
+            .map(|parent| Self(parent.to_owned()))
+    }
 }
 
 impl AsRef<Path> for AbsolutePath {
@@ -108,5 +122,16 @@ mod tests {
         for candidate in [r#""relative""#, r#""/tmp/../secret""#, r#""/tmp/\u0000""#] {
             assert!(serde_json::from_str::<AbsolutePath>(candidate).is_err());
         }
+    }
+
+    #[test]
+    fn returns_lexical_parents_without_filesystem_access() -> Result<(), PathValidationError> {
+        let path = AbsolutePath::new("/tmp/sandy/session/file")?;
+        let parent = path.parent().ok_or_else(|| {
+            PathValidationError::NotAbsolute("expected a lexical parent".to_owned())
+        })?;
+        assert_eq!(parent.as_str(), "/tmp/sandy/session");
+        assert!(AbsolutePath::new("/")?.parent().is_none());
+        Ok(())
     }
 }

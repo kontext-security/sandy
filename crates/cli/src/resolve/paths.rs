@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use sandy_core::{AbsolutePath, AccessMode, FileGrant, PathScope, TemplatePath};
+use sandy_core::{AbsolutePath, AccessMode, FileGrant, PathScope, TemplatePath, WriteProtection};
 
 use crate::error::AppError;
 
@@ -92,7 +92,16 @@ pub(crate) fn grant(
 /// pre-existing symlink cannot redirect writes around the deny rule.
 pub(crate) fn write_protections(
     paths: impl IntoIterator<Item = PathBuf>,
-) -> Result<Vec<AbsolutePath>, AppError> {
+) -> Result<Vec<WriteProtection>, AppError> {
+    scoped_write_protections(paths, PathScope::Exact)
+}
+
+/// Resolves exact or recursive write protections through both lexical and
+/// canonical path spellings.
+pub(crate) fn scoped_write_protections(
+    paths: impl IntoIterator<Item = PathBuf>,
+    scope: PathScope,
+) -> Result<Vec<WriteProtection>, AppError> {
     let mut protected = BTreeSet::new();
     for path in paths {
         if !path.is_absolute() || path == Path::new("/") {
@@ -101,7 +110,10 @@ pub(crate) fn write_protections(
         protected.insert(absolute_if_utf8(&path)?);
         protected.insert(absolute_if_utf8(&resolve_existing_ancestor(&path)?)?);
     }
-    Ok(protected.into_iter().collect())
+    Ok(protected
+        .into_iter()
+        .map(|path| WriteProtection { path, scope })
+        .collect())
 }
 
 fn resolve_existing_ancestor(path: &Path) -> Result<PathBuf, AppError> {
@@ -156,11 +168,15 @@ mod tests {
         let canonical_target = fs::canonicalize(&target)?;
 
         let protected = write_protections([link.clone()])?;
-        assert!(protected.iter().any(|path| path.as_path() == link));
         assert!(
             protected
                 .iter()
-                .any(|path| path.as_path() == canonical_target)
+                .any(|protection| protection.path.as_path() == link)
+        );
+        assert!(
+            protected
+                .iter()
+                .any(|protection| protection.path.as_path() == canonical_target)
         );
         Ok(())
     }
@@ -176,12 +192,14 @@ mod tests {
 
         let lexical = alias.join("future/settings.json");
         let protected = write_protections([lexical.clone()])?;
-        assert!(protected.iter().any(|path| path.as_path() == lexical));
         assert!(
             protected
                 .iter()
-                .any(|path| path.as_path() == canonical_real.join("future/settings.json"))
+                .any(|protection| protection.path.as_path() == lexical)
         );
+        assert!(protected.iter().any(|protection| {
+            protection.path.as_path() == canonical_real.join("future/settings.json")
+        }));
         Ok(())
     }
 

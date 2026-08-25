@@ -11,9 +11,9 @@ use std::{
 use assert_cmd::Command;
 use predicates::prelude::*;
 use sandy_core::{
-    AbsolutePath, AccessMode, CommandSpec, FileGrant, LaunchManifestV1, MANIFEST_SCHEMA_V1,
+    AbsolutePath, AccessMode, CommandSpec, FileGrant, LaunchManifestV2, MANIFEST_SCHEMA_V2,
     NetworkPolicy, OsValue, PathScope, PolicySpec, UnixSocketGrant, UnixSocketOperation,
-    ValidatedLaunch,
+    ValidatedLaunch, WriteProtection,
 };
 
 const SOCKET_PROBE_MODE: &str = "SANDY_TEST_EXACT_SOCKET_PROBE";
@@ -21,6 +21,9 @@ const SOCKET_PROBE_ROOT: &str = "SANDY_TEST_SOCKET_ROOT";
 const SOCKET_PROBE_ALLOWED: &str = "SANDY_TEST_SOCKET_ALLOWED";
 const SOCKET_PROBE_DENIED: &str = "SANDY_TEST_SOCKET_DENIED";
 const SOCKET_PROBE_TCP: &str = "SANDY_TEST_SOCKET_TCP";
+const WRITE_PROBE_MODE: &str = "SANDY_TEST_SCOPED_WRITE_PROBE";
+const WRITE_PROBE_ROOT: &str = "SANDY_TEST_WRITE_ROOT";
+const WRITE_PROBE_PROTECTED: &str = "SANDY_TEST_WRITE_PROTECTED";
 
 #[test]
 #[ignore = "irreversibly applies Seatbelt; run on a host, not inside another sandbox"]
@@ -99,6 +102,90 @@ fn blocks_outbound_connect_when_network_is_disabled() -> Result<(), Box<dyn std:
         ])
         .assert()
         .success();
+    Ok(())
+}
+
+#[test]
+#[ignore = "irreversibly applies Seatbelt; run on a host, not inside another sandbox"]
+fn recursive_write_protection_overrides_a_broader_grant() -> Result<(), Box<dyn std::error::Error>>
+{
+    if env::var_os(WRITE_PROBE_MODE).is_some() {
+        return run_scoped_write_probe();
+    }
+
+    let root = tempfile::tempdir()?;
+    let protected = root.path().join("config/operator-rules");
+    fs::create_dir_all(&protected)?;
+    fs::write(protected.join("policy.json"), "original")?;
+
+    let status = StdCommand::new(env::current_exe()?)
+        .args([
+            "--ignored",
+            "--exact",
+            "recursive_write_protection_overrides_a_broader_grant",
+        ])
+        .env(WRITE_PROBE_MODE, "1")
+        .env(WRITE_PROBE_ROOT, root.path())
+        .env(WRITE_PROBE_PROTECTED, &protected)
+        .status()?;
+
+    assert!(status.success(), "sacrificial write probe failed: {status}");
+    assert_eq!(
+        fs::read_to_string(protected.join("policy.json"))?,
+        "original"
+    );
+    Ok(())
+}
+
+fn run_scoped_write_probe() -> Result<(), Box<dyn std::error::Error>> {
+    let root = fs::canonicalize(required_probe_path(WRITE_PROBE_ROOT)?)?;
+    let protected = fs::canonicalize(required_probe_path(WRITE_PROBE_PROTECTED)?)?;
+    let mut policy = PolicySpec {
+        files: vec![FileGrant {
+            path: absolute(&root)?,
+            access: AccessMode::ReadWrite,
+            scope: PathScope::Subtree,
+        }],
+        protected_paths: Vec::new(),
+        write_protections: vec![WriteProtection {
+            path: absolute(&protected)?,
+            scope: PathScope::Subtree,
+        }],
+        unix_sockets: Vec::new(),
+        network: NetworkPolicy::BlockAll,
+    };
+    policy.close_write_protection_ancestors();
+    let manifest = LaunchManifestV2 {
+        schema_version: MANIFEST_SCHEMA_V2,
+        command: CommandSpec {
+            program: OsValue::from_os_str(std::ffi::OsStr::new("/bin/true")),
+            arguments: Vec::new(),
+        },
+        working_directory: absolute(&root)?,
+        environment: Vec::new(),
+        policy,
+    };
+    let launch = ValidatedLaunch::try_from(manifest)?;
+    let profile = sandy_seatbelt::compile(launch.policy())?;
+    sandy_seatbelt::apply(&profile)?;
+
+    assert_eq!(
+        fs::read_to_string(protected.join("policy.json"))?,
+        "original"
+    );
+    assert_permission_denied(
+        fs::write(protected.join("policy.json"), "changed"),
+        "overwrite protected rule",
+    )?;
+    assert_permission_denied(
+        fs::write(protected.join("new.json"), "new"),
+        "create rule under protected subtree",
+    )?;
+    assert_permission_denied(
+        fs::rename(root.join("config"), root.join("config-disabled")),
+        "rename a writable ancestor of the protected rule subtree",
+    )?;
+    fs::write(root.join("mutable.txt"), "allowed")?;
     Ok(())
 }
 
@@ -241,8 +328,8 @@ fn run_exact_socket_probe() -> Result<(), Box<dyn std::error::Error>> {
     socket_paths.sort();
     socket_paths.dedup();
 
-    let manifest = LaunchManifestV1 {
-        schema_version: MANIFEST_SCHEMA_V1,
+    let manifest = LaunchManifestV2 {
+        schema_version: MANIFEST_SCHEMA_V2,
         command: CommandSpec {
             program: OsValue::from_os_str(std::ffi::OsStr::new("/bin/true")),
             arguments: Vec::new(),
@@ -256,7 +343,14 @@ fn run_exact_socket_probe() -> Result<(), Box<dyn std::error::Error>> {
                 scope: PathScope::Subtree,
             }],
             protected_paths: Vec::new(),
-            protected_write_paths: socket_paths.clone(),
+            write_protections: socket_paths
+                .iter()
+                .cloned()
+                .map(|path| WriteProtection {
+                    path,
+                    scope: PathScope::Exact,
+                })
+                .collect(),
             unix_sockets: socket_paths
                 .into_iter()
                 .map(|path| UnixSocketGrant {

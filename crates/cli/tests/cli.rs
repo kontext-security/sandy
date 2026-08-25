@@ -29,6 +29,60 @@ fn dry_run_does_not_require_kontext() -> Result<(), Box<dyn std::error::Error>> 
 }
 
 #[test]
+fn dry_run_json_has_a_versioned_runtime_control_schema() -> Result<(), Box<dyn std::error::Error>> {
+    let mut command = Command::cargo_bin("sandy")?;
+    let output = command
+        .args(["run", "--dry-run", "--", "/bin/echo", "hello"])
+        .output()?;
+    assert!(output.status.success());
+
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(document["dry_run_schema_version"], 1);
+    assert!(document.get("schema_version").is_none());
+
+    let keys = document
+        .as_object()
+        .ok_or("dry-run output must be a JSON object")?
+        .keys()
+        .map(String::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        keys,
+        std::collections::BTreeSet::from([
+            "arguments",
+            "command",
+            "dry_run_schema_version",
+            "file_grants",
+            "network",
+            "profile",
+            "runtime_controls",
+            "seatbelt_profile",
+            "unix_socket_grants",
+            "working_directory",
+        ])
+    );
+
+    let controls = document["runtime_controls"]
+        .as_array()
+        .ok_or("runtime_controls must be an array")?;
+    assert_eq!(controls.len(), 1);
+    let control_keys = controls[0]
+        .as_object()
+        .ok_or("runtime control must be a JSON object")?
+        .keys()
+        .map(String::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        control_keys,
+        std::collections::BTreeSet::from(["enabled", "service", "version"])
+    );
+    assert_eq!(controls[0]["service"], "Kontext");
+    assert_eq!(controls[0]["enabled"], false);
+    assert!(controls[0]["version"].is_null());
+    Ok(())
+}
+
+#[test]
 fn blocked_network_dry_run_has_no_implicit_socket_authority()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut command = Command::cargo_bin("sandy")?;

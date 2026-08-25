@@ -1,14 +1,14 @@
 use std::ffi::OsStr;
 
 use sandy_core::{
-    AbsolutePath, CommandSpec, LaunchManifestV1, MANIFEST_SCHEMA_V1, NetworkPolicy, OsValue,
-    PolicySpec, UnixSocketGrant, UnixSocketOperation, ValidatedLaunch, ValidationError, WireError,
-    decode_launch, encode_launch,
+    AbsolutePath, AccessMode, CommandSpec, FileGrant, LaunchManifestV2, MANIFEST_SCHEMA_V2,
+    NetworkPolicy, OsValue, PathScope, PolicySpec, UnixSocketGrant, UnixSocketOperation,
+    ValidatedLaunch, ValidationError, WireError, WriteProtection, decode_launch, encode_launch,
 };
 
-fn manifest() -> Result<LaunchManifestV1, Box<dyn std::error::Error>> {
-    Ok(LaunchManifestV1 {
-        schema_version: MANIFEST_SCHEMA_V1,
+fn manifest() -> Result<LaunchManifestV2, Box<dyn std::error::Error>> {
+    Ok(LaunchManifestV2 {
+        schema_version: MANIFEST_SCHEMA_V2,
         command: CommandSpec {
             program: OsValue::from_os_str(OsStr::new("/bin/echo")),
             arguments: Vec::new(),
@@ -39,15 +39,49 @@ fn rejects_unknown_schema_versions() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn rejects_root_and_duplicate_protected_paths() -> Result<(), Box<dyn std::error::Error>> {
     let mut root = manifest()?;
-    root.policy
-        .protected_write_paths
-        .push(AbsolutePath::new("/")?);
+    root.policy.write_protections.push(WriteProtection {
+        path: AbsolutePath::new("/")?,
+        scope: PathScope::Exact,
+    });
     assert!(ValidatedLaunch::try_from(root).is_err());
 
     let mut duplicate = manifest()?;
     let path = AbsolutePath::new("/tmp/project/settings.json")?;
-    duplicate.policy.protected_write_paths = vec![path.clone(), path];
+    duplicate.policy.write_protections = vec![
+        WriteProtection {
+            path: path.clone(),
+            scope: PathScope::Exact,
+        },
+        WriteProtection {
+            path,
+            scope: PathScope::Subtree,
+        },
+    ];
     assert!(ValidatedLaunch::try_from(duplicate).is_err());
+    Ok(())
+}
+
+#[test]
+fn rejects_a_protected_resource_below_an_unpinned_writable_ancestor()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut value = manifest()?;
+    value.policy.files.push(FileGrant {
+        path: AbsolutePath::new("/tmp/project")?,
+        access: AccessMode::ReadWrite,
+        scope: PathScope::Subtree,
+    });
+    value.policy.write_protections.push(WriteProtection {
+        path: AbsolutePath::new("/tmp/project/config/hooks.json")?,
+        scope: PathScope::Exact,
+    });
+
+    assert!(matches!(
+        ValidatedLaunch::try_from(value.clone()),
+        Err(ValidationError::UnprotectedWritableAncestor { .. })
+    ));
+
+    value.policy.close_write_protection_ancestors();
+    assert!(ValidatedLaunch::try_from(value).is_ok());
     Ok(())
 }
 
@@ -81,14 +115,14 @@ fn validates_exact_socket_grants_and_rejects_duplicates_and_root()
 }
 
 #[test]
-fn manifest_v1_without_socket_grants_remains_fail_closed() -> Result<(), Box<dyn std::error::Error>>
+fn manifest_v2_without_socket_grants_remains_fail_closed() -> Result<(), Box<dyn std::error::Error>>
 {
     let encoded = br#"{
-        "schema_version": 1,
+        "schema_version": 2,
         "command": { "program": [47, 98, 105, 110, 47, 101, 99, 104, 111], "arguments": [] },
         "working_directory": "/tmp/project",
         "environment": [],
-        "policy": { "files": [], "protected_paths": [], "protected_write_paths": [], "network": "block_all" }
+        "policy": { "files": [], "protected_paths": [], "write_protections": [], "network": "block_all" }
     }"#;
     let launch = decode_launch(encoded)?;
     assert!(launch.manifest().policy.unix_sockets.is_empty());
@@ -98,14 +132,14 @@ fn manifest_v1_without_socket_grants_remains_fail_closed() -> Result<(), Box<dyn
 #[test]
 fn rejects_malformed_socket_grants_from_the_wire() {
     let unknown_operation = br#"{
-        "schema_version": 1,
+        "schema_version": 2,
         "command": { "program": [47, 98, 105, 110, 47, 101, 99, 104, 111], "arguments": [] },
         "working_directory": "/tmp/project",
         "environment": [],
         "policy": {
             "files": [],
             "protected_paths": [],
-            "protected_write_paths": [],
+            "write_protections": [],
             "unix_sockets": [{ "path": "/private/tmp/control.sock", "operation": "bind" }],
             "network": "block_all"
         }
@@ -116,14 +150,14 @@ fn rejects_malformed_socket_grants_from_the_wire() {
     ));
 
     let relative_path = br#"{
-        "schema_version": 1,
+        "schema_version": 2,
         "command": { "program": [47, 98, 105, 110, 47, 101, 99, 104, 111], "arguments": [] },
         "working_directory": "/tmp/project",
         "environment": [],
         "policy": {
             "files": [],
             "protected_paths": [],
-            "protected_write_paths": [],
+            "write_protections": [],
             "unix_sockets": [{ "path": "relative.sock", "operation": "connect" }],
             "network": "block_all"
         }

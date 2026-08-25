@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 use thiserror::Error;
 
 use crate::{
-    AbsolutePath, CommandSpec, EnvironmentEntry, LaunchManifestV1, MANIFEST_SCHEMA_V1,
+    AbsolutePath, CommandSpec, EnvironmentEntry, LaunchManifestV2, MANIFEST_SCHEMA_V2,
     OsValueError, PolicySpec,
 };
 
@@ -37,14 +37,14 @@ impl ValidatedPolicy {
 /// Launch manifest whose schema, native values, bounds, and policy invariants are valid.
 #[derive(Clone, Debug)]
 pub struct ValidatedLaunch {
-    manifest: LaunchManifestV1,
+    manifest: LaunchManifestV2,
     policy: ValidatedPolicy,
 }
 
 impl ValidatedLaunch {
     /// Borrows the validated transport manifest.
     #[must_use]
-    pub fn manifest(&self) -> &LaunchManifestV1 {
+    pub fn manifest(&self) -> &LaunchManifestV2 {
         &self.manifest
     }
 
@@ -59,16 +59,16 @@ impl ValidatedLaunch {
     /// This is used when the trusted parent serializes a manifest for the bootstrap. The bootstrap
     /// validates the decoded value again and does not trust this prior in-process transition.
     #[must_use]
-    pub fn into_manifest(self) -> LaunchManifestV1 {
+    pub fn into_manifest(self) -> LaunchManifestV2 {
         self.manifest
     }
 }
 
-impl TryFrom<LaunchManifestV1> for ValidatedLaunch {
+impl TryFrom<LaunchManifestV2> for ValidatedLaunch {
     type Error = ValidationError;
 
-    fn try_from(manifest: LaunchManifestV1) -> Result<Self, Self::Error> {
-        if manifest.schema_version != MANIFEST_SCHEMA_V1 {
+    fn try_from(manifest: LaunchManifestV2) -> Result<Self, Self::Error> {
+        if manifest.schema_version != MANIFEST_SCHEMA_V2 {
             return Err(ValidationError::UnsupportedSchema(manifest.schema_version));
         }
         validate_command(&manifest.command)?;
@@ -135,7 +135,7 @@ fn validate_policy(policy: &PolicySpec) -> Result<(), ValidationError> {
         return Err(ValidationError::TooManyUnixSocketGrants);
     }
     if policy.protected_paths.len() > MAX_PROTECTED_PATHS
-        || policy.protected_write_paths.len() > MAX_PROTECTED_PATHS
+        || policy.write_protections.len() > MAX_PROTECTED_PATHS
     {
         return Err(ValidationError::TooManyProtectedPaths);
     }
@@ -147,9 +147,9 @@ fn validate_policy(policy: &PolicySpec) -> Result<(), ValidationError> {
     }
     if policy.protected_paths.iter().any(AbsolutePath::is_root)
         || policy
-            .protected_write_paths
+            .write_protections
             .iter()
-            .any(AbsolutePath::is_root)
+            .any(|protection| protection.path.is_root())
     {
         return Err(ValidationError::RootProtectedPath);
     }
@@ -173,7 +173,20 @@ fn validate_policy(policy: &PolicySpec) -> Result<(), ValidationError> {
         }
     }
     reject_duplicate_paths(&policy.protected_paths)?;
-    reject_duplicate_paths(&policy.protected_write_paths)?;
+    let mut seen_write_protections = BTreeSet::new();
+    for protection in &policy.write_protections {
+        if !seen_write_protections.insert(&protection.path) {
+            return Err(ValidationError::DuplicateWriteProtection(
+                protection.path.clone(),
+            ));
+        }
+    }
+    if let Some((resource, ancestor)) = policy.unprotected_writable_ancestor() {
+        return Err(ValidationError::UnprotectedWritableAncestor {
+            resource: resource.clone(),
+            ancestor,
+        });
+    }
     Ok(())
 }
 
@@ -244,4 +257,15 @@ pub enum ValidationError {
     /// A protected-path list contains the same path more than once.
     #[error("duplicate protected path for {0:?}")]
     DuplicateProtectedPath(AbsolutePath),
+    /// A write-protection list contains the same path more than once.
+    #[error("duplicate write protection for {0:?}")]
+    DuplicateWriteProtection(AbsolutePath),
+    /// A protected resource could be relocated through an enclosing writable directory.
+    #[error("protected resource {resource:?} has unprotected writable ancestor {ancestor:?}")]
+    UnprotectedWritableAncestor {
+        /// Resource whose stable pathname is part of the policy invariant.
+        resource: AbsolutePath,
+        /// Enclosing directory that must be pinned against rename or replacement.
+        ancestor: AbsolutePath,
+    },
 }
