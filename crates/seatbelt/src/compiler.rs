@@ -1,4 +1,4 @@
-//! Pure lowering from Sandy's validated capability vocabulary to SBPL source.
+//! Pure composition of Sandy's fixed macOS baseline and validated capabilities into SBPL source.
 //!
 //! Every policy value interpolated into SBPL passes through the single escaping path in
 //! [`crate::escape`]. This module never accepts caller-provided SBPL fragments.
@@ -10,43 +10,7 @@ use sandy_core::{
     ValidatedPolicy,
 };
 
-use crate::{SeatbeltError, escape::quoted};
-
-// These are runtime files shipped by macOS and required to resolve and load ordinary executables.
-// They are a backend compatibility baseline, not user grants, and remain read-only.
-const SYSTEM_READ_SUBPATHS: &[&str] = &[
-    "/System",
-    "/usr",
-    "/bin",
-    "/sbin",
-    "/Library/Apple",
-    "/private/etc",
-];
-
-// Public, read-only macOS databases required by language runtimes and dynamic linking. Keep each
-// grant at the narrowest stable root so operating-system updates can replace versioned contents
-// without opening unrelated data under /private/var/db.
-const SYSTEM_RUNTIME_READ_SUBPATHS: &[&str] = &["/private/var/db/dyld", "/private/var/db/timezone"];
-
-// Character devices needed by ordinary command-line programs. Granting the node itself does not
-// grant a subtree beneath `/dev`.
-const SYSTEM_READ_LITERALS: &[&str] = &[
-    "/dev/null",
-    "/dev/random",
-    "/dev/urandom",
-    "/dev/tty",
-    "/dev/ptmx",
-];
-
-// Terminal attribute and window-size operations are separate from file reads/writes in Seatbelt.
-// Keep this list device-shaped and narrow; the adjacent-negative live test proves unrelated
-// device ioctls remain denied. Issue #4 will replace the device pattern with an exact typed device.
-const FOREGROUND_TERMINAL_RULES: &str = "\
-(allow pseudo-tty)\n\
-(allow file-ioctl\n\
-    (literal \"/dev/tty\")\n\
-    (literal \"/dev/ptmx\")\n\
-    (regex #\"^/dev/ttys[0-9]+$\"))\n";
+use crate::{SeatbeltError, baseline, escape::quoted};
 
 const UNIX_STREAM_SOCKET_SETUP: &str =
     "(allow system-socket (socket-domain AF_UNIX) (socket-type SOCK_STREAM))\n";
@@ -68,58 +32,18 @@ impl CompiledProfile {
     }
 }
 
-/// Deterministically compiles a validated platform-neutral policy into SBPL.
+/// Deterministically compiles the fixed backend baseline and a validated policy into SBPL.
 ///
 /// This function performs no filesystem access and has no unrestricted fallback. Rendering errors
 /// are returned before the bootstrap attempts to apply the sandbox or execute the target.
 pub fn compile(policy: &ValidatedPolicy) -> Result<CompiledProfile, SeatbeltError> {
-    // Start deny-first, then add the process operations required for an agent to execute tools and
-    // supervise descendants inside the same inherited sandbox domain.
-    let mut source = String::from(
-        "(version 1)\n\
-         (deny default)\n\
-         (allow process-exec*)\n\
-         (allow process-fork)\n\
-         (allow process-info* (target self))\n\
-         (allow process-info* (target same-sandbox))\n\
-         (allow signal (target self))\n\
-         (allow signal (target same-sandbox))\n\
-         (allow sysctl-read)\n\
-         (allow file-read-metadata)\n\
-         (allow mach-lookup)\n",
-    );
-    // Broad Mach lookup is a documented compatibility tradeoff. Explicit security-service denies
-    // prevent common Keychain APIs from turning an allowed host daemon into a credential deputy.
-    source.push_str(
-        "(deny mach-lookup (global-name \"com.apple.SecurityServer\"))\n\
-         (deny mach-lookup (global-name \"com.apple.securityd\"))\n\
-         (deny mach-lookup (global-name \"com.apple.securityd.xpc\"))\n\
-         (deny mach-lookup (global-name \"com.apple.securityd.general\"))\n\
-         (deny mach-lookup (global-name \"com.apple.securityd.systemkeychain\"))\n\
-         (deny mach-lookup (global-name \"com.apple.security.keychaind\"))\n\
-         (deny mach-lookup (global-name \"com.apple.secd\"))\n\
-         (deny mach-lookup (global-name \"com.apple.security.agent\"))\n\
-         (allow mach-per-user-lookup)\n\
-         (allow mach-task-name)\n\
-         (deny mach-priv*)\n\
-         (allow ipc-posix-shm-read-data)\n\
-         (allow ipc-posix-shm-write-data)\n\
-         (allow ipc-posix-shm-write-create)\n\
-         (allow system-fsctl)\n\
-         (allow system-info)\n",
-    );
-    source.push_str(FOREGROUND_TERMINAL_RULES);
-    // Literal root metadata is needed to begin absolute path traversal; it does not grant subtree
-    // contents because the filter is `literal`, not `subpath`.
-    source.push_str("(allow file-read* (literal \"/\"))\n");
-
-    for path in SYSTEM_READ_SUBPATHS {
+    let mut source = String::from(baseline::STATIC_RULES);
+    source.push_str(baseline::FOREGROUND_TERMINAL_RULES);
+    source.push_str(baseline::ROOT_TRAVERSAL_RULE);
+    for path in baseline::READ_ONLY_SUBTREES {
         write_rule(&mut source, "allow", "file-read*", PathScope::Subtree, path)?;
     }
-    for path in SYSTEM_RUNTIME_READ_SUBPATHS {
-        write_rule(&mut source, "allow", "file-read*", PathScope::Subtree, path)?;
-    }
-    for path in SYSTEM_READ_LITERALS {
+    for path in baseline::READ_WRITE_LITERALS {
         write_rule(&mut source, "allow", "file-read*", PathScope::Exact, path)?;
         write_rule(&mut source, "allow", "file-write*", PathScope::Exact, path)?;
     }
@@ -413,7 +337,11 @@ mod tests {
     fn scopes_foreground_terminal_ioctls_to_tty_devices() -> Result<(), Box<dyn std::error::Error>>
     {
         let source = compile(policy(NetworkPolicy::BlockAll)?.policy())?;
-        assert!(source.source().contains(FOREGROUND_TERMINAL_RULES));
+        assert!(
+            source
+                .source()
+                .contains(baseline::FOREGROUND_TERMINAL_RULES)
+        );
         assert!(!source.source().contains("(allow file-ioctl)"));
         assert!(!source.source().contains("file-ioctl (subpath \"/dev\")"));
         Ok(())
