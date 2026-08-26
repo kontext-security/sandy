@@ -161,6 +161,21 @@ Hook discovery honors `CLAUDE_CONFIG_DIR`, `CODEX_HOME`,
 `OPENCODE_CONFIG_DIR`, and OpenCode's `XDG_CONFIG_HOME` fallback when those
 variables name absolute configuration roots.
 
+An operator can run Numbat's OTLP/HTTP collector outside Sandy and preserve
+only its default local-host port while all other networking is blocked:
+
+```bash
+numbat collect --addr 127.0.0.1:4318
+sandy run --block-net --numbat-collector -- codex --sandbox danger-full-access
+```
+
+`--numbat-collector=PORT` selects a different nonzero port and requires
+`--block-net`. Sandy does not start or probe the collector and does not
+configure the agent's telemetry exporter. It authorizes TCP connect to the
+selected port on IPv4 addresses belonging to this Mac, including loopback and
+other local interfaces; it does not authorize external addresses or other
+ports.
+
 ## Security and support
 
 Sandy is a process sandbox, not a container or VM. It reduces what a process can

@@ -51,6 +51,9 @@ in `sandy-seatbelt`.
   verifies its path, type, and owner;
 - access to Kontext's exact Unix socket when the integration is active, even
   under `--block-net`;
+- access to an explicitly granted IPv4 local-host TCP port on loopback or
+  another interface belonging to the Mac, and any same-user process that
+  occupies that port, under `--block-net`;
 - authenticated provenance for optional Kontext hook events; and
 - complete agent behavior visibility through cooperative hook surfaces.
 
@@ -94,6 +97,15 @@ Granting that mode would expose ordinary external networking and potentially
 environment-provided delivery credentials to the complete agent process tree.
 Sandy neither launches a collector nor moves synchronous hook decisions into an
 outside-sandbox service.
+
+`--numbat-collector[=PORT]` is a separate, telemetry-only capability that
+requires `--block-net`. It allows TCP connect to one selected port on IPv4
+addresses belonging to this Mac, including loopback and non-loopback
+interfaces, without authorizing bind, an adjacent port, a Unix socket, IPv6,
+or an external IPv4 address. Sandy does not start, probe, authenticate, or
+reserve the listener. The agent can forge telemetry, overload the collector,
+and connect to another same-user process that races to occupy the selected
+port. This endpoint is not a synchronous reference monitor.
 
 Hook-source discovery honors the supported agent configuration-root overrides.
 Those values affect both the agent and Sandy and are intentionally preserved in

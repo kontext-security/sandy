@@ -1,9 +1,10 @@
 use std::ffi::OsStr;
 
 use sandy_core::{
-    AbsolutePath, AccessMode, CommandSpec, FileGrant, LaunchManifestV2, MANIFEST_SCHEMA_V2,
-    NetworkPolicy, OsValue, PathScope, PolicySpec, UnixSocketGrant, UnixSocketOperation,
-    ValidatedLaunch, ValidationError, WireError, WriteProtection, decode_launch, encode_launch,
+    AbsolutePath, AccessMode, CommandSpec, FileGrant, LaunchManifestV2, LocalHostTcpGrant,
+    LocalHostTcpOperation, MANIFEST_SCHEMA_V2, NetworkPolicy, OsValue, PathScope, PolicySpec,
+    TcpPort, UnixSocketGrant, UnixSocketOperation, ValidatedLaunch, ValidationError, WireError,
+    WriteProtection, decode_launch, encode_launch,
 };
 
 fn manifest() -> Result<LaunchManifestV2, Box<dyn std::error::Error>> {
@@ -115,8 +116,8 @@ fn validates_exact_socket_grants_and_rejects_duplicates_and_root()
 }
 
 #[test]
-fn manifest_v2_without_socket_grants_remains_fail_closed() -> Result<(), Box<dyn std::error::Error>>
-{
+fn manifest_v2_without_endpoint_grants_remains_fail_closed()
+-> Result<(), Box<dyn std::error::Error>> {
     let encoded = br#"{
         "schema_version": 2,
         "command": { "program": [47, 98, 105, 110, 47, 101, 99, 104, 111], "arguments": [] },
@@ -126,7 +127,80 @@ fn manifest_v2_without_socket_grants_remains_fail_closed() -> Result<(), Box<dyn
     }"#;
     let launch = decode_launch(encoded)?;
     assert!(launch.manifest().policy.unix_sockets.is_empty());
+    assert!(launch.manifest().policy.local_host_tcp.is_empty());
     Ok(())
+}
+
+#[test]
+fn validates_exact_local_host_tcp_grants_and_rejects_duplicates()
+-> Result<(), Box<dyn std::error::Error>> {
+    let endpoint = LocalHostTcpGrant {
+        port: TcpPort::new(4318).ok_or("test port must be nonzero")?,
+        operation: LocalHostTcpOperation::Connect,
+    };
+    let mut valid = manifest()?;
+    valid.policy.local_host_tcp.push(endpoint.clone());
+    let decoded = decode_launch(&encode_launch(&valid)?)?;
+    assert_eq!(
+        decoded.manifest().policy.local_host_tcp.as_slice(),
+        std::slice::from_ref(&endpoint)
+    );
+    assert!(ValidatedLaunch::try_from(valid).is_ok());
+
+    let mut duplicate = manifest()?;
+    duplicate.policy.local_host_tcp = vec![endpoint.clone(), endpoint.clone()];
+    assert!(matches!(
+        ValidatedLaunch::try_from(duplicate),
+        Err(ValidationError::DuplicateLocalHostTcpGrant(_))
+    ));
+
+    let mut unrestricted = manifest()?;
+    unrestricted.policy.network = NetworkPolicy::AllowAll;
+    unrestricted.policy.local_host_tcp.push(endpoint);
+    assert!(matches!(
+        ValidatedLaunch::try_from(unrestricted),
+        Err(ValidationError::LocalHostTcpRequiresBlockedNetwork)
+    ));
+    Ok(())
+}
+
+#[test]
+fn rejects_invalid_local_host_tcp_grants_from_the_wire() {
+    let zero_port = br#"{
+        "schema_version": 2,
+        "command": { "program": [47, 98, 105, 110, 47, 101, 99, 104, 111], "arguments": [] },
+        "working_directory": "/tmp/project",
+        "environment": [],
+        "policy": {
+            "files": [],
+            "protected_paths": [],
+            "write_protections": [],
+            "local_host_tcp": [{ "port": 0, "operation": "connect" }],
+            "network": "block_all"
+        }
+    }"#;
+    assert!(matches!(
+        decode_launch(zero_port),
+        Err(WireError::Decode(_))
+    ));
+
+    let unknown_operation = br#"{
+        "schema_version": 2,
+        "command": { "program": [47, 98, 105, 110, 47, 101, 99, 104, 111], "arguments": [] },
+        "working_directory": "/tmp/project",
+        "environment": [],
+        "policy": {
+            "files": [],
+            "protected_paths": [],
+            "write_protections": [],
+            "local_host_tcp": [{ "port": 4318, "operation": "bind" }],
+            "network": "block_all"
+        }
+    }"#;
+    assert!(matches!(
+        decode_launch(unknown_operation),
+        Err(WireError::Decode(_))
+    ));
 }
 
 #[test]
@@ -183,6 +257,25 @@ fn bounds_unix_socket_grants() -> Result<(), Box<dyn std::error::Error>> {
     assert!(matches!(
         ValidatedLaunch::try_from(oversized),
         Err(ValidationError::TooManyUnixSocketGrants)
+    ));
+    Ok(())
+}
+
+#[test]
+fn bounds_local_host_tcp_grants() -> Result<(), Box<dyn std::error::Error>> {
+    let mut oversized = manifest()?;
+    oversized.policy.local_host_tcp = (1..=129)
+        .map(|port| {
+            Ok(LocalHostTcpGrant {
+                port: TcpPort::new(port).ok_or("test port must be nonzero")?,
+                operation: LocalHostTcpOperation::Connect,
+            })
+        })
+        .collect::<Result<Vec<_>, &str>>()?;
+
+    assert!(matches!(
+        ValidatedLaunch::try_from(oversized),
+        Err(ValidationError::TooManyLocalHostTcpGrants)
     ));
     Ok(())
 }

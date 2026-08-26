@@ -6,14 +6,16 @@
 use std::fmt::Write as _;
 
 use sandy_core::{
-    AccessMode, FileGrant, NetworkPolicy, PathScope, UnixSocketGrant, UnixSocketOperation,
-    ValidatedPolicy,
+    AccessMode, FileGrant, LocalHostTcpGrant, LocalHostTcpOperation, NetworkPolicy, PathScope,
+    UnixSocketGrant, UnixSocketOperation, ValidatedPolicy,
 };
 
 use crate::{SeatbeltError, baseline, escape::quoted};
 
 const UNIX_STREAM_SOCKET_SETUP: &str =
     "(allow system-socket (socket-domain AF_UNIX) (socket-type SOCK_STREAM))\n";
+const IPV4_STREAM_SOCKET_SETUP: &str =
+    "(allow system-socket (socket-domain AF_INET) (socket-type SOCK_STREAM))\n";
 
 /// SBPL source produced exclusively from a [`ValidatedPolicy`].
 ///
@@ -54,13 +56,20 @@ pub fn compile(policy: &ValidatedPolicy) -> Result<CompiledProfile, SeatbeltErro
 
     match policy.spec().network {
         NetworkPolicy::AllowAll => source.push_str("(allow network*)\n"),
-        NetworkPolicy::BlockAll if !policy.spec().unix_sockets.is_empty() => {
-            source.push_str(UNIX_STREAM_SOCKET_SETUP);
-            for grant in &policy.spec().unix_sockets {
-                render_unix_socket_grant(&mut source, grant)?;
+        NetworkPolicy::BlockAll => {
+            if !policy.spec().unix_sockets.is_empty() {
+                source.push_str(UNIX_STREAM_SOCKET_SETUP);
+                for grant in &policy.spec().unix_sockets {
+                    render_unix_socket_grant(&mut source, grant)?;
+                }
+            }
+            if !policy.spec().local_host_tcp.is_empty() {
+                source.push_str(IPV4_STREAM_SOCKET_SETUP);
+                for grant in &policy.spec().local_host_tcp {
+                    render_local_host_tcp_grant(&mut source, grant)?;
+                }
             }
         }
-        NetworkPolicy::BlockAll => {}
     }
 
     // Terminal denies are emitted after positive grants. Renderer and live tests pin their ability
@@ -85,6 +94,23 @@ pub fn compile(policy: &ValidatedPolicy) -> Result<CompiledProfile, SeatbeltErro
     }
 
     Ok(CompiledProfile { source })
+}
+
+fn render_local_host_tcp_grant(
+    source: &mut String,
+    grant: &LocalHostTcpGrant,
+) -> Result<(), SeatbeltError> {
+    match grant.operation {
+        LocalHostTcpOperation::Connect => {
+            // Seatbelt rejects numeric addresses in this filter and requires
+            // its special `localhost` token. On macOS that token covers the
+            // selected port on IPv4 addresses belonging to this Mac, not only
+            // 127.0.0.1. AF_INET setup above excludes IPv6.
+            let endpoint = quoted(&format!("localhost:{}", grant.port.get()))?;
+            let _ = writeln!(source, "(allow network-outbound (remote tcp {endpoint}))");
+        }
+    }
+    Ok(())
 }
 
 fn render_grant(source: &mut String, grant: &FileGrant) -> Result<(), SeatbeltError> {
@@ -155,9 +181,9 @@ mod tests {
     use std::ffi::OsStr;
 
     use sandy_core::{
-        AbsolutePath, AccessMode, CommandSpec, FileGrant, LaunchManifestV2, MANIFEST_SCHEMA_V2,
-        NetworkPolicy, OsValue, PathScope, PolicySpec, UnixSocketGrant, UnixSocketOperation,
-        ValidatedLaunch, WriteProtection,
+        AbsolutePath, AccessMode, CommandSpec, FileGrant, LaunchManifestV2, LocalHostTcpGrant,
+        LocalHostTcpOperation, MANIFEST_SCHEMA_V2, NetworkPolicy, OsValue, PathScope, PolicySpec,
+        TcpPort, UnixSocketGrant, UnixSocketOperation, ValidatedLaunch, WriteProtection,
     };
 
     use super::*;
@@ -196,10 +222,23 @@ mod tests {
                     },
                 ],
                 unix_sockets,
+                local_host_tcp: Vec::new(),
                 network,
             },
         };
         Ok(ValidatedLaunch::try_from(manifest)?)
+    }
+
+    fn policy_with_local_host_tcp(
+        network: NetworkPolicy,
+        port: u16,
+    ) -> Result<ValidatedLaunch, Box<dyn std::error::Error>> {
+        let mut launch = policy(network)?.into_manifest();
+        launch.policy.local_host_tcp.push(LocalHostTcpGrant {
+            port: TcpPort::new(port).ok_or("test port must be nonzero")?,
+            operation: LocalHostTcpOperation::Connect,
+        });
+        Ok(ValidatedLaunch::try_from(launch)?)
     }
 
     #[test]
@@ -319,6 +358,30 @@ mod tests {
         let source = compile(policy(NetworkPolicy::BlockAll)?.policy())?;
         assert!(!source.source().contains("(allow network-outbound"));
         assert!(!source.source().contains(UNIX_STREAM_SOCKET_SETUP));
+        assert!(!source.source().contains(IPV4_STREAM_SOCKET_SETUP));
+        Ok(())
+    }
+
+    #[test]
+    fn renders_only_one_ipv4_local_host_port_when_network_is_blocked()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = compile(policy_with_local_host_tcp(NetworkPolicy::BlockAll, 4318)?.policy())?;
+
+        assert!(source.source().contains(IPV4_STREAM_SOCKET_SETUP));
+        assert!(
+            source
+                .source()
+                .contains(r#"(allow network-outbound (remote tcp "localhost:4318"))"#)
+        );
+        assert!(!source.source().contains("localhost:4317"));
+        assert!(!source.source().contains("*:4318"));
+        assert!(!source.source().contains("(allow network-bind"));
+        assert!(
+            !source
+                .source()
+                .lines()
+                .any(|line| line == "(allow network*)")
+        );
         Ok(())
     }
 

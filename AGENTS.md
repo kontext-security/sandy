@@ -18,8 +18,9 @@ narrowly.
 
 Version `0.1.x` is limited to macOS, one foreground `run` mode, Claude Code,
 Codex, OpenCode, and generic profiles, explicit filesystem grants, network
-allow/block with exact runtime Unix-socket exceptions, dry-run output, and
-optional self-serve Kontext and host-installed Numbat hook compatibility.
+allow/block with exact runtime Unix-socket and IPv4 local-host TCP exceptions,
+dry-run output, and optional self-serve Kontext and host-installed Numbat hook
+compatibility.
 
 Agent presets are versioned, strictly typed profile documents embedded in the
 CLI at compile time. Profiles resolve through deterministic inheritance in
@@ -112,6 +113,9 @@ These rules are release-blocking:
   sockets, agent sockets, or unrelated local services.
 - Filesystem access to a Unix socket never implies connect authority. Exact
   socket connections require a separate typed capability.
+- A local-host TCP exception names one nonzero port and connect operation on
+  IPv4 addresses belonging to the Mac. Never translate it into blanket
+  networking, bind, DNS, IPv6, another port, or external-address access.
 - Network-enabled profiles may reach same-user local services as well as the
   Internet; treat that as an explicit compatibility tradeoff.
 
@@ -254,6 +258,13 @@ The Numbat hook and agent share one sandbox identity. Do not describe writable
 record output or sequence state as agent-proof, an audit boundary, or complete
 enforcement evidence. An outside-sandbox synchronous evaluator is not part of
 this compatibility layer.
+
+`--numbat-collector[=PORT]` requires `--block-net` and authorizes connect to one
+selected TCP port on IPv4 addresses belonging to the Mac for an
+operator-started OTLP/HTTP collector. It neither requires installed hooks nor
+starts, probes, configures, or authenticates the collector. Treat it as
+telemetry transport with same-user endpoint replacement, forgery, and denial
+of service risks, never as the deferred synchronous evaluator.
 
 ## Rust and dependencies
 

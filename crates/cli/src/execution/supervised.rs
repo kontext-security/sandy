@@ -12,7 +12,7 @@ use sandy_core::{
 use serde_json::json;
 use tempfile::Builder;
 
-const DRY_RUN_SCHEMA_VERSION: u32 = 1;
+const DRY_RUN_SCHEMA_VERSION: u32 = 2;
 
 use crate::{
     cli::RunArgs,
@@ -108,10 +108,14 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
     let (hook_source_grants, hook_source_protections) =
         selected.hook_source_policy(&hook_sources, &paths)?;
     files.extend(hook_source_grants);
-    let runtime_controls = RuntimeControls::new(vec![
+    let mut controls = vec![
         kontext::resolve(&hook_sources, kontext_mode, &paths)?,
         numbat::resolve(&hook_sources, numbat_mode, &paths)?,
-    ]);
+    ];
+    if let Some(port) = arguments.numbat_collector {
+        controls.push(numbat::collector(port)?);
+    }
+    let runtime_controls = RuntimeControls::new(controls);
     for control in runtime_controls.iter() {
         if let Some(reason) = control.unavailable_reason() {
             eprintln!(
@@ -135,6 +139,7 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
         protected_paths,
         write_protections,
         unix_sockets: Vec::new(),
+        local_host_tcp: Vec::new(),
         network,
     };
     runtime_controls.apply_to(&mut policy)?;
@@ -179,6 +184,7 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
             "network": validated.manifest().policy.network,
             "file_grants": validated.manifest().policy.files,
             "unix_socket_grants": validated.manifest().policy.unix_sockets,
+            "local_host_tcp_grants": validated.manifest().policy.local_host_tcp,
             "runtime_controls": runtime_controls
                 .iter()
                 .map(|control| json!({
@@ -233,6 +239,8 @@ fn normalize_policy(policy: &mut PolicySpec) {
     policy.files.dedup();
     policy.unix_sockets.sort();
     policy.unix_sockets.dedup();
+    policy.local_host_tcp.sort();
+    policy.local_host_tcp.dedup();
     policy.write_protections.sort();
     policy.write_protections.dedup();
 }

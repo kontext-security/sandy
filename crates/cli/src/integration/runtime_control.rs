@@ -1,7 +1,8 @@
 use std::collections::BTreeSet;
 
 use sandy_core::{
-    AbsolutePath, AccessMode, FileGrant, PathScope, PolicySpec, UnixSocketGrant, WriteProtection,
+    AbsolutePath, AccessMode, FileGrant, LocalHostTcpGrant, PathScope, PolicySpec, UnixSocketGrant,
+    WriteProtection,
 };
 
 use crate::error::AppError;
@@ -149,6 +150,8 @@ pub(crate) struct RuntimeControlCapabilities {
     pub(crate) write_protections: Vec<WriteProtection>,
     /// Exact pathname Unix-socket operations used by an external host service.
     pub(crate) unix_sockets: Vec<UnixSocketGrant>,
+    /// Selected IPv4 TCP ports on the local Mac for separately managed services.
+    pub(crate) local_host_tcp: Vec<LocalHostTcpGrant>,
 }
 
 impl RuntimeControlCapabilities {
@@ -190,6 +193,15 @@ impl RuntimeControlCapabilities {
                 return Err(AppError::runtime_control(
                     service,
                     "a Unix-socket grant is not protected from overlapping filesystem writes",
+                ));
+            }
+        }
+        let mut seen_local_host_tcp = BTreeSet::new();
+        for grant in &self.local_host_tcp {
+            if !seen_local_host_tcp.insert(grant) {
+                return Err(AppError::runtime_control(
+                    service,
+                    "resolved local-host TCP grants overlap; refusing to broaden the runtime policy",
                 ));
             }
         }
@@ -242,6 +254,9 @@ impl RuntimeControls {
             composed
                 .unix_sockets
                 .extend(capabilities.unix_sockets.iter().cloned());
+            composed
+                .local_host_tcp
+                .extend(capabilities.local_host_tcp.iter().cloned());
         }
 
         for control in &self.controls {
@@ -396,6 +411,7 @@ mod tests {
                     path: socket.clone(),
                     operation: sandy_core::UnixSocketOperation::Connect,
                 }],
+                local_host_tcp: Vec::new(),
             },
         )?;
         let output = AbsolutePath::new("/var/log/tool")?;
