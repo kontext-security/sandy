@@ -12,7 +12,7 @@ use super::{
 use crate::{
     error::AppError,
     profile::ResolvedHookSource,
-    resolve::{ResolvedPaths, resolve_command, scoped_write_protections, write_protections},
+    resolve::{ResolvedUserPaths, resolve_command, scoped_write_protections, write_protections},
 };
 
 const SERVICE: &str = "Numbat";
@@ -42,13 +42,13 @@ use protocol::{HookRuntime, codex_hooks_feature_enabled, parse_command};
 pub(crate) fn resolve(
     hook_sources: &[ResolvedHookSource],
     mode: IntegrationMode,
-    paths: &ResolvedPaths,
+    paths: &ResolvedUserPaths,
 ) -> Result<ResolvedRuntimeControl, AppError> {
     let configured = discover(hook_sources)?;
     if configured.is_empty() {
         if mode.is_required() {
             return Err(error(
-                "--numbat requires installed hooks; run numbat hook install for the selected agent, or omit --numbat",
+                "--numbat requires installed hooks; run sandy integrations setup numbat --agent <claude|codex|opencode>, or omit --numbat",
             ));
         }
         return Ok(ResolvedRuntimeControl::inactive(SERVICE));
@@ -160,7 +160,7 @@ fn discover(sources: &[ResolvedHookSource]) -> Result<Vec<ConfiguredSource>, App
 
 fn resolve_configured(
     configured: &[ConfiguredSource],
-    paths: &ResolvedPaths,
+    paths: &ResolvedUserPaths,
 ) -> Result<ResolvedRuntimeControl, AppError> {
     let home = paths
         .home
@@ -229,7 +229,7 @@ struct RuntimeLayout {
 
 fn validate_runtime_layout(
     parsed_sources: &[ParsedSource],
-    paths: &ResolvedPaths,
+    paths: &ResolvedUserPaths,
 ) -> Result<(), AppError> {
     let mut layout = RuntimeLayout::default();
     for parsed in parsed_sources {
@@ -464,11 +464,8 @@ mod tests {
         Ok(binary)
     }
 
-    fn paths(home: &Path, working: &Path) -> Result<ResolvedPaths, Box<dyn std::error::Error>> {
-        Ok(ResolvedPaths {
-            working_directory: AbsolutePath::new(
-                fs::canonicalize(working)?.to_string_lossy().into_owned(),
-            )?,
+    fn paths(home: &Path) -> Result<ResolvedUserPaths, Box<dyn std::error::Error>> {
+        Ok(ResolvedUserPaths {
             home: Some(fs::canonicalize(home)?),
             protected: Vec::new(),
         })
@@ -579,11 +576,7 @@ mod tests {
         fs::write(&hooks, body)?;
         let source =
             ResolvedHookSource::fixed(HookProtocol::CodexHooks, hooks, HookSourceScope::File);
-        let control = resolve(
-            &[source],
-            IntegrationMode::Required,
-            &paths(&home, &working)?,
-        )?;
+        let control = resolve(&[source], IntegrationMode::Required, &paths(&home)?)?;
         assert!(control.is_active());
 
         let controls = super::super::RuntimeControls::new(vec![control]);
@@ -631,9 +624,7 @@ mod tests {
     fn rejects_hooks_that_disagree_on_the_executable() -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
         let home = root.path().join("home");
-        let working = root.path().join("project");
         fs::create_dir(&home)?;
-        fs::create_dir(&working)?;
         let first = executable(root.path())?;
         let second = root.path().join("numbat-second");
         fs::copy(&first, &second)?;
@@ -666,7 +657,7 @@ mod tests {
         fs::write(configured[0].path(), "{}")?;
         fs::write(configured[1].path(), "{}")?;
 
-        let result = resolve_configured(&configured, &paths(&home, &working)?);
+        let result = resolve_configured(&configured, &paths(&home)?);
         assert!(matches!(result, Err(AppError::RuntimeControl { .. })));
         Ok(())
     }
@@ -707,12 +698,10 @@ mod tests {
     {
         let root = tempfile::tempdir()?;
         let home = root.path().join("home");
-        let working = root.path().join("project");
         let claude = home.join(".claude");
         let numbat = home.join(".numbat");
         fs::create_dir_all(&claude)?;
         fs::create_dir(&numbat)?;
-        fs::create_dir(&working)?;
         let binary = executable(root.path())?;
         let settings = claude.join("settings.json");
         let output = numbat.join("claude.ndjson");
@@ -728,7 +717,7 @@ mod tests {
                 HookSourceScope::File,
             )],
             IntegrationMode::Required,
-            &paths(&home, &working)?,
+            &paths(&home)?,
         )?;
 
         assert!(control.is_active());
@@ -778,7 +767,7 @@ mod tests {
         fs::create_dir(&working)?;
         fs::create_dir(&rules)?;
         fs::create_dir(rules.join("nested"))?;
-        let resolved_paths = paths(&home, &working)?;
+        let resolved_paths = paths(&home)?;
 
         for output in [
             rules.join("findings.ndjson"),
@@ -816,7 +805,7 @@ mod tests {
                 ..HookRuntime::default()
             },
         };
-        assert!(validate_runtime_layout(&[parsed], &paths(&home, &working)?).is_err());
+        assert!(validate_runtime_layout(&[parsed], &paths(&home)?).is_err());
         Ok(())
     }
 
@@ -829,7 +818,7 @@ mod tests {
         let ssh = home.join(".ssh");
         fs::create_dir_all(&ssh)?;
         fs::create_dir(&working)?;
-        let mut resolved = paths(&home, &working)?;
+        let mut resolved = paths(&home)?;
         resolved.protected = vec![absolute_if_utf8(&fs::canonicalize(&ssh)?)?];
 
         let protected_child = ssh.join("rules");
@@ -857,15 +846,13 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
         let home = root.path().join("home");
-        let working = root.path().join("working");
         let protected = home.join(".ssh");
         let rules = protected.join("rules");
         let alias = root.path().join("rules-link");
         fs::create_dir_all(&rules)?;
-        fs::create_dir(&working)?;
         std::os::unix::fs::symlink(&rules, &alias)?;
 
-        let mut resolved = paths(&home, &working)?;
+        let mut resolved = paths(&home)?;
         resolved.protected = vec![absolute_if_utf8(&fs::canonicalize(&protected)?)?];
         let parsed = ParsedSource {
             binary: root.path().join("numbat"),

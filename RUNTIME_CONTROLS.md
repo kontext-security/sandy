@@ -7,6 +7,9 @@ Sandy's provider-neutral capability types.
 
 ```mermaid
 flowchart LR
+    Operator[Operator] --> Setup[sandy integrations setup]
+    Setup --> HostInstall[Provider install and hook configuration]
+    HostInstall --> Sources
     Profile[Typed agent profile] --> Sources[Bounded hook sources]
     Sources --> Resolvers[Integration resolvers]
     Parent[Trusted Sandy parent] --> Resolvers
@@ -29,6 +32,24 @@ controls once and pins every protected resource through its enclosing
 writable ancestors. Core validation independently rejects a manifest that
 omits that integrity closure. The bootstrap and Seatbelt compiler never receive
 an agent or service name.
+
+Setup is a separate, explicit host-mutation plane. Both supported providers use
+the same lifecycle: inspect the selected agent registration, locate an existing
+executable, install only when it is absent, invoke the provider-owned
+configuration command, and verify the result through the normal runtime
+resolver. A verified active registration stops the lifecycle before executable
+lookup, so Sandy does not rewrite a healthy installation. Ordinary launch and
+doctor paths cannot enter this lifecycle.
+
+The shared lifecycle is deliberately a closed Rust trait, not a dynamically
+loaded plugin API. Setup providers supply only their installation mechanics.
+Kontext delegates installation to Homebrew and therefore inherits the
+operator's configured Homebrew and tap trust. Its configuration command is the
+provider-wide `kontext setup`; `--agent` selects the registration Sandy verifies
+afterward, not the complete scope of changes made by Kontext. Numbat downloads
+one pinned public release asset, verifies its
+embedded digest, and delegates registration to `numbat hook install`. Runtime
+capabilities still come exclusively from the existing bounded resolvers.
 
 A local endpoint control is independent from hook discovery. For example,
 `--numbat-collector` resolves only connect authority for one IPv4 TCP port
@@ -61,6 +82,13 @@ and the complete supported generated command or plugin shape, then validates
 the declared runtime resources. “Active” for Numbat therefore means that the
 registration was recognized and its exact capabilities were accepted, not that
 Sandy authenticated the binary or proved a hook invocation succeeded.
+
+Executable presence alone remains insufficient evidence during launch. It is
+used only after an operator explicitly enters setup, where it determines
+whether Sandy can reuse an installation or must install one. Setup always ends
+by rediscovering the generated hook registration and resolving its exact
+capabilities; a successful provider command without successful rediscovery is
+a failure.
 
 ## Current execution identities
 

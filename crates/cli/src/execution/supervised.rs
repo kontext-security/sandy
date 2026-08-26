@@ -49,21 +49,21 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
         &command.program,
         AccessMode::Read,
         PathScope::Exact,
-        &paths.protected,
+        &paths.user.protected,
     )?);
     if let Some(parent) = command.program.parent() {
         files.push(grant(
             parent,
             AccessMode::Read,
             PathScope::Subtree,
-            &paths.protected,
+            &paths.user.protected,
         )?);
     }
     files.push(grant(
         session.path(),
         AccessMode::ReadWrite,
         PathScope::Subtree,
-        &paths.protected,
+        &paths.user.protected,
     )?);
     let ca_bundle = if arguments.block_net {
         None
@@ -71,18 +71,25 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
         default_ca_bundle()
     };
     let ca_bundle = ca_bundle
-        .map(|path| grant(path, AccessMode::Read, PathScope::Exact, &paths.protected))
+        .map(|path| {
+            grant(
+                path,
+                AccessMode::Read,
+                PathScope::Exact,
+                &paths.user.protected,
+            )
+        })
         .transpose()?;
     if let Some(bundle) = &ca_bundle {
         files.push(bundle.clone());
     }
-    files.extend(selected.grants(&paths)?);
+    files.extend(selected.grants(&paths.user)?);
     for path in &arguments.read {
         files.push(grant(
             path,
             AccessMode::Read,
             PathScope::Subtree,
-            &paths.protected,
+            &paths.user.protected,
         )?);
     }
     for path in &arguments.read_write {
@@ -90,7 +97,7 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
             path,
             AccessMode::ReadWrite,
             PathScope::Subtree,
-            &paths.protected,
+            &paths.user.protected,
         )?);
     }
 
@@ -104,13 +111,13 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
     } else {
         IntegrationMode::Detect
     };
-    let hook_sources = selected.hook_sources(&paths)?;
+    let hook_sources = selected.hook_sources(&paths.user)?;
     let (hook_source_grants, hook_source_protections) =
-        selected.hook_source_policy(&hook_sources, &paths)?;
+        selected.hook_source_policy(&hook_sources, &paths.user)?;
     files.extend(hook_source_grants);
     let mut controls = vec![
-        kontext::resolve(&hook_sources, kontext_mode, &paths)?,
-        numbat::resolve(&hook_sources, numbat_mode, &paths)?,
+        kontext::resolve(&hook_sources, kontext_mode, &paths.user)?,
+        numbat::resolve(&hook_sources, numbat_mode, &paths.user)?,
     ];
     if let Some(port) = arguments.numbat_collector {
         controls.push(numbat::collector(port)?);
@@ -124,7 +131,7 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
             );
         }
     }
-    let mut write_protections = selected.protected_write_paths(&paths)?;
+    let mut write_protections = selected.protected_write_paths(&paths.user)?;
     write_protections.extend(hook_source_protections);
     let network = if arguments.block_net {
         NetworkPolicy::BlockAll
@@ -133,7 +140,7 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
     };
     write_protections.sort();
     write_protections.dedup();
-    let protected_paths = selected.protected_paths(&paths);
+    let protected_paths = selected.protected_paths(&paths.user);
     let mut policy = PolicySpec {
         files,
         protected_paths,

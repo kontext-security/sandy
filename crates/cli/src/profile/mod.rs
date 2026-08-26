@@ -14,7 +14,7 @@ use sandy_core::{
 
 use crate::{
     error::AppError,
-    resolve::{ResolvedPaths, absolute_if_utf8, grant, write_protections},
+    resolve::{ResolvedUserPaths, absolute_if_utf8, grant, write_protections},
 };
 
 const EMBEDDED_PROFILES: &[(&str, &str)] = &[
@@ -70,15 +70,15 @@ impl SelectedProfile {
         self.detected
     }
 
-    /// Raw protected-path templates for early path resolution, before a
-    /// `ResolvedPaths` exists.
+    /// Raw protected-path templates used to resolve the user's protected
+    /// locations before either setup or launch policy assembly.
     pub(crate) fn protected_templates(&self) -> &[TemplatePath] {
         self.resolved.protected_paths()
     }
 
     pub(crate) fn grants(
         &self,
-        paths: &ResolvedPaths,
+        paths: &ResolvedUserPaths,
     ) -> Result<Vec<sandy_core::FileGrant>, AppError> {
         let mut resolved_grants = Vec::new();
         for template in self.resolved.grants() {
@@ -98,13 +98,13 @@ impl SelectedProfile {
         Ok(resolved_grants)
     }
 
-    pub(crate) fn protected_paths(&self, paths: &ResolvedPaths) -> Vec<AbsolutePath> {
+    pub(crate) fn protected_paths(&self, paths: &ResolvedUserPaths) -> Vec<AbsolutePath> {
         expand_all(self.resolved.protected_paths(), paths)
     }
 
     pub(crate) fn protected_write_paths(
         &self,
-        paths: &ResolvedPaths,
+        paths: &ResolvedUserPaths,
     ) -> Result<Vec<sandy_core::WriteProtection>, AppError> {
         write_protections(
             self.resolved
@@ -116,7 +116,7 @@ impl SelectedProfile {
 
     pub(crate) fn hook_sources(
         &self,
-        paths: &ResolvedPaths,
+        paths: &ResolvedUserPaths,
     ) -> Result<Vec<ResolvedHookSource>, AppError> {
         self.resolved
             .hook_sources()
@@ -132,7 +132,7 @@ impl SelectedProfile {
     pub(crate) fn hook_source_policy(
         &self,
         sources: &[ResolvedHookSource],
-        paths: &ResolvedPaths,
+        paths: &ResolvedUserPaths,
     ) -> Result<(Vec<sandy_core::FileGrant>, Vec<sandy_core::WriteProtection>), AppError> {
         let mut grants = Vec::new();
         let mut protected = Vec::new();
@@ -182,7 +182,7 @@ impl SelectedProfile {
 
 fn resolve_hook_source(
     source: &HookSourceTemplate,
-    paths: &ResolvedPaths,
+    paths: &ResolvedUserPaths,
     environment: &impl Fn(&str) -> Option<OsString>,
 ) -> Result<Option<ResolvedHookSource>, AppError> {
     let (path, user_source, additional_grant_root) = match &source.location {
@@ -299,7 +299,7 @@ fn resolve_by_name(name: &str) -> Result<ResolvedProfile, AppError> {
         })
 }
 
-fn expand(template: &TemplatePath, paths: &ResolvedPaths) -> Option<PathBuf> {
+fn expand(template: &TemplatePath, paths: &ResolvedUserPaths) -> Option<PathBuf> {
     let value = template.as_str();
     match value.strip_prefix("~/") {
         Some(rest) => Some(paths.home.as_deref()?.join(rest)),
@@ -307,7 +307,7 @@ fn expand(template: &TemplatePath, paths: &ResolvedPaths) -> Option<PathBuf> {
     }
 }
 
-fn expand_all(templates: &[TemplatePath], paths: &ResolvedPaths) -> Vec<AbsolutePath> {
+fn expand_all(templates: &[TemplatePath], paths: &ResolvedUserPaths) -> Vec<AbsolutePath> {
     templates
         .iter()
         .filter_map(|template| expand(template, paths))
@@ -319,9 +319,8 @@ fn expand_all(templates: &[TemplatePath], paths: &ResolvedPaths) -> Vec<Absolute
 mod tests {
     use super::*;
 
-    fn test_paths() -> Result<ResolvedPaths, sandy_core::PathValidationError> {
-        Ok(ResolvedPaths {
-            working_directory: AbsolutePath::new("/workspace")?,
+    fn test_paths() -> Result<ResolvedUserPaths, sandy_core::PathValidationError> {
+        Ok(ResolvedUserPaths {
             home: Some(PathBuf::from("/Users/example")),
             protected: Vec::new(),
         })
@@ -528,8 +527,7 @@ mod tests {
         fs::create_dir(&home)?;
         fs::create_dir(&project)?;
         fs::create_dir(&config)?;
-        let paths = ResolvedPaths {
-            working_directory: absolute_if_utf8(&fs::canonicalize(&project)?)?,
+        let paths = ResolvedUserPaths {
             home: Some(fs::canonicalize(&home)?),
             protected: Vec::new(),
         };

@@ -12,7 +12,93 @@ fn help_exposes_only_public_commands() -> Result<(), Box<dyn std::error::Error>>
         .success()
         .stdout(predicate::str::contains("run"))
         .stdout(predicate::str::contains("doctor"))
+        .stdout(predicate::str::contains("integrations"))
         .stdout(predicate::str::contains("__bootstrap").not());
+    Ok(())
+}
+
+#[test]
+fn integration_setup_does_not_mutate_an_active_numbat_installation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let home = directory.path().join("home");
+    let codex = home.join(".codex");
+    let numbat = home.join(".numbat");
+    let bin = directory.path().join("bin");
+    fs::create_dir_all(&codex)?;
+    fs::create_dir(&numbat)?;
+    fs::create_dir(&bin)?;
+    let marker = directory.path().join("unexpected-mutation");
+    let binary = bin.join("numbat");
+    fs::write(
+        &binary,
+        format!("#!/bin/sh\ntouch '{}'\nexit 0\n", marker.display()),
+    )?;
+    fs::set_permissions(&binary, fs::Permissions::from_mode(0o700))?;
+    fs::write(
+        codex.join("hooks.json"),
+        format!(
+            r#"{{"hooks":{{"Stop":[{{"hooks":[{{"type":"command","command":"'{}' hook stop --agent codex --installed-by=numbat --output=file --output-file '$HOME/.numbat/findings.ndjson'"}}]}}]}}}}"#,
+            binary.display()
+        ),
+    )?;
+
+    let mut command = Command::cargo_bin("sandy")?;
+    command
+        .env("HOME", &home)
+        .env("PATH", &bin)
+        .args(["integrations", "setup", "numbat", "--agent", "codex"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("already installed and configured"));
+    assert!(!marker.exists());
+    Ok(())
+}
+
+#[test]
+fn integration_setup_configures_an_existing_numbat_binary() -> Result<(), Box<dyn std::error::Error>>
+{
+    let directory = tempfile::tempdir()?;
+    let home = directory.path().join("home");
+    let codex = home.join(".codex");
+    let bin = directory.path().join("bin");
+    fs::create_dir(&home)?;
+    fs::create_dir(&bin)?;
+    let marker = directory.path().join("arguments");
+    let binary = bin.join("numbat");
+    let hooks = codex.join("hooks.json");
+    let configured = format!(
+        r#"{{"hooks":{{"Stop":[{{"hooks":[{{"type":"command","command":"{} hook stop --agent codex --installed-by=numbat --output=file --output-file {}"}}]}}]}}}}"#,
+        binary.display(),
+        home.join(".numbat/findings.ndjson").display()
+    );
+    fs::write(
+        &binary,
+        format!(
+            "#!/bin/sh\n/usr/bin/printf '%s\\n' \"$@\" > '{}'\n/bin/mkdir -p '{}'\n/usr/bin/printf '%s' '{}' > '{}'\nexit 0\n",
+            marker.display(),
+            codex.display(),
+            configured,
+            hooks.display()
+        ),
+    )?;
+    fs::set_permissions(&binary, fs::Permissions::from_mode(0o700))?;
+
+    let mut command = Command::cargo_bin("sandy")?;
+    command
+        .env("HOME", &home)
+        .env("PATH", &bin)
+        .args(["integrations", "setup", "numbat", "--agent", "codex"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "already installed and is now configured",
+        ));
+    let arguments = fs::read_to_string(marker)?;
+    assert!(arguments.contains("hook\ninstall\n--agent\ncodex"));
+    assert!(arguments.contains("--output=file"));
+    assert!(home.join(".numbat").is_dir());
+    assert!(hooks.is_file());
     Ok(())
 }
 

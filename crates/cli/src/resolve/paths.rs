@@ -11,28 +11,24 @@ use sandy_core::{AbsolutePath, AccessMode, FileGrant, PathScope, TemplatePath, W
 use crate::error::AppError;
 
 #[derive(Debug)]
-pub(crate) struct ResolvedPaths {
-    pub(crate) working_directory: AbsolutePath,
+pub(crate) struct ResolvedUserPaths {
     pub(crate) home: Option<PathBuf>,
     pub(crate) protected: Vec<AbsolutePath>,
 }
 
-pub(crate) fn resolve_paths(
+#[derive(Debug)]
+pub(crate) struct ResolvedPaths {
+    pub(crate) working_directory: AbsolutePath,
+    pub(crate) user: ResolvedUserPaths,
+}
+
+pub(crate) fn resolve_user_paths(
     protected_templates: &[TemplatePath],
-) -> Result<ResolvedPaths, AppError> {
-    let working_directory = fs::canonicalize(
-        env::current_dir().map_err(|error| AppError::io("read working directory", error))?,
-    )
-    .map_err(|error| AppError::io("canonicalize working directory", error))?;
+) -> Result<ResolvedUserPaths, AppError> {
     let home = env::var_os("HOME")
         .map(PathBuf::from)
         .and_then(|path| fs::canonicalize(path).ok());
-
-    if working_directory == Path::new("/") || home.as_ref() == Some(&working_directory) {
-        return Err(AppError::UnsafeWorkingDirectory);
-    }
-
-    let mut protected: Vec<AbsolutePath> = Vec::new();
+    let mut protected = Vec::new();
     for template in protected_templates {
         let candidate = match template.as_str().strip_prefix("~/") {
             Some(rest) => home.as_deref().map(|home| home.join(rest)),
@@ -47,8 +43,23 @@ pub(crate) fn resolve_paths(
             protected.push(candidate);
         }
     }
+    Ok(ResolvedUserPaths { home, protected })
+}
 
-    for path in &protected {
+pub(crate) fn resolve_paths(
+    protected_templates: &[TemplatePath],
+) -> Result<ResolvedPaths, AppError> {
+    let working_directory = fs::canonicalize(
+        env::current_dir().map_err(|error| AppError::io("read working directory", error))?,
+    )
+    .map_err(|error| AppError::io("canonicalize working directory", error))?;
+    let user = resolve_user_paths(protected_templates)?;
+
+    if working_directory == Path::new("/") || user.home.as_ref() == Some(&working_directory) {
+        return Err(AppError::UnsafeWorkingDirectory);
+    }
+
+    for path in &user.protected {
         if working_directory.starts_with(path.as_path()) {
             return Err(AppError::ProtectedPath(working_directory));
         }
@@ -56,8 +67,7 @@ pub(crate) fn resolve_paths(
 
     Ok(ResolvedPaths {
         working_directory: absolute_if_utf8(&working_directory)?,
-        home,
-        protected,
+        user,
     })
 }
 

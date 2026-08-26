@@ -138,9 +138,10 @@ hooks and local services without making them part of its sandboxing core.
 Current optional integrations can be required explicitly:
 
 ```bash
+sandy integrations setup kontext --agent claude
 sandy run --kontext -- claude
-install -d -m 700 ~/.numbat
-numbat hook install --agent codex
+
+sandy integrations setup numbat --agent codex
 sandy run --numbat -- codex --sandbox danger-full-access
 ```
 
@@ -148,7 +149,25 @@ For known agent profiles, Sandy automatically preserves verified existing
 Kontext hooks and ownership-marked Numbat registrations whose complete
 generated shape it recognizes. The explicit flag makes that integration
 mandatory; without it, a missing integration has no effect on standalone
-sandboxing. Sandy never installs, updates, or repairs either service.
+sandboxing.
+
+`sandy integrations setup` is the explicit host-configuration path. It first
+checks the selected agent's existing registration. A healthy integration is
+left untouched; an installed provider is configured with its official setup
+command; and a missing provider is installed before configuration. Kontext is
+installed through its Homebrew tap and continues to own authentication, daemon
+setup, and hook registration. For Kontext, `--agent` selects the registration
+Sandy must verify; the provider-wide `kontext setup` command may configure
+other supported agents as well. Numbat uses a versioned Sandy-managed executable
+whose public macOS release archive is bounded and verified against a SHA-256
+digest embedded in Sandy before it is published. Sandy then invokes Numbat's
+official idempotent hook installer in file-output mode.
+
+This command changes persistent host configuration and runs outside the
+sandbox. Ordinary `sandy run` and `sandy doctor` never install, update, or
+repair either provider. Existing installations on `PATH` are reused, and an
+already active registration is authoritative even if its executable is not on
+`PATH`.
 
 Numbat hooks currently run inside the same sandbox as the agent. Sandy keeps
 their registration, executable, and rule directories readable but immutable,

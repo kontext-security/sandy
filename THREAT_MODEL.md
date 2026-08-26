@@ -12,6 +12,12 @@ the Seatbelt compiler and native wrapper, macOS Seatbelt, and the host kernel.
 The selected executable and agent hooks are inside the sandbox and untrusted.
 An optional Kontext daemon remains a separate host service.
 
+The explicit `sandy integrations setup` command is a trusted host
+administration operation, not part of sandbox launch. It executes Homebrew and
+provider-owned setup binaries outside Seatbelt and permits them to persistently
+change the user's installation and agent hook configuration. Ordinary `run`
+and `doctor` paths do not have this authority.
+
 ## Security boundaries
 
 Sandy validates and canonicalizes an entire launch before applying policy. A
@@ -57,6 +63,16 @@ in `sandy-seatbelt`.
 - authenticated provenance for optional Kontext hook events; and
 - complete agent behavior visibility through cooperative hook surfaces.
 
+Provider installation has the supply-chain risk of the selected distribution
+channel. Kontext installation trusts Homebrew, its configured tap, and the
+official Kontext setup flow. Sandy's Numbat installer accepts only the embedded
+macOS asset URL for one version, bounds the archive, verifies its embedded
+SHA-256 digest, extracts only the named executable as a regular bounded file,
+and publishes it without overwriting an existing path. The digest provides
+artifact integrity, not publisher identity or revocation. Existing executables
+found on `PATH` are operator-selected inputs and are not authenticated by
+Sandy.
+
 Agent-visible hook registration and the active self-serve configuration are
 intentionally readable and are therefore not confidential from the sandboxed
 process tree. In remote mode this surface also includes the cached enforcement
@@ -64,7 +80,8 @@ policy required for outage behavior. Their integrity is protected: Sandy
 resolves both lexical entries and canonical targets and denies writes. Kontext
 credentials, installation identity, databases, logs, and unrelated state remain
 outside that readable surface. Kontext setup, repair, and uninstall are trusted
-host operations and are not expected to work from inside Sandy.
+host operations and are not expected to work from inside Sandy. Sandy may invoke
+the official setup flow only through the explicit `integrations setup` command.
 
 Compatibility preflight executes the hook-configured Kontext binary in the
 trusted parent before Seatbelt is applied. Its deadline and output are bounded,
@@ -91,6 +108,17 @@ the hook and agent share one Seatbelt identity, the agent can also alter,
 truncate, fabricate, or remove that data. Sandy therefore does not treat those
 files as an audit boundary or claim that Numbat decisions have authenticated
 provenance.
+
+The explicit Numbat setup path creates `~/.numbat` and a versioned executable
+below `~/Library/Application Support/Sandy/integrations`, then runs Numbat's
+idempotent hook installer with an exact file output. Launch-time discovery
+never creates those paths or repairs the registration.
+
+Setup rejects symlinks and publishes without overwriting an existing
+executable, but its directory checks are pathname-based. Concurrent mutation
+by another process running as the same user is outside the `0.1.x` threat
+model; setup must not be described as race-free against a hostile same-user
+process.
 
 Configured Numbat hooks that deliver directly over HTTP are not supported.
 Granting that mode would expose ordinary external networking and potentially
