@@ -13,7 +13,7 @@ use thiserror::Error;
 use crate::{AccessMode, PathScope};
 
 /// Schema version accepted for embedded profile documents.
-pub const PROFILE_SCHEMA_V2: u32 = 2;
+pub const PROFILE_SCHEMA_V4: u32 = 4;
 /// Fallback profile used when no known binary name is detected.
 pub const GENERIC_PROFILE_NAME: &str = "generic";
 
@@ -123,16 +123,94 @@ pub enum HookProtocol {
     ClaudeSettings,
     /// Codex `hooks.json` grammar.
     CodexHooks,
+    /// Codex organization requirements TOML hook grammar.
+    CodexRequirements,
+    /// OpenCode JavaScript or TypeScript plugin source.
+    OpenCodePlugin,
+}
+
+/// Whether a hook source names one file or a directory of protocol documents.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(rename_all = "snake_case")]
+pub enum HookSourceScope {
+    /// Read one exact source path when it exists.
+    #[default]
+    File,
+    /// Inspect direct children selected by the protocol adapter.
+    Directory,
+}
+
+/// Closed set of hook-source locations supported by known agents.
+///
+/// Fixed locations remain profile data. User locations let the CLI honor the
+/// same small set of configuration-root overrides as the corresponding agent,
+/// without admitting arbitrary environment-variable templates into profiles.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum HookSourceLocation {
+    /// One absolute or home-relative profile path.
+    Fixed(TemplatePath),
+    /// Claude's `settings.json`, rooted at `CLAUDE_CONFIG_DIR` or `~/.claude`.
+    ClaudeUserSettings,
+    /// Codex's `hooks.json`, rooted at `CODEX_HOME` or `~/.codex`.
+    CodexUserHooks,
+    /// OpenCode's plugin directory, honoring its documented config-root precedence.
+    OpenCodeUserPlugins,
 }
 
 /// One location where the CLI may discover hooks for a known agent protocol.
-#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct HookSourceTemplate {
     /// Parser and validation contract for the source.
     pub protocol: HookProtocol,
-    /// Absolute or home-relative source location.
-    pub path: TemplatePath,
+    /// Fixed or agent-resolved source location.
+    pub location: HookSourceLocation,
+    /// Exact-file or direct-directory discovery semantics.
+    pub scope: HookSourceScope,
+}
+
+impl<'de> Deserialize<'de> for HookSourceTemplate {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Clone, Copy, Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        enum Location {
+            Fixed,
+            ClaudeUserSettings,
+            CodexUserHooks,
+            OpenCodeUserPlugins,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Raw {
+            protocol: HookProtocol,
+            location: Location,
+            #[serde(default)]
+            path: Option<TemplatePath>,
+            #[serde(default)]
+            scope: HookSourceScope,
+        }
+
+        let raw = Raw::deserialize(deserializer)?;
+        let location = match (raw.location, raw.path) {
+            (Location::Fixed, Some(path)) => HookSourceLocation::Fixed(path),
+            (Location::Fixed, None) => {
+                return Err(de::Error::custom("fixed hook source requires path"));
+            }
+            (Location::ClaudeUserSettings, None) => HookSourceLocation::ClaudeUserSettings,
+            (Location::CodexUserHooks, None) => HookSourceLocation::CodexUserHooks,
+            (Location::OpenCodeUserPlugins, None) => HookSourceLocation::OpenCodeUserPlugins,
+            (_, Some(_)) => {
+                return Err(de::Error::custom(
+                    "agent-resolved hook source must not declare path",
+                ));
+            }
+        };
+        Ok(Self {
+            protocol: raw.protocol,
+            location,
+            scope: raw.scope,
+        })
+    }
 }
 
 impl<'de> Deserialize<'de> for GrantTemplate {
@@ -165,14 +243,14 @@ pub struct DetectSpec {
     pub binary_names: Vec<String>,
 }
 
-/// Strictly typed version-2 embedded profile document.
+/// Strictly typed version-4 embedded profile document.
 ///
 /// This is the deserialized document shape, before inheritance is resolved. Unknown fields are
 /// rejected to prevent misspelled security settings from being ignored.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ProfileDocumentV2 {
-    /// Profile schema version; must equal [`PROFILE_SCHEMA_V2`].
+pub struct ProfileDocumentV4 {
+    /// Profile schema version; must equal [`PROFILE_SCHEMA_V4`].
     pub schema_version: u32,
     /// Stable lowercase profile identifier and embedded source name.
     pub name: String,
@@ -270,7 +348,7 @@ impl ResolvedProfile {
 /// rejects ambiguous detection claims before any target can be launched.
 #[derive(Debug)]
 pub struct ProfileRegistry {
-    documents: BTreeMap<String, ProfileDocumentV2>,
+    documents: BTreeMap<String, ProfileDocumentV4>,
     detection: BTreeMap<String, String>,
 }
 
@@ -285,7 +363,7 @@ impl ProfileRegistry {
             if source.len() > MAX_PROFILE_SOURCE_BYTES {
                 return Err(ProfileError::TooLarge((*source_name).to_owned()));
             }
-            let document: ProfileDocumentV2 = serde_json::from_str(source)
+            let document: ProfileDocumentV4 = serde_json::from_str(source)
                 .map_err(|error| ProfileError::Parse((*source_name).to_owned(), error))?;
             check_schema(source_name, &document)?;
             validate_name(&document.name)?;
@@ -310,6 +388,9 @@ impl ProfileRegistry {
                         second: document.name.clone(),
                     });
                 }
+            }
+            for source in &document.hook_sources {
+                validate_hook_source(source)?;
             }
             documents.insert(document.name.clone(), document);
         }
@@ -365,7 +446,7 @@ impl ProfileRegistry {
         self.resolve(name)
     }
 
-    fn extend_chain(&self, name: &str) -> Result<Vec<&ProfileDocumentV2>, ProfileError> {
+    fn extend_chain(&self, name: &str) -> Result<Vec<&ProfileDocumentV4>, ProfileError> {
         let mut chain = Vec::new();
         let mut visited = HashSet::new();
         let mut cursor = Some(name);
@@ -402,7 +483,7 @@ struct MergedProfile {
 }
 
 impl MergedProfile {
-    fn absorb(&mut self, document: &ProfileDocumentV2) {
+    fn absorb(&mut self, document: &ProfileDocumentV4) {
         for binary in &document.detect.binary_names {
             if !self.detect.binary_names.contains(binary) {
                 self.detect.binary_names.push(binary.clone());
@@ -459,8 +540,8 @@ fn push_unique<T: Clone + PartialEq>(target: &mut Vec<T>, values: &[T]) {
     }
 }
 
-fn check_schema(source_name: &str, document: &ProfileDocumentV2) -> Result<(), ProfileError> {
-    if document.schema_version != PROFILE_SCHEMA_V2 {
+fn check_schema(source_name: &str, document: &ProfileDocumentV4) -> Result<(), ProfileError> {
+    if document.schema_version != PROFILE_SCHEMA_V4 {
         return Err(ProfileError::UnsupportedSchema {
             name: document.name.clone(),
             version: document.schema_version,
@@ -473,6 +554,36 @@ fn check_schema(source_name: &str, document: &ProfileDocumentV2) -> Result<(), P
         });
     }
     Ok(())
+}
+
+fn validate_hook_source(source: &HookSourceTemplate) -> Result<(), ProfileError> {
+    let location_matches_protocol = matches!(
+        (&source.location, source.protocol),
+        (HookSourceLocation::Fixed(_), _)
+            | (
+                HookSourceLocation::ClaudeUserSettings,
+                HookProtocol::ClaudeSettings
+            )
+            | (HookSourceLocation::CodexUserHooks, HookProtocol::CodexHooks)
+            | (
+                HookSourceLocation::OpenCodeUserPlugins,
+                HookProtocol::OpenCodePlugin
+            )
+    );
+    let scope_matches_protocol = matches!(
+        (source.protocol, source.scope),
+        (HookProtocol::ClaudeSettings, _)
+            | (
+                HookProtocol::CodexHooks | HookProtocol::CodexRequirements,
+                HookSourceScope::File
+            )
+            | (HookProtocol::OpenCodePlugin, HookSourceScope::Directory)
+    );
+    if location_matches_protocol && scope_matches_protocol {
+        Ok(())
+    } else {
+        Err(ProfileError::InvalidHookSource)
+    }
 }
 
 fn validate_name(name: &str) -> Result<(), ProfileError> {
@@ -535,7 +646,7 @@ pub enum ProfileError {
     /// More than one embedded source declares the same profile name.
     #[error("duplicate agent profile {0:?}")]
     DuplicateProfile(String),
-    /// Version 2 supports deterministic single inheritance only.
+    /// The current schema supports deterministic single inheritance only.
     #[error("profile {0:?} extends more than one base profile")]
     MultipleBases(String),
     /// An inheritance-only profile incorrectly participates in automatic detection.
@@ -544,6 +655,9 @@ pub enum ProfileError {
     /// A path template violates its lexical grammar or bound.
     #[error("profile path is invalid: {0}")]
     InvalidTemplate(String),
+    /// A hook location, protocol, and scope combination is not meaningful.
+    #[error("agent profile declares an incompatible hook source")]
+    InvalidHookSource,
     /// A requested profile or inherited base is absent.
     #[error("unknown agent profile {0:?}")]
     UnknownProfile(String),

@@ -1,4 +1,6 @@
+mod hook_source;
 pub(crate) mod kontext;
+pub(crate) mod numbat;
 mod runtime_control;
 
 pub(crate) use runtime_control::{

@@ -9,8 +9,8 @@ Sandy is a macOS-native process sandbox for AI coding agents.
 - Cargo workspace: `sandy-core`, `sandy-seatbelt`, and `sandy-cli`
 - Installed executable: `sandy`
 - Default mode: standalone sandboxing
-- Optional integration: preserve verified existing Kontext hooks;
-  `--kontext` requires them
+- Optional integrations: preserve verified existing Kontext hooks or
+  ownership-marked Numbat hooks; their explicit flags require them
 - Runtime model: one foreground supervisor per invocation, never a Sandy daemon
 
 Sandy is a process sandbox, not a container or VM. Describe its guarantees
@@ -19,7 +19,7 @@ narrowly.
 Version `0.1.x` is limited to macOS, one foreground `run` mode, Claude Code,
 Codex, OpenCode, and generic profiles, explicit filesystem grants, network
 allow/block with exact runtime Unix-socket exceptions, dry-run output, and
-optional self-serve Kontext compatibility.
+optional self-serve Kontext and host-installed Numbat hook compatibility.
 
 Agent presets are versioned, strictly typed profile documents embedded in the
 CLI at compile time. Profiles resolve through deterministic inheritance in
@@ -29,9 +29,11 @@ require renderer or bootstrap changes.
 
 Do not add Linux, detached sessions, a PTY proxy, domain filtering, credential
 brokering, dynamic grants, rollback, resource limits, raw Seatbelt input, or
-organization-managed Kontext support without an explicit scope decision.
+organization-managed Kontext support or outside-sandbox synchronous hook
+decision services without an explicit scope decision.
 
-Do not modify the separate Kontext repository as part of Sandy changes.
+Do not modify the separate Kontext or Numbat repositories as part of Sandy
+changes.
 
 ## Architecture
 
@@ -45,8 +47,8 @@ crates/cli/                package sandy-cli; sandy binary and product UX
 ```
 
 Do not add more crates until a distinct owner, dependency direction, and second
-consumer or security boundary exists. Kontext and test support remain modules
-inside `sandy-cli` in `v0.1.x`.
+consumer or security boundary exists. Runtime-control adapters and test support
+remain modules inside `sandy-cli` in `v0.1.x`.
 
 Keep dependencies flowing in one direction:
 
@@ -62,7 +64,7 @@ optional integrations
 
 `sandy-core` performs deterministic validation but no ambient filesystem
 discovery. `sandy-seatbelt` receives only validated policy and does not see
-argv, environment, agent preset names, Clap, or Kontext configuration. The CLI
+argv, environment, agent preset names, Clap, or service configuration. The CLI
 does not render policy.
 
 ## Execution model
@@ -221,6 +223,38 @@ installation.
 Do not claim authenticated process-to-hook binding, complete tool coverage,
 cryptographic provenance, or that Kontext supervises the Sandy process.
 
+## Numbat boundary
+
+Numbat remains a runtime-only integration, never a linked dependency or Cargo
+feature. For known agent presets, Sandy may inspect normal hook or plugin
+configuration to preserve an already-installed Numbat integration. A binary on
+`PATH` is not installation evidence.
+
+`--numbat` requires a supported installed hook. Sandy never installs,
+downloads, updates, repairs, or uninstalls Numbat. Its adapter accepts only
+bounded, ownership-marked Claude Code, Codex, or OpenCode registrations whose
+event, lifecycle, agent, executable, and runtime arguments match the supported
+protocol.
+
+Agent user-hook locations honor the typed `CLAUDE_CONFIG_DIR`, `CODEX_HOME`,
+`OPENCODE_CONFIG_DIR`, and OpenCode `XDG_CONFIG_HOME` roots. Do not generalize
+these into arbitrary environment-variable path templates.
+
+Grant the exact executable and configuration source, read-only recursive access
+to declared rule directories, and only the configured output and sequence-state
+files as writable. Require writable-file parent directories to exist, and
+protect them from replacement without making Sandy create provider state.
+Protect hook sources, executable aliases and canonical targets, and rule
+directories from writes. Reject configured hooks that resolve to different
+executables, place writable output or state inside rule directories, overlap
+Sandy-protected data, reuse one path for output and state, or require direct
+HTTP delivery.
+
+The Numbat hook and agent share one sandbox identity. Do not describe writable
+record output or sequence state as agent-proof, an audit boundary, or complete
+enforcement evidence. An outside-sandbox synchronous evaluator is not part of
+this compatibility layer.
+
 ## Rust and dependencies
 
 Use Rust edition 2024 and pin one toolchain version consistently in
@@ -283,8 +317,8 @@ cargo test --workspace --locked
 cargo deny check
 ```
 
-Security-sensitive renderer, FFI, bootstrap, process, capability, or Kontext
-changes also run the dedicated live macOS test target.
+Security-sensitive renderer, FFI, bootstrap, process, capability, or
+runtime-integration changes also run the dedicated live macOS test target.
 
 CI uses minimal permissions, disables persisted checkout credentials, pins
 third-party actions to full commit SHAs, and uses locked Cargo commands.

@@ -6,7 +6,7 @@ use std::{
 use crate::{
     cli::DoctorArgs,
     error::AppError,
-    integration::{IntegrationMode, kontext},
+    integration::{IntegrationMode, kontext, numbat},
     profile,
     resolve::resolve_paths,
 };
@@ -33,18 +33,43 @@ pub(crate) fn run(arguments: DoctorArgs) -> Result<i32, AppError> {
     }
     println!("Seatbelt enforcement: available");
 
-    if arguments.kontext {
+    let resolved = if arguments.kontext || arguments.numbat {
         let selected = profile::select(Some(&"claude".to_owned()), std::ffi::OsStr::new("claude"))?;
         let paths = resolve_paths(selected.protected_templates())?;
+        Some((selected, paths))
+    } else {
+        None
+    };
+
+    if arguments.kontext {
+        let (selected, paths) = resolved.as_ref().ok_or_else(|| {
+            AppError::Launch("doctor integration paths were not resolved".to_owned())
+        })?;
         let integration = kontext::resolve(
-            &selected.hook_sources(&paths),
+            &selected.hook_sources(paths)?,
             IntegrationMode::Required,
-            &paths,
+            paths,
         )?;
         let version = integration.version().unwrap_or("unknown");
         println!("Kontext integration: available ({version})");
     } else {
         println!("Kontext integration: not checked (optional)");
+    }
+
+    if arguments.numbat {
+        let (claude, paths) = resolved.as_ref().ok_or_else(|| {
+            AppError::Launch("doctor integration paths were not resolved".to_owned())
+        })?;
+        let mut hook_sources = claude.hook_sources(paths)?;
+        for name in ["codex", "opencode"] {
+            let selected = profile::select(Some(&name.to_owned()), std::ffi::OsStr::new(name))?;
+            hook_sources.extend(selected.hook_sources(paths)?);
+        }
+        let integration = numbat::resolve(&hook_sources, IntegrationMode::Required, paths)?;
+        println!("Numbat integration: available");
+        debug_assert!(integration.is_active());
+    } else {
+        println!("Numbat integration: not checked (optional)");
     }
     Ok(0)
 }

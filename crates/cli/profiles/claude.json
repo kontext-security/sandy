@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 4,
   "name": "claude",
   "extends": ["base"],
   "detect": { "binary_names": ["claude"] },
@@ -12,8 +12,8 @@
     "~/.claude.json"
   ],
   "hook_sources": [
-    { "protocol": "claude_settings", "path": "~/.claude/settings.json" },
-    { "protocol": "claude_settings", "path": "/Library/Application Support/ClaudeCode/managed-settings.d/20-kontext.json" },
-    { "protocol": "claude_settings", "path": "/Library/Application Support/ClaudeCode/managed-settings.json" }
+    { "protocol": "claude_settings", "location": "claude_user_settings" },
+    { "protocol": "claude_settings", "location": "fixed", "path": "/Library/Application Support/ClaudeCode/managed-settings.d", "scope": "directory" },
+    { "protocol": "claude_settings", "location": "fixed", "path": "/Library/Application Support/ClaudeCode/managed-settings.json" }
   ]
 }

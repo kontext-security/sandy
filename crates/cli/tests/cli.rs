@@ -65,20 +65,23 @@ fn dry_run_json_has_a_versioned_runtime_control_schema() -> Result<(), Box<dyn s
     let controls = document["runtime_controls"]
         .as_array()
         .ok_or("runtime_controls must be an array")?;
-    assert_eq!(controls.len(), 1);
-    let control_keys = controls[0]
-        .as_object()
-        .ok_or("runtime control must be a JSON object")?
-        .keys()
-        .map(String::as_str)
-        .collect::<std::collections::BTreeSet<_>>();
-    assert_eq!(
-        control_keys,
-        std::collections::BTreeSet::from(["enabled", "service", "version"])
-    );
+    assert_eq!(controls.len(), 2);
+    for control in controls {
+        let control_keys = control
+            .as_object()
+            .ok_or("runtime control must be a JSON object")?
+            .keys()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            control_keys,
+            std::collections::BTreeSet::from(["enabled", "service", "version"])
+        );
+        assert_eq!(control["enabled"], false);
+        assert!(control["version"].is_null());
+    }
     assert_eq!(controls[0]["service"], "Kontext");
-    assert_eq!(controls[0]["enabled"], false);
-    assert!(controls[0]["version"].is_null());
+    assert_eq!(controls[1]["service"], "Numbat");
     Ok(())
 }
 
@@ -237,5 +240,121 @@ fn malformed_detected_hook_configuration_still_fails_closed()
         .assert()
         .failure()
         .stderr(predicate::str::contains("cannot parse hook configuration"));
+    Ok(())
+}
+
+#[test]
+fn required_numbat_hooks_must_be_installed() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let home = directory.path().join("home");
+    fs::create_dir(&home)?;
+
+    let mut command = Command::cargo_bin("sandy")?;
+    command
+        .env("HOME", home)
+        .args([
+            "run",
+            "--dry-run",
+            "--profile",
+            "codex",
+            "--numbat",
+            "--",
+            "/bin/echo",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--numbat requires installed hooks",
+        ));
+    Ok(())
+}
+
+#[test]
+fn configured_numbat_hooks_contribute_only_when_present() -> Result<(), Box<dyn std::error::Error>>
+{
+    let directory = tempfile::tempdir()?;
+    let home = directory.path().join("home");
+    let codex = home.join(".codex");
+    let numbat = home.join(".numbat");
+    fs::create_dir_all(&codex)?;
+    fs::create_dir(&numbat)?;
+    let binary = directory.path().join("numbat-renamed");
+    fs::write(&binary, "#!/bin/sh\nexit 0\n")?;
+    fs::set_permissions(&binary, fs::Permissions::from_mode(0o700))?;
+    fs::write(
+        codex.join("hooks.json"),
+        format!(
+            r#"{{"hooks":{{"Stop":[{{"hooks":[{{"type":"command","command":"'{}' hook stop --agent codex --installed-by=numbat --output=file --output-file '$HOME/.numbat/findings.ndjson'"}}]}}]}}}}"#,
+            binary.display()
+        ),
+    )?;
+
+    let mut command = Command::cargo_bin("sandy")?;
+    command
+        .env("HOME", &home)
+        .args([
+            "run",
+            "--dry-run",
+            "--profile",
+            "codex",
+            "--numbat",
+            "--",
+            "/bin/echo",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#""service": "Numbat""#))
+        .stdout(predicate::str::contains(r#""enabled": true"#))
+        .stdout(predicate::str::contains(
+            numbat.join("findings.ndjson").to_string_lossy(),
+        ));
+    Ok(())
+}
+
+#[test]
+fn unsupported_numbat_delivery_is_optional_unless_required()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let home = directory.path().join("home");
+    let codex = home.join(".codex");
+    fs::create_dir_all(&codex)?;
+    let binary = directory.path().join("numbat");
+    fs::write(&binary, "#!/bin/sh\nexit 0\n")?;
+    fs::set_permissions(&binary, fs::Permissions::from_mode(0o700))?;
+    fs::write(
+        codex.join("hooks.json"),
+        format!(
+            r#"{{"hooks":{{"Stop":[{{"hooks":[{{"type":"command","command":"'{}' hook stop --agent codex --installed-by=numbat --output=http --http-url https://example.test"}}]}}]}}}}"#,
+            binary.display()
+        ),
+    )?;
+
+    let mut optional = Command::cargo_bin("sandy")?;
+    optional
+        .env("HOME", &home)
+        .args(["run", "--dry-run", "--profile", "codex", "--", "/bin/echo"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "optional Numbat runtime control unavailable; continuing without it",
+        ));
+
+    let mut required = Command::cargo_bin("sandy")?;
+    required
+        .env("HOME", &home)
+        .args([
+            "run",
+            "--dry-run",
+            "--profile",
+            "codex",
+            "--numbat",
+            "--",
+            "/bin/echo",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "direct HTTP hook delivery is not supported inside Sandy",
+        ));
     Ok(())
 }

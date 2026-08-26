@@ -3,7 +3,7 @@ use sandy_core::{
 };
 
 const BASE: &str = r#"{
-    "schema_version": 2,
+    "schema_version": 4,
     "name": "base",
     "abstract": true,
     "protected_paths": ["~/.ssh", "~/Library/Keychains"],
@@ -11,7 +11,7 @@ const BASE: &str = r#"{
 }"#;
 
 const AGENT: &str = r#"{
-    "schema_version": 2,
+    "schema_version": 4,
     "name": "agent",
     "extends": ["base"],
     "detect": { "binary_names": ["agent"] },
@@ -21,7 +21,7 @@ const AGENT: &str = r#"{
     ],
     "protected_write_paths": ["~/.agent/config.toml"],
     "hook_sources": [
-        { "protocol": "codex_hooks", "path": "~/.agent/hooks.json" }
+        { "protocol": "codex_hooks", "location": "fixed", "path": "~/.agent/hooks.json" }
     ]
 }"#;
 
@@ -71,7 +71,7 @@ fn inheritance_only_profiles_are_not_selectable() -> Result<(), Box<dyn std::err
 #[test]
 fn abstract_profiles_cannot_claim_detection_names() {
     let source = r#"{
-        "schema_version": 2,
+        "schema_version": 4,
         "name": "base",
         "abstract": true,
         "detect": { "binary_names": ["base"] }
@@ -85,7 +85,7 @@ fn abstract_profiles_cannot_claim_detection_names() {
 #[test]
 fn if_exists_defaults_to_true_and_accepts_false() -> Result<(), Box<dyn std::error::Error>> {
     let document = r#"{
-        "schema_version": 2,
+        "schema_version": 4,
         "name": "flags",
         "grants": [
             { "path": "/opt/a", "access": "read", "scope": "exact" },
@@ -110,7 +110,7 @@ fn detects_by_binary_basename_only() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn rejects_unknown_fields_and_bad_versions() {
     let unknown_field = r#"{
-        "schema_version": 2,
+        "schema_version": 4,
         "name": "bad",
         "network": "allow"
     }"#;
@@ -120,11 +120,12 @@ fn rejects_unknown_fields_and_bad_versions() {
     ));
     let bad_version = format!(
         r#"{{ "schema_version": {}, "name": "bad" }}"#,
-        sandy_core::PROFILE_SCHEMA_V2 + 1
+        sandy_core::PROFILE_SCHEMA_V4 + 1
     );
     assert!(matches!(
         ProfileRegistry::build(&[("bad", bad_version.as_str())]),
-        Err(ProfileError::UnsupportedSchema { version: 3, .. })
+        Err(ProfileError::UnsupportedSchema { version, .. })
+            if version == sandy_core::PROFILE_SCHEMA_V4 + 1
     ));
 }
 
@@ -141,6 +142,45 @@ fn rejects_parent_traversal_and_relative_templates() {
     }
 }
 
+#[test]
+fn rejects_incompatible_hook_protocol_locations_and_scopes() {
+    let cases = [
+        r#"{
+            "schema_version": 4,
+            "name": "bad",
+            "hook_sources": [{
+                "protocol": "codex_hooks",
+                "location": "claude_user_settings"
+            }]
+        }"#,
+        r#"{
+            "schema_version": 4,
+            "name": "bad",
+            "hook_sources": [{
+                "protocol": "codex_hooks",
+                "location": "fixed",
+                "path": "/etc/codex/hooks",
+                "scope": "directory"
+            }]
+        }"#,
+        r#"{
+            "schema_version": 4,
+            "name": "bad",
+            "hook_sources": [{
+                "protocol": "open_code_plugin",
+                "location": "fixed",
+                "path": "/etc/opencode/plugin.ts"
+            }]
+        }"#,
+    ];
+    for source in cases {
+        assert!(matches!(
+            ProfileRegistry::build(&[("bad", source)]),
+            Err(ProfileError::InvalidHookSource)
+        ));
+    }
+}
+
 fn err_of<T>(result: Result<T, ProfileError>) -> Result<ProfileError, Box<dyn std::error::Error>> {
     match result {
         Ok(_) => Err("expected the operation to fail".into()),
@@ -150,8 +190,8 @@ fn err_of<T>(result: Result<T, ProfileError>) -> Result<ProfileError, Box<dyn st
 
 #[test]
 fn rejects_cycles_and_depth_exceeded() -> Result<(), Box<dyn std::error::Error>> {
-    let a_source = r#"{ "schema_version": 2, "name": "a", "extends": ["b"] }"#;
-    let b_source = r#"{ "schema_version": 2, "name": "b", "extends": ["a"] }"#;
+    let a_source = r#"{ "schema_version": 4, "name": "a", "extends": ["b"] }"#;
+    let b_source = r#"{ "schema_version": 4, "name": "b", "extends": ["a"] }"#;
     let error = err_of(
         ProfileRegistry::build(&[("a", a_source), ("b", b_source)])
             .and_then(|registry| registry.resolve("a")),
@@ -162,13 +202,13 @@ fn rejects_cycles_and_depth_exceeded() -> Result<(), Box<dyn std::error::Error>>
     let mut sources: Vec<(String, String)> = Vec::with_capacity(CHAIN_DEPTH);
     sources.push((
         "p00".to_owned(),
-        r#"{ "schema_version": 2, "name": "p00" }"#.to_owned(),
+        r#"{ "schema_version": 4, "name": "p00" }"#.to_owned(),
     ));
     for index in 1..CHAIN_DEPTH {
         sources.push((
             format!("p{index:02}"),
             format!(
-                r#"{{ "schema_version": 2, "name": "p{index:02}", "extends": ["p{:02}"] }}"#,
+                r#"{{ "schema_version": 4, "name": "p{index:02}", "extends": ["p{:02}"] }}"#,
                 index - 1
             ),
         ));
@@ -185,8 +225,8 @@ fn rejects_cycles_and_depth_exceeded() -> Result<(), Box<dyn std::error::Error>>
 
 #[test]
 fn duplicate_profile_names_fail_closed() {
-    let first = r#"{ "schema_version": 2, "name": "same" }"#;
-    let second = r#"{ "schema_version": 2, "name": "same" }"#;
+    let first = r#"{ "schema_version": 4, "name": "same" }"#;
+    let second = r#"{ "schema_version": 4, "name": "same" }"#;
     assert!(matches!(
         ProfileRegistry::build(&[("same", first), ("same", second)]),
         Err(ProfileError::DuplicateProfile(_))
@@ -196,9 +236,9 @@ fn duplicate_profile_names_fail_closed() {
 #[test]
 fn conflicting_detection_claims_fail_closed() {
     let first =
-        r#"{ "schema_version": 2, "name": "first", "detect": { "binary_names": ["dup"] } }"#;
+        r#"{ "schema_version": 4, "name": "first", "detect": { "binary_names": ["dup"] } }"#;
     let second =
-        r#"{ "schema_version": 2, "name": "second", "detect": { "binary_names": ["dup"] } }"#;
+        r#"{ "schema_version": 4, "name": "second", "detect": { "binary_names": ["dup"] } }"#;
     assert!(matches!(
         ProfileRegistry::build(&[("first", first), ("second", second)]),
         Err(ProfileError::DuplicateDetection { .. })
@@ -207,7 +247,7 @@ fn conflicting_detection_claims_fail_closed() {
 
 #[test]
 fn unknown_base_or_target_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
-    let orphan = r#"{ "schema_version": 2, "name": "orphan", "extends": ["missing"] }"#;
+    let orphan = r#"{ "schema_version": 4, "name": "orphan", "extends": ["missing"] }"#;
     let registry = ProfileRegistry::build(&[("orphan", orphan)])?;
     assert!(matches!(
         registry.resolve("orphan"),

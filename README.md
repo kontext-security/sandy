@@ -139,9 +139,27 @@ Current optional integrations can be required explicitly:
 
 ```bash
 sandy run --kontext -- claude
+install -d -m 700 ~/.numbat
+numbat hook install --agent codex
+sandy run --numbat -- codex --sandbox danger-full-access
 ```
 
-Sandy remains fully usable without them.
+For known agent profiles, Sandy automatically preserves verified existing
+Kontext hooks and ownership-marked Numbat registrations whose complete
+generated shape it recognizes. The explicit flag makes that integration
+mandatory; without it, a missing integration has no effect on standalone
+sandboxing. Sandy never installs, updates, or repairs either service.
+
+Numbat hooks currently run inside the same sandbox as the agent. Sandy keeps
+their registration, executable, and rule directories readable but immutable,
+while the hook's record output and sequence-state database remain writable.
+Direct HTTP delivery from a Numbat hook is not supported; use file output. See
+[RUNTIME_CONTROLS.md](RUNTIME_CONTROLS.md) for the architecture, trust boundary,
+and deferred outside-sandbox decision model.
+
+Hook discovery honors `CLAUDE_CONFIG_DIR`, `CODEX_HOME`,
+`OPENCODE_CONFIG_DIR`, and OpenCode's `XDG_CONFIG_HOME` fallback when those
+variables name absolute configuration roots.
 
 ## Security and support
 

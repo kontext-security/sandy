@@ -3,7 +3,10 @@
 use std::{
     env, fs,
     net::{SocketAddr, TcpListener, TcpStream},
-    os::unix::net::{UnixListener, UnixStream},
+    os::unix::{
+        fs::PermissionsExt as _,
+        net::{UnixListener, UnixStream},
+    },
     path::{Path, PathBuf},
     process::Command as StdCommand,
 };
@@ -134,6 +137,190 @@ fn recursive_write_protection_overrides_a_broader_grant() -> Result<(), Box<dyn 
         fs::read_to_string(protected.join("policy.json"))?,
         "original"
     );
+    Ok(())
+}
+
+#[test]
+#[ignore = "irreversibly applies Seatbelt; run on a host, not inside another sandbox"]
+fn numbat_runtime_resources_preserve_operator_integrity() -> Result<(), Box<dyn std::error::Error>>
+{
+    let root = tempfile::tempdir()?;
+    let home = root.path().join("home");
+    let project = root.path().join("project");
+    let codex = home.join(".codex");
+    let numbat_home = home.join(".numbat");
+    let rules_parent = project.join("operator");
+    let rules = rules_parent.join("rules");
+    fs::create_dir_all(&codex)?;
+    fs::create_dir(&numbat_home)?;
+    fs::create_dir(&project)?;
+    fs::create_dir(&rules_parent)?;
+    fs::create_dir(&rules)?;
+    let rule = rules.join("operator.yaml");
+    fs::write(&rule, "original-rule")?;
+
+    let binary = root.path().join("numbat-renamed");
+    fs::write(&binary, "#!/bin/sh\nexit 0\n")?;
+    let mut permissions = fs::metadata(&binary)?.permissions();
+    permissions.set_mode(0o700);
+    fs::set_permissions(&binary, permissions)?;
+    let hooks = codex.join("hooks.json");
+    fs::write(
+        &hooks,
+        format!(
+            r#"{{"hooks":{{"PreToolUse":[{{"hooks":[{{"type":"command","command":"'{}' hook codex-pre-tool --agent codex --installed-by=numbat --rules-dir '{}' --output=file --output-file '$HOME/.numbat/findings.ndjson'"}}]}}]}}}}"#,
+            binary.display(),
+            rules.display()
+        ),
+    )?;
+    let output = numbat_home.join("findings.ndjson");
+    let state = numbat_home.join("state.db");
+    let adjacent = numbat_home.join("operator-owned.txt");
+    let mutable = project.join("mutable.txt");
+    fs::write(&adjacent, "operator-owned")?;
+    let script = r#"
+        test "$(/bin/cat "$2")" = original-rule &&
+        /usr/bin/printf output > "$5" &&
+        /usr/bin/printf state > "$6" &&
+        ! /usr/bin/printf changed > "$1" 2>/dev/null &&
+        ! /usr/bin/printf changed > "$2" 2>/dev/null &&
+        ! /usr/bin/printf changed > "$3" 2>/dev/null &&
+        ! /usr/bin/printf changed > "$7" 2>/dev/null &&
+        ! /bin/mv "$4" "$4-moved" 2>/dev/null &&
+        ! /bin/mv "$8" "$8-moved" 2>/dev/null &&
+        /usr/bin/printf mutable > "$9"
+    "#;
+
+    let mut command = Command::cargo_bin("sandy")?;
+    command
+        .env("HOME", &home)
+        .current_dir(&project)
+        .args([
+            "run",
+            "--profile",
+            "codex",
+            "--numbat",
+            "--",
+            "/bin/sh",
+            "-c",
+            script,
+            "numbat-probe",
+        ])
+        .arg(&hooks)
+        .arg(&rule)
+        .arg(&binary)
+        .arg(&rules)
+        .arg(&output)
+        .arg(&state)
+        .arg(&adjacent)
+        .arg(&rules_parent)
+        .arg(&mutable)
+        .assert()
+        .success();
+
+    assert!(fs::read_to_string(&hooks)?.contains("installed-by=numbat"));
+    assert_eq!(fs::read_to_string(&rule)?, "original-rule");
+    assert!(fs::read_to_string(&binary)?.contains("exit 0"));
+    assert_eq!(fs::read_to_string(output)?, "output");
+    assert_eq!(fs::read_to_string(state)?, "state");
+    assert_eq!(fs::read_to_string(adjacent)?, "operator-owned");
+    assert_eq!(fs::read_to_string(mutable)?, "mutable");
+    Ok(())
+}
+
+#[test]
+#[ignore = "irreversibly applies Seatbelt; run on a host, not inside another sandbox"]
+fn numbat_opencode_plugin_parent_cannot_be_relocated() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let home = root.path().join("home");
+    let project = root.path().join("project");
+    let config = home.join(".config/opencode");
+    let plugins = config.join("plugins");
+    let numbat_home = home.join(".numbat");
+    fs::create_dir_all(&plugins)?;
+    fs::create_dir(&numbat_home)?;
+    fs::create_dir(&project)?;
+
+    let binary = root.path().join("numbat-renamed");
+    fs::write(&binary, "#!/bin/sh\nexit 0\n")?;
+    let mut permissions = fs::metadata(&binary)?.permissions();
+    permissions.set_mode(0o700);
+    fs::set_permissions(&binary, permissions)?;
+    let output = numbat_home.join("findings.ndjson");
+    let plugin = include_str!("fixtures/numbat/opencode-plugin.ts")
+        .replace("__NUMBAT_BIN__", &binary.to_string_lossy())
+        .replace("__OUTPUT_FILE__", &output.to_string_lossy());
+    fs::write(plugins.join("numbat.ts"), plugin)?;
+
+    let mut command = Command::cargo_bin("sandy")?;
+    command
+        .env("HOME", &home)
+        .current_dir(&project)
+        .args([
+            "run",
+            "--profile",
+            "opencode",
+            "--numbat",
+            "--",
+            "/bin/sh",
+            "-c",
+            "! /bin/mv \"$HOME/.config/opencode/plugins\" \"$HOME/.config/opencode/plugins-disabled\" 2>/dev/null && /usr/bin/printf mutable > \"$HOME/.config/opencode/session-state\"",
+        ])
+        .assert()
+        .success();
+
+    assert!(plugins.join("numbat.ts").is_file());
+    assert_eq!(fs::read_to_string(config.join("session-state"))?, "mutable");
+    Ok(())
+}
+
+#[test]
+#[ignore = "irreversibly applies Seatbelt; run on a host, not inside another sandbox"]
+fn absent_opencode_registration_cannot_be_planted_for_a_later_run()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let home = root.path().join("home");
+    let project = root.path().join("project");
+    let plugins = home.join(".config/opencode/plugins");
+    fs::create_dir_all(&plugins)?;
+    fs::create_dir(&project)?;
+
+    let mut first = Command::cargo_bin("sandy")?;
+    first
+        .env("HOME", &home)
+        .current_dir(&project)
+        .args([
+            "run",
+            "--profile",
+            "opencode",
+            "--",
+            "/bin/sh",
+            "-c",
+            "! /usr/bin/touch \"$HOME/.config/opencode/plugins/numbat.ts\" 2>/dev/null && /usr/bin/touch \"$HOME/.config/opencode/plugins/other.ts\"",
+        ])
+        .assert()
+        .success();
+    assert!(!plugins.join("numbat.ts").exists());
+    assert!(plugins.join("other.ts").is_file());
+
+    let mut second = Command::cargo_bin("sandy")?;
+    second
+        .env("HOME", &home)
+        .current_dir(&project)
+        .args([
+            "run",
+            "--dry-run",
+            "--profile",
+            "opencode",
+            "--numbat",
+            "--",
+            "/bin/echo",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--numbat requires installed hooks",
+        ));
     Ok(())
 }
 
