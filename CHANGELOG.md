@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.6](https://github.com/kontext-security/sandy/compare/v0.1.5...v0.1.6) (2026-08-27)
+
+
+### Features
+
+* allow Numbat collector access on one local-host port ([#28](https://github.com/kontext-security/sandy/issues/28)) ([07c951b](https://github.com/kontext-security/sandy/commit/07c951bcc0fc1880333fac025b2cef5be660bd0f))
+* preserve configured Numbat hooks ([#27](https://github.com/kontext-security/sandy/issues/27)) ([ca08d6b](https://github.com/kontext-security/sandy/commit/ca08d6b4a11c3437c1d99d6ca75d01cd701f0e07))
+* set up runtime control integrations ([#30](https://github.com/kontext-security/sandy/issues/30)) ([b80339f](https://github.com/kontext-security/sandy/commit/b80339ffdec0f447bc2e0bbd0b1e2a3d8c3388be))
+
 ## [0.1.5](https://github.com/kontext-security/sandy/compare/v0.1.4...v0.1.5) (2026-08-23)
 
 
