@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "name": "opencode",
   "extends": ["base"],
   "detect": { "binary_names": ["opencode"] },
@@ -10,5 +10,8 @@
   "protected_write_paths": [
     "~/.config/opencode/opencode.json",
     "~/.config/opencode/opencode.jsonc"
+  ],
+  "hook_sources": [
+    { "protocol": "open_code_plugin", "location": "open_code_user_plugins", "scope": "directory" }
   ]
 }

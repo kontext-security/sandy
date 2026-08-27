@@ -115,6 +115,11 @@ impl ImmutableExecutable {
         Self { path }
     }
 
+    #[must_use]
+    pub(crate) fn path(&self) -> &AbsolutePath {
+        &self.path
+    }
+
     fn file_grant(&self) -> FileGrant {
         FileGrant {
             path: self.path.clone(),

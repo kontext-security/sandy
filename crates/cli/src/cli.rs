@@ -53,6 +53,10 @@ pub(crate) struct RunArgs {
     #[arg(long)]
     pub(crate) kontext: bool,
 
+    /// Require an existing supported Numbat hook installation.
+    #[arg(long)]
+    pub(crate) numbat: bool,
+
     /// Command and arguments. Sandy options must appear before --.
     #[arg(last = true, required = true, value_name = "COMMAND")]
     pub(crate) target: Vec<OsString>,
@@ -63,6 +67,10 @@ pub(crate) struct DoctorArgs {
     /// Also require and validate an existing Kontext installation.
     #[arg(long)]
     pub(crate) kontext: bool,
+
+    /// Also require and validate an existing Numbat hook installation.
+    #[arg(long)]
+    pub(crate) numbat: bool,
 }
 
 #[derive(Debug, Args)]

@@ -17,7 +17,7 @@ const DRY_RUN_SCHEMA_VERSION: u32 = 1;
 use crate::{
     cli::RunArgs,
     error::AppError,
-    integration::{IntegrationMode, RuntimeControls, kontext},
+    integration::{IntegrationMode, RuntimeControls, kontext, numbat},
     profile,
     resolve::{default_ca_bundle, grant, resolve_command, resolve_paths, sanitized_environment},
 };
@@ -94,16 +94,24 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
         )?);
     }
 
-    let integration_mode = if arguments.kontext {
+    let kontext_mode = if arguments.kontext {
         IntegrationMode::Required
     } else {
         IntegrationMode::Detect
     };
-    let runtime_controls = RuntimeControls::new(vec![kontext::resolve(
-        &selected.hook_sources(&paths),
-        integration_mode,
-        &paths,
-    )?]);
+    let numbat_mode = if arguments.numbat {
+        IntegrationMode::Required
+    } else {
+        IntegrationMode::Detect
+    };
+    let hook_sources = selected.hook_sources(&paths)?;
+    let (hook_source_grants, hook_source_protections) =
+        selected.hook_source_policy(&hook_sources, &paths)?;
+    files.extend(hook_source_grants);
+    let runtime_controls = RuntimeControls::new(vec![
+        kontext::resolve(&hook_sources, kontext_mode, &paths)?,
+        numbat::resolve(&hook_sources, numbat_mode, &paths)?,
+    ]);
     for control in runtime_controls.iter() {
         if let Some(reason) = control.unavailable_reason() {
             eprintln!(
@@ -113,6 +121,7 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
         }
     }
     let mut write_protections = selected.protected_write_paths(&paths)?;
+    write_protections.extend(hook_source_protections);
     let network = if arguments.block_net {
         NetworkPolicy::BlockAll
     } else {

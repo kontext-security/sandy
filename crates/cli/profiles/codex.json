@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "name": "codex",
   "extends": ["base"],
   "detect": { "binary_names": ["codex"] },
@@ -11,6 +11,7 @@
     "~/.codex/config.toml"
   ],
   "hook_sources": [
-    { "protocol": "codex_hooks", "path": "~/.codex/hooks.json" }
+    { "protocol": "codex_hooks", "location": "codex_user_hooks" },
+    { "protocol": "codex_requirements", "location": "fixed", "path": "/etc/codex/requirements.toml" }
   ]
 }

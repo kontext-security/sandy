@@ -75,6 +75,34 @@ endpoint on macOS and are both emitted as exact rules. This does not authorize
 socket bind, sibling sockets, IP networking, or a cryptographically bound
 session identity.
 
+Numbat compatibility preserves only an already-installed hook or plugin whose
+ownership marker and complete generated command or plugin shape Sandy
+recognizes. This is format recognition, not binary authentication or a runtime
+health check. The configured executable, hook source, and operator rule
+directories are readable but protected from writes. Every intermediate
+directory below an overlapping writable grant is also pinned, preventing an
+agent from relocating a protected registration or rule subtree through an
+ancestor rename. Record
+output and the sequence-state database must remain writable by the hook; because
+the hook and agent share one Seatbelt identity, the agent can also alter,
+truncate, fabricate, or remove that data. Sandy therefore does not treat those
+files as an audit boundary or claim that Numbat decisions have authenticated
+provenance.
+
+Configured Numbat hooks that deliver directly over HTTP are not supported.
+Granting that mode would expose ordinary external networking and potentially
+environment-provided delivery credentials to the complete agent process tree.
+Sandy neither launches a collector nor moves synchronous hook decisions into an
+outside-sandbox service.
+
+Hook-source discovery honors the supported agent configuration-root overrides.
+Those values affect both the agent and Sandy and are intentionally preserved in
+the child environment. Sandy accepts only absolute, UTF-8, non-root values for
+the closed set modeled by typed profiles. The resolved root must already exist,
+is granted as agent state, and must not be home-wide or overlap protected data.
+Known writable user hook leaves are protected even when absent so one sandboxed
+run cannot plant a registration that expands the next run's capabilities.
+
 Agent state directories may contain credentials and are granted for compatible
 known-agent profiles. This is a deliberate usability tradeoff and must not be
 described as credential isolation.
@@ -89,9 +117,9 @@ read grant from an environment variable.
 ## Fail-closed requirements
 
 An unsupported platform, nested sandbox, malformed or oversized manifest,
-invalid path, profile compilation error, Seatbelt error, or required Kontext
-preflight failure must prevent target execution. A failure while preserving an
-automatically detected optional integration contributes no runtime-control
-capabilities, emits a warning, and does not prevent standalone execution. Sandy
-never silently retries without enforcement or broadens policy to recover from a
-compatibility error.
+invalid path, profile compilation error, Seatbelt error, or explicitly required
+runtime-control integration failure must prevent target execution. A failure
+while preserving an automatically detected optional integration contributes no
+runtime-control capabilities, emits a warning, and does not prevent standalone
+execution. Sandy never silently retries without enforcement or broadens policy
+to recover from a compatibility error.

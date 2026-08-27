@@ -1,0 +1,25 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "__NUMBAT_BIN__",
+            "args": [
+              "hook",
+              "pre-tool",
+              "--agent",
+              "claude",
+              "--installed-by=numbat",
+              "--output=file",
+              "--output-file",
+              "__OUTPUT_FILE__"
+            ],
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
