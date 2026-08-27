@@ -130,7 +130,7 @@ jobs:
           gh release upload "$TAG_NAME" "dist/$asset" "dist/${asset}.sha256" --repo "$GITHUB_REPOSITORY" --clobber
 
   publish:
-    needs: formula
+    needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -142,7 +142,7 @@ jobs:
         run: gh release edit "$TAG_NAME" --repo "$GITHUB_REPOSITORY" --draft=false
 
   formula:
-    needs: build
+    needs: publish
     runs-on: ubuntu-latest
     permissions:
       contents: write
