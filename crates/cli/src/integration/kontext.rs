@@ -17,7 +17,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::{
-    ImmutableExecutable, IntegrationMode, RuntimeControlCapabilities, RuntimeControlContribution,
+    ImmutableExecutable, IntegrationMode, ResolvedRuntimeControl, RuntimeControlCapabilities,
 };
 use crate::{
     error::AppError,
@@ -59,7 +59,7 @@ pub(crate) fn resolve(
     hook_sources: &[ResolvedHookSource],
     mode: IntegrationMode,
     paths: &ResolvedPaths,
-) -> Result<RuntimeControlContribution, AppError> {
+) -> Result<ResolvedRuntimeControl, AppError> {
     let configured = find_configured_binaries(hook_sources)?;
     if configured.is_empty() {
         if mode.is_required() {
@@ -67,13 +67,13 @@ pub(crate) fn resolve(
                 "--kontext requires installed hooks; install Kontext and run kontext setup, or omit --kontext",
             ));
         }
-        return Ok(RuntimeControlContribution::inactive(SERVICE));
+        return Ok(ResolvedRuntimeControl::inactive(SERVICE));
     }
 
     match resolve_configured(configured, hook_sources, paths) {
-        Ok(bridge) => Ok(bridge),
+        Ok(runtime_control) => Ok(runtime_control),
         Err(error) if mode.is_required() => Err(error),
-        Err(error) => Ok(RuntimeControlContribution::unavailable(
+        Err(error) => Ok(ResolvedRuntimeControl::unavailable(
             SERVICE,
             unavailable_reason(&error),
         )),
@@ -84,7 +84,7 @@ fn resolve_configured(
     configured: Vec<PathBuf>,
     hook_sources: &[ResolvedHookSource],
     paths: &ResolvedPaths,
-) -> Result<RuntimeControlContribution, AppError> {
+) -> Result<ResolvedRuntimeControl, AppError> {
     let binaries = resolve_binaries(&configured)?;
     let binary = binaries
         .first()
@@ -170,7 +170,7 @@ fn resolve_configured(
         })
         .collect();
 
-    RuntimeControlContribution::active(
+    ResolvedRuntimeControl::active(
         SERVICE,
         report.installed_version,
         RuntimeControlCapabilities {

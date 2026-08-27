@@ -17,7 +17,7 @@ const DRY_RUN_SCHEMA_VERSION: u32 = 1;
 use crate::{
     cli::RunArgs,
     error::AppError,
-    integration::{IntegrationMode, RuntimeControlPlan, kontext},
+    integration::{IntegrationMode, RuntimeControls, kontext},
     profile,
     resolve::{default_ca_bundle, grant, resolve_command, resolve_paths, sanitized_environment},
 };
@@ -99,16 +99,16 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
     } else {
         IntegrationMode::Detect
     };
-    let runtime_controls = RuntimeControlPlan::new(vec![kontext::resolve(
+    let runtime_controls = RuntimeControls::new(vec![kontext::resolve(
         &selected.hook_sources(&paths),
         integration_mode,
         &paths,
     )?]);
-    for contribution in runtime_controls.iter() {
-        if let Some(reason) = contribution.unavailable_reason() {
+    for control in runtime_controls.iter() {
+        if let Some(reason) = control.unavailable_reason() {
             eprintln!(
                 "sandy: optional {} runtime control unavailable; continuing without it: {reason}",
-                contribution.service()
+                control.service()
             );
         }
     }
@@ -128,7 +128,7 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
         unix_sockets: Vec::new(),
         network,
     };
-    runtime_controls.apply(&mut policy)?;
+    runtime_controls.apply_to(&mut policy)?;
     normalize_policy(&mut policy);
 
     let manifest = LaunchManifestV2 {
@@ -172,10 +172,10 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
             "unix_socket_grants": validated.manifest().policy.unix_sockets,
             "runtime_controls": runtime_controls
                 .iter()
-                .map(|contribution| json!({
-                    "service": contribution.service(),
-                    "enabled": contribution.is_active(),
-                    "version": contribution.version(),
+                .map(|control| json!({
+                    "service": control.service(),
+                    "enabled": control.is_active(),
+                    "version": control.version(),
                 }))
                 .collect::<Vec<_>>(),
             "seatbelt_profile": profile_source,

@@ -1,7 +1,7 @@
-mod bridge;
 pub(crate) mod kontext;
+mod runtime_control;
 
-pub(crate) use bridge::{
-    ImmutableExecutable, IntegrationMode, RuntimeControlCapabilities, RuntimeControlContribution,
-    RuntimeControlPlan,
+pub(crate) use runtime_control::{
+    ImmutableExecutable, IntegrationMode, ResolvedRuntimeControl, RuntimeControlCapabilities,
+    RuntimeControls,
 };

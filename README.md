@@ -94,8 +94,8 @@ sandy run --dry-run -- claude
 Dry-run output is a versioned JSON document. `dry_run_schema_version` identifies
 its public schema independently from the internal launch-manifest protocol.
 Optional host integrations are reported in the canonical `runtime_controls`
-array, with one object per compiled integration containing `service`, `enabled`,
-and nullable `version` fields.
+array, with one object per resolved runtime control containing `service`,
+`enabled`, and nullable `version` fields.
 
 All Sandy options go before `--`. Everything after `--` is passed to the target
 unchanged.

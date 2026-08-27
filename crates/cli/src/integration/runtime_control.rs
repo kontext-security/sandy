@@ -18,16 +18,15 @@ impl IntegrationMode {
     }
 }
 
-/// A validated, provider-independent capability contribution discovered by an
-/// integration adapter.
+/// The validated, provider-independent result of resolving one integration.
 #[derive(Clone, Debug)]
-pub(crate) struct RuntimeControlContribution {
+pub(crate) struct ResolvedRuntimeControl {
     service: &'static str,
-    state: RuntimeControlState,
+    outcome: RuntimeControlOutcome,
 }
 
 #[derive(Clone, Debug)]
-enum RuntimeControlState {
+enum RuntimeControlOutcome {
     Inactive,
     Unavailable {
         reason: String,
@@ -38,18 +37,18 @@ enum RuntimeControlState {
     },
 }
 
-impl RuntimeControlContribution {
+impl ResolvedRuntimeControl {
     pub(crate) fn inactive(service: &'static str) -> Self {
         Self {
             service,
-            state: RuntimeControlState::Inactive,
+            outcome: RuntimeControlOutcome::Inactive,
         }
     }
 
     pub(crate) fn unavailable(service: &'static str, reason: impl Into<String>) -> Self {
         Self {
             service,
-            state: RuntimeControlState::Unavailable {
+            outcome: RuntimeControlOutcome::Unavailable {
                 reason: reason.into(),
             },
         }
@@ -63,7 +62,7 @@ impl RuntimeControlContribution {
         capabilities.validate(service)?;
         Ok(Self {
             service,
-            state: RuntimeControlState::Active {
+            outcome: RuntimeControlOutcome::Active {
                 version,
                 capabilities,
             },
@@ -75,34 +74,34 @@ impl RuntimeControlContribution {
     }
 
     pub(crate) fn is_active(&self) -> bool {
-        matches!(&self.state, RuntimeControlState::Active { .. })
+        matches!(&self.outcome, RuntimeControlOutcome::Active { .. })
     }
 
     pub(crate) fn version(&self) -> Option<&str> {
-        match &self.state {
-            RuntimeControlState::Active { version, .. } => version.as_deref(),
-            RuntimeControlState::Inactive | RuntimeControlState::Unavailable { .. } => None,
+        match &self.outcome {
+            RuntimeControlOutcome::Active { version, .. } => version.as_deref(),
+            RuntimeControlOutcome::Inactive | RuntimeControlOutcome::Unavailable { .. } => None,
         }
     }
 
     pub(crate) fn unavailable_reason(&self) -> Option<&str> {
-        match &self.state {
-            RuntimeControlState::Unavailable { reason } => Some(reason),
-            RuntimeControlState::Inactive | RuntimeControlState::Active { .. } => None,
+        match &self.outcome {
+            RuntimeControlOutcome::Unavailable { reason } => Some(reason),
+            RuntimeControlOutcome::Inactive | RuntimeControlOutcome::Active { .. } => None,
         }
     }
 
     fn capabilities(&self) -> Option<&RuntimeControlCapabilities> {
-        match &self.state {
-            RuntimeControlState::Active { capabilities, .. } => Some(capabilities),
-            RuntimeControlState::Inactive | RuntimeControlState::Unavailable { .. } => None,
+        match &self.outcome {
+            RuntimeControlOutcome::Active { capabilities, .. } => Some(capabilities),
+            RuntimeControlOutcome::Inactive | RuntimeControlOutcome::Unavailable { .. } => None,
         }
     }
 }
 
 /// An exact hook executable that is readable but immutable in the sandbox.
 ///
-/// Keeping the integrity requirement in the type prevents an adapter from
+/// Keeping the integrity requirement in the type prevents a resolver from
 /// granting execution dependencies while accidentally omitting the matching
 /// terminal write deny.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -132,9 +131,9 @@ impl ImmutableExecutable {
     }
 }
 
-/// Capabilities one active runtime-control integration contributes to the
-/// launch. Provider-specific discovery must be complete before constructing
-/// this type.
+/// Capabilities required by one active runtime-control integration.
+///
+/// Provider-specific discovery must be complete before constructing this type.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct RuntimeControlCapabilities {
     /// Exact, immutable executables invoked by the agent's hook or plugin.
@@ -193,30 +192,30 @@ impl RuntimeControlCapabilities {
     }
 }
 
-/// Ordered collection of independently resolved integration contributions.
+/// Ordered collection of independently resolved runtime controls.
 ///
 /// Composition happens once, immediately before core launch validation. This
-/// keeps provider adapters independent while giving policy assembly one place
+/// keeps provider resolvers independent while giving policy assembly one place
 /// to close the writable-ancestor integrity invariant across base policy and
 /// every active integration.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct RuntimeControlPlan {
-    contributions: Vec<RuntimeControlContribution>,
+pub(crate) struct RuntimeControls {
+    controls: Vec<ResolvedRuntimeControl>,
 }
 
-impl RuntimeControlPlan {
-    pub(crate) fn new(contributions: Vec<RuntimeControlContribution>) -> Self {
-        Self { contributions }
+impl RuntimeControls {
+    pub(crate) fn new(controls: Vec<ResolvedRuntimeControl>) -> Self {
+        Self { controls }
     }
 
-    pub(crate) fn iter(&self) -> impl Iterator<Item = &RuntimeControlContribution> {
-        self.contributions.iter()
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &ResolvedRuntimeControl> {
+        self.controls.iter()
     }
 
-    pub(crate) fn apply(&self, policy: &mut PolicySpec) -> Result<(), AppError> {
+    pub(crate) fn apply_to(&self, policy: &mut PolicySpec) -> Result<(), AppError> {
         let mut composed = policy.clone();
-        for contribution in &self.contributions {
-            let Some(capabilities) = contribution.capabilities() else {
+        for control in &self.controls {
+            let Some(capabilities) = control.capabilities() else {
                 continue;
             };
             composed.files.extend(
@@ -240,8 +239,8 @@ impl RuntimeControlPlan {
                 .extend(capabilities.unix_sockets.iter().cloned());
         }
 
-        for contribution in &self.contributions {
-            let Some(capabilities) = contribution.capabilities() else {
+        for control in &self.controls {
+            let Some(capabilities) = control.capabilities() else {
                 continue;
             };
             for grant in capabilities
@@ -250,7 +249,7 @@ impl RuntimeControlPlan {
                 .map(ImmutableExecutable::file_grant)
                 .chain(capabilities.files.iter().cloned())
             {
-                validate_final_access(contribution.service(), &grant, &composed)?;
+                validate_final_access(control.service(), &grant, &composed)?;
             }
         }
 
@@ -332,7 +331,7 @@ mod tests {
     #[test]
     fn rejects_duplicate_file_intents() -> Result<(), Box<dyn std::error::Error>> {
         let executable = AbsolutePath::new("/opt/tool/bin/control")?;
-        let result = RuntimeControlContribution::active(
+        let result = ResolvedRuntimeControl::active(
             "test",
             None,
             RuntimeControlCapabilities {
@@ -346,18 +345,19 @@ mod tests {
     }
 
     #[test]
-    fn inactive_and_unavailable_contributions_add_nothing() -> Result<(), AppError> {
-        let plan = RuntimeControlPlan::new(vec![
-            RuntimeControlContribution::inactive("inactive"),
-            RuntimeControlContribution::unavailable("unavailable", "provider is unavailable"),
+    fn inactive_and_unavailable_runtime_controls_add_nothing() -> Result<(), AppError> {
+        let controls = RuntimeControls::new(vec![
+            ResolvedRuntimeControl::inactive("inactive"),
+            ResolvedRuntimeControl::unavailable("unavailable", "provider is unavailable"),
         ]);
         let mut policy = PolicySpec::default();
-        plan.apply(&mut policy)?;
+        controls.apply_to(&mut policy)?;
         assert!(policy.files.is_empty());
         assert!(policy.write_protections.is_empty());
         assert!(policy.unix_sockets.is_empty());
         assert_eq!(
-            plan.iter()
+            controls
+                .iter()
                 .nth(1)
                 .and_then(|item| item.unavailable_reason()),
             Some("provider is unavailable")
@@ -370,7 +370,7 @@ mod tests {
         let executable = AbsolutePath::new("/opt/tool/bin/control")?;
         let rules = AbsolutePath::new("/opt/tool/rules")?;
         let socket = AbsolutePath::new("/private/tmp/control.sock")?;
-        let first = RuntimeControlContribution::active(
+        let first = ResolvedRuntimeControl::active(
             "first",
             Some("1.0.0".to_owned()),
             RuntimeControlCapabilities {
@@ -394,7 +394,7 @@ mod tests {
             },
         )?;
         let output = AbsolutePath::new("/var/log/tool")?;
-        let second = RuntimeControlContribution::active(
+        let second = ResolvedRuntimeControl::active(
             "second",
             None,
             RuntimeControlCapabilities {
@@ -406,9 +406,9 @@ mod tests {
                 ..RuntimeControlCapabilities::default()
             },
         )?;
-        let plan = RuntimeControlPlan::new(vec![first, second]);
+        let controls = RuntimeControls::new(vec![first, second]);
         let mut policy = PolicySpec::default();
-        plan.apply(&mut policy)?;
+        controls.apply_to(&mut policy)?;
 
         assert_eq!(policy.files.len(), 4);
         assert!(policy.files.iter().any(|grant| {
@@ -441,7 +441,7 @@ mod tests {
     fn rejects_socket_authority_without_separate_file_and_integrity_intents()
     -> Result<(), Box<dyn std::error::Error>> {
         let socket = AbsolutePath::new("/private/tmp/control.sock")?;
-        let missing_file = RuntimeControlContribution::active(
+        let missing_file = ResolvedRuntimeControl::active(
             "test",
             None,
             RuntimeControlCapabilities {
@@ -454,7 +454,7 @@ mod tests {
         );
         assert!(matches!(missing_file, Err(AppError::RuntimeControl { .. })));
 
-        let writable_socket = RuntimeControlContribution::active(
+        let writable_socket = ResolvedRuntimeControl::active(
             "test",
             None,
             RuntimeControlCapabilities {
@@ -485,7 +485,7 @@ mod tests {
     fn pins_immutable_resources_inside_writable_subtrees() -> Result<(), Box<dyn std::error::Error>>
     {
         let executable = AbsolutePath::new("/workspace/plugins/bin/control")?;
-        let contribution = RuntimeControlContribution::active(
+        let control = ResolvedRuntimeControl::active(
             "test",
             None,
             RuntimeControlCapabilities {
@@ -502,7 +502,7 @@ mod tests {
             ..PolicySpec::default()
         };
 
-        RuntimeControlPlan::new(vec![contribution]).apply(&mut policy)?;
+        RuntimeControls::new(vec![control]).apply_to(&mut policy)?;
 
         for expected in [
             "/workspace/plugins",
@@ -517,10 +517,10 @@ mod tests {
     }
 
     #[test]
-    fn rejects_contribution_resource_blocked_by_base_policy()
+    fn rejects_runtime_control_resource_blocked_by_base_policy()
     -> Result<(), Box<dyn std::error::Error>> {
         let resource = AbsolutePath::new("/workspace/private/control.json")?;
-        let contribution = RuntimeControlContribution::active(
+        let control = ResolvedRuntimeControl::active(
             "first",
             None,
             RuntimeControlCapabilities {
@@ -533,8 +533,8 @@ mod tests {
             ..PolicySpec::default()
         };
 
-        let error = match RuntimeControlPlan::new(vec![contribution]).apply(&mut policy) {
-            Ok(()) => return Err("base protection unexpectedly allowed the contribution".into()),
+        let error = match RuntimeControls::new(vec![control]).apply_to(&mut policy) {
+            Ok(()) => return Err("base protection unexpectedly allowed the runtime control".into()),
             Err(error) => error,
         };
 
@@ -548,10 +548,10 @@ mod tests {
     }
 
     #[test]
-    fn rejects_writable_resource_blocked_by_another_contribution()
+    fn rejects_writable_resource_blocked_by_another_runtime_control()
     -> Result<(), Box<dyn std::error::Error>> {
         let output = AbsolutePath::new("/workspace/tool/output")?;
-        let writer = RuntimeControlContribution::active(
+        let writer = ResolvedRuntimeControl::active(
             "writer",
             None,
             RuntimeControlCapabilities {
@@ -563,7 +563,7 @@ mod tests {
                 ..RuntimeControlCapabilities::default()
             },
         )?;
-        let protector = RuntimeControlContribution::active(
+        let protector = ResolvedRuntimeControl::active(
             "protector",
             None,
             RuntimeControlCapabilities {
@@ -576,8 +576,8 @@ mod tests {
         )?;
         let mut policy = PolicySpec::default();
 
-        let error = match RuntimeControlPlan::new(vec![writer, protector]).apply(&mut policy) {
-            Ok(()) => return Err("cross-contribution conflict unexpectedly composed".into()),
+        let error = match RuntimeControls::new(vec![writer, protector]).apply_to(&mut policy) {
+            Ok(()) => return Err("runtime-control conflict unexpectedly composed".into()),
             Err(error) => error,
         };
 
