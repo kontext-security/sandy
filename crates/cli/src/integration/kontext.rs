@@ -23,7 +23,8 @@ use crate::{
     error::AppError,
     profile::ResolvedHookSource,
     resolve::{
-        ResolvedCommand, ResolvedPaths, absolute_if_utf8, grant, resolve_command, write_protections,
+        ResolvedCommand, ResolvedUserPaths, absolute_if_utf8, grant, resolve_command,
+        write_protections,
     },
 };
 
@@ -57,13 +58,13 @@ enum ManagedMode {
 pub(crate) fn resolve(
     hook_sources: &[ResolvedHookSource],
     mode: IntegrationMode,
-    paths: &ResolvedPaths,
+    paths: &ResolvedUserPaths,
 ) -> Result<ResolvedRuntimeControl, AppError> {
     let configured = find_configured_binaries(hook_sources)?;
     if configured.binaries.is_empty() {
         if mode.is_required() {
             return Err(error(
-                "--kontext requires installed hooks; install Kontext and run kontext setup, or omit --kontext",
+                "--kontext requires installed hooks; run sandy integrations setup kontext --agent <claude|codex>, or omit --kontext",
             ));
         }
         return Ok(ResolvedRuntimeControl::inactive(SERVICE));
@@ -81,7 +82,7 @@ pub(crate) fn resolve(
 
 fn resolve_configured(
     configured: ConfiguredKontextHooks,
-    paths: &ResolvedPaths,
+    paths: &ResolvedUserPaths,
 ) -> Result<ResolvedRuntimeControl, AppError> {
     let binaries = resolve_binaries(&configured.binaries)?;
     let binary = binaries

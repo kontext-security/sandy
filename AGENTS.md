@@ -11,6 +11,8 @@ Sandy is a macOS-native process sandbox for AI coding agents.
 - Default mode: standalone sandboxing
 - Optional integrations: preserve verified existing Kontext hooks or
   ownership-marked Numbat hooks; their explicit flags require them
+- Explicit host setup: `sandy integrations setup kontext|numbat --agent NAME`
+  may install and configure the selected optional provider
 - Runtime model: one foreground supervisor per invocation, never a Sandy daemon
 
 Sandy is a process sandbox, not a container or VM. Describe its guarantees
@@ -20,7 +22,8 @@ Version `0.1.x` is limited to macOS, one foreground `run` mode, Claude Code,
 Codex, OpenCode, and generic profiles, explicit filesystem grants, network
 allow/block with exact runtime Unix-socket and IPv4 local-host TCP exceptions,
 dry-run output, and optional self-serve Kontext and host-installed Numbat hook
-compatibility.
+compatibility. It also includes an explicit foreground integration setup
+command for Kontext and Numbat. Setup is not part of sandbox launch.
 
 Agent presets are versioned, strictly typed profile documents embedded in the
 CLI at compile time. Profiles resolve through deterministic inheritance in
@@ -173,6 +176,7 @@ The public interface is:
 
 ```bash
 sandy run [SANDY OPTIONS] -- COMMAND [ARGUMENTS...]
+sandy integrations setup kontext|numbat --agent claude|codex|opencode
 ```
 
 All Sandy options precede `--`. Everything after `--` is opaque target data
@@ -211,7 +215,12 @@ The host-installed Kontext binary and LaunchAgent daemon remain outside the
 sandbox. An automatically detected installation that cannot be established is
 disabled atomically with a warning and contributes no Kontext capabilities.
 Preflight fails before target execution when Kontext is explicitly required.
-Sandy never installs, downloads, repairs, or uninstalls Kontext.
+Sandy never installs, downloads, repairs, or uninstalls Kontext during `run` or
+`doctor`. `sandy integrations setup kontext --agent NAME` may install Kontext
+through its Homebrew tap and invoke the official interactive `kontext setup`
+flow. It must reuse a healthy active registration without mutation and verify
+any changed registration through the normal runtime resolver before reporting
+success.
 
 Grant only exact resources required by the selected hook. Agent-visible hook
 registration and the active self-serve configuration are readable for
@@ -235,10 +244,18 @@ configuration to preserve an already-installed Numbat integration. A binary on
 `PATH` is not installation evidence.
 
 `--numbat` requires a supported installed hook. Sandy never installs,
-downloads, updates, repairs, or uninstalls Numbat. Its resolver accepts only
-bounded, ownership-marked Claude Code, Codex, or OpenCode registrations whose
-event, lifecycle, agent, executable, and runtime arguments match the supported
-protocol.
+downloads, updates, repairs, or uninstalls Numbat during `run` or `doctor`. Its
+resolver accepts only bounded, ownership-marked Claude Code, Codex, or OpenCode
+registrations whose event, lifecycle, agent, executable, and runtime arguments
+match the supported protocol.
+
+The explicit setup command may reuse a Numbat executable on `PATH` or download
+the reviewed macOS asset for one pinned version into a versioned Sandy-owned
+path. The URL, archive size, executable size, and SHA-256 digest are fixed in
+the resolver. Extract only the named regular executable and publish it atomically
+without overwriting an existing path. Configuration delegates to Numbat's
+official idempotent hook installer in file-output mode and must pass normal
+runtime rediscovery before success.
 
 Agent user-hook locations honor the typed `CLAUDE_CONFIG_DIR`, `CODEX_HOME`,
 `OPENCODE_CONFIG_DIR`, and OpenCode `XDG_CONFIG_HOME` roots. Do not generalize
@@ -279,7 +296,9 @@ need, minimal features, a lockfile update, license/source/advisory checks, and
 an explanation in the change.
 
 Do not add an async runtime, HTTP client, keyring library, proxy stack, or
-plugin framework in `v0.1.x`.
+plugin framework in `v0.1.x`. The explicit setup path may execute the exact
+system `curl` and `tar` tools for its pinned, digest-verified Numbat asset; this
+authority must not be reachable from `run` or `doctor`.
 
 Production paths do not use `unwrap`, `expect`, unchecked indexing, or panic
 for expected errors. Use structured errors, checked arithmetic for

@@ -1,6 +1,6 @@
 use std::{ffi::OsString, path::PathBuf};
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -19,10 +19,59 @@ pub(crate) enum Command {
     Run(RunArgs),
     /// Check whether Sandy can enforce a sandbox on this machine.
     Doctor(DoctorArgs),
+    /// Install and configure an optional runtime-control integration.
+    Integrations(IntegrationsArgs),
     #[command(name = "__bootstrap", hide = true)]
     Bootstrap(BootstrapArgs),
     #[command(name = "__probe", hide = true)]
     Probe,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct IntegrationsArgs {
+    #[command(subcommand)]
+    pub(crate) command: IntegrationCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum IntegrationCommand {
+    /// Reuse or install a provider, configure its hooks, and verify the result.
+    Setup(IntegrationSetupArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct IntegrationSetupArgs {
+    /// Runtime-control provider to configure.
+    #[arg(value_enum)]
+    pub(crate) provider: IntegrationProvider,
+
+    /// Agent registration Sandy must ensure and verify after provider setup.
+    #[arg(long, value_enum)]
+    pub(crate) agent: SupportedAgent,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub(crate) enum IntegrationProvider {
+    Kontext,
+    Numbat,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub(crate) enum SupportedAgent {
+    Claude,
+    Codex,
+    Opencode,
+}
+
+impl SupportedAgent {
+    #[must_use]
+    pub(crate) fn profile_name(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+            Self::Opencode => "opencode",
+        }
+    }
 }
 
 #[derive(Debug, Args)]

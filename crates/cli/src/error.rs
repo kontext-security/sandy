@@ -36,6 +36,11 @@ pub(crate) enum AppError {
         service: &'static str,
         message: String,
     },
+    #[error("{provider} integration setup failed: {message}")]
+    IntegrationSetup {
+        provider: &'static str,
+        message: String,
+    },
     #[error("sandbox support probe failed: {0}")]
     Probe(String),
     #[error("launch preparation failed: {0}")]
@@ -62,6 +67,13 @@ impl AppError {
     pub(crate) fn runtime_control(service: &'static str, message: impl Into<String>) -> Self {
         Self::RuntimeControl {
             service,
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn integration_setup(provider: &'static str, message: impl Into<String>) -> Self {
+        Self::IntegrationSetup {
+            provider,
             message: message.into(),
         }
     }
