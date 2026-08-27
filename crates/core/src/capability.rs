@@ -3,7 +3,7 @@
 //! This module describes intent only. It does not discover paths or contain Seatbelt source;
 //! platform backends are responsible for lowering a validated policy into native rules.
 
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, fmt, num::NonZeroU16};
 
 use serde::{Deserialize, Serialize};
 
@@ -73,6 +73,54 @@ pub struct UnixSocketGrant {
     pub operation: UnixSocketOperation,
 }
 
+/// A validated nonzero TCP port.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct TcpPort(NonZeroU16);
+
+impl TcpPort {
+    /// Constructs a port, rejecting zero because it means an ephemeral bind
+    /// request rather than one exact remote endpoint.
+    #[must_use]
+    pub fn new(port: u16) -> Option<Self> {
+        NonZeroU16::new(port).map(Self)
+    }
+
+    /// Returns the validated native port number.
+    #[must_use]
+    pub const fn get(self) -> u16 {
+        self.0.get()
+    }
+}
+
+impl fmt::Display for TcpPort {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+/// Operation authorized for an IPv4 TCP endpoint on the local Mac.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalHostTcpOperation {
+    /// Connect to one port on an IPv4 address belonging to the local Mac,
+    /// without authorizing bind.
+    Connect,
+}
+
+/// Authority for one operation on one IPv4 TCP port on the local Mac.
+///
+/// Seatbelt's `localhost` remote filter covers the selected port on IPv4
+/// addresses belonging to the Mac, including loopback and other local
+/// interfaces. The address is intentionally not caller-controlled.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub struct LocalHostTcpGrant {
+    /// Exact nonzero remote port.
+    pub port: TcpPort,
+    /// Operation authorized at the endpoint.
+    pub operation: LocalHostTcpOperation,
+}
+
 /// Network policy for the complete sandboxed process tree.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -101,6 +149,10 @@ pub struct PolicySpec {
     /// authority, so decoding a document without this field remains fail-closed.
     #[serde(default)]
     pub unix_sockets: Vec<UnixSocketGrant>,
+    /// Additive in manifest schema v2: omission grants no local-host endpoint
+    /// authority, preserving fail-closed decoding for existing manifests.
+    #[serde(default)]
+    pub local_host_tcp: Vec<LocalHostTcpGrant>,
     /// Network access for the sandboxed process tree.
     pub network: NetworkPolicy,
 }

@@ -2,21 +2,22 @@
 
 use std::{
     env, fs,
-    net::{SocketAddr, TcpListener, TcpStream},
+    net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream, UdpSocket},
     os::unix::{
         fs::PermissionsExt as _,
         net::{UnixListener, UnixStream},
     },
     path::{Path, PathBuf},
     process::Command as StdCommand,
+    time::Duration,
 };
 
 use assert_cmd::Command;
 use predicates::prelude::*;
 use sandy_core::{
-    AbsolutePath, AccessMode, CommandSpec, FileGrant, LaunchManifestV2, MANIFEST_SCHEMA_V2,
-    NetworkPolicy, OsValue, PathScope, PolicySpec, UnixSocketGrant, UnixSocketOperation,
-    ValidatedLaunch, WriteProtection,
+    AbsolutePath, AccessMode, CommandSpec, FileGrant, LaunchManifestV2, LocalHostTcpGrant,
+    LocalHostTcpOperation, MANIFEST_SCHEMA_V2, NetworkPolicy, OsValue, PathScope, PolicySpec,
+    TcpPort, UnixSocketGrant, UnixSocketOperation, ValidatedLaunch, WriteProtection,
 };
 
 const SOCKET_PROBE_MODE: &str = "SANDY_TEST_EXACT_SOCKET_PROBE";
@@ -27,6 +28,13 @@ const SOCKET_PROBE_TCP: &str = "SANDY_TEST_SOCKET_TCP";
 const WRITE_PROBE_MODE: &str = "SANDY_TEST_SCOPED_WRITE_PROBE";
 const WRITE_PROBE_ROOT: &str = "SANDY_TEST_WRITE_ROOT";
 const WRITE_PROBE_PROTECTED: &str = "SANDY_TEST_WRITE_PROTECTED";
+const TCP_PROBE_MODE: &str = "SANDY_TEST_EXACT_TCP_PROBE";
+const TCP_PROBE_ROOT: &str = "SANDY_TEST_TCP_ROOT";
+const TCP_PROBE_ALLOWED: &str = "SANDY_TEST_TCP_ALLOWED";
+const TCP_PROBE_SAME_HOST: &str = "SANDY_TEST_TCP_SAME_HOST";
+const TCP_PROBE_DENIED: &str = "SANDY_TEST_TCP_DENIED";
+const TCP_PROBE_IPV6: &str = "SANDY_TEST_TCP_IPV6";
+const TCP_PROBE_UNIX: &str = "SANDY_TEST_TCP_UNIX";
 
 #[test]
 #[ignore = "irreversibly applies Seatbelt; run on a host, not inside another sandbox"]
@@ -339,6 +347,7 @@ fn run_scoped_write_probe() -> Result<(), Box<dyn std::error::Error>> {
             scope: PathScope::Subtree,
         }],
         unix_sockets: Vec::new(),
+        local_host_tcp: Vec::new(),
         network: NetworkPolicy::BlockAll,
     };
     policy.close_write_protection_ancestors();
@@ -545,6 +554,7 @@ fn run_exact_socket_probe() -> Result<(), Box<dyn std::error::Error>> {
                     operation: UnixSocketOperation::Connect,
                 })
                 .collect(),
+            local_host_tcp: Vec::new(),
             network: NetworkPolicy::BlockAll,
         },
     };
@@ -562,8 +572,110 @@ fn run_exact_socket_probe() -> Result<(), Box<dyn std::error::Error>> {
         UnixListener::bind(root.join("bind.sock")),
         "Unix socket bind with connect-only authority",
     )?;
-    assert_permission_denied(TcpStream::connect(tcp_address), "loopback TCP connect")?;
+    assert_permission_denied(TcpStream::connect(tcp_address), "local-host TCP connect")?;
     Ok(())
+}
+
+#[test]
+#[ignore = "irreversibly applies Seatbelt; run on a host, not inside another sandbox"]
+fn local_host_tcp_connect_covers_one_port_without_other_network_authority()
+-> Result<(), Box<dyn std::error::Error>> {
+    if env::var_os(TCP_PROBE_MODE).is_some() {
+        return run_local_host_tcp_probe();
+    }
+
+    let root = tempfile::Builder::new()
+        .prefix("sandy-exact-tcp-")
+        .tempdir_in("/tmp")?;
+    let local_address = non_loopback_ipv4()?;
+    let same_host = TcpListener::bind((local_address, 0))?;
+    let allowed = TcpListener::bind((Ipv4Addr::LOCALHOST, same_host.local_addr()?.port()))?;
+    let denied = TcpListener::bind("127.0.0.1:0")?;
+    let ipv6 = TcpListener::bind("[::1]:0")?;
+    let unix_path = root.path().join("ungranted.sock");
+    let _unix_listener = UnixListener::bind(&unix_path)?;
+
+    let status = StdCommand::new(env::current_exe()?)
+        .args([
+            "--ignored",
+            "--exact",
+            "local_host_tcp_connect_covers_one_port_without_other_network_authority",
+        ])
+        .env(TCP_PROBE_MODE, "1")
+        .env(TCP_PROBE_ROOT, root.path())
+        .env(TCP_PROBE_ALLOWED, allowed.local_addr()?.to_string())
+        .env(TCP_PROBE_SAME_HOST, same_host.local_addr()?.to_string())
+        .env(TCP_PROBE_DENIED, denied.local_addr()?.to_string())
+        .env(TCP_PROBE_IPV6, ipv6.local_addr()?.to_string())
+        .env(TCP_PROBE_UNIX, &unix_path)
+        .status()?;
+
+    assert!(status.success(), "sacrificial TCP probe failed: {status}");
+    Ok(())
+}
+
+fn run_local_host_tcp_probe() -> Result<(), Box<dyn std::error::Error>> {
+    let root = fs::canonicalize(required_probe_path(TCP_PROBE_ROOT)?)?;
+    let allowed: SocketAddr = env::var(TCP_PROBE_ALLOWED)?.parse()?;
+    let same_host: SocketAddr = env::var(TCP_PROBE_SAME_HOST)?.parse()?;
+    let denied: SocketAddr = env::var(TCP_PROBE_DENIED)?.parse()?;
+    let ipv6: SocketAddr = env::var(TCP_PROBE_IPV6)?.parse()?;
+    let unix_path = required_probe_path(TCP_PROBE_UNIX)?;
+    let manifest = LaunchManifestV2 {
+        schema_version: MANIFEST_SCHEMA_V2,
+        command: CommandSpec {
+            program: OsValue::from_os_str(std::ffi::OsStr::new("/usr/bin/true")),
+            arguments: Vec::new(),
+        },
+        working_directory: absolute(&root)?,
+        environment: Vec::new(),
+        policy: PolicySpec {
+            files: vec![FileGrant {
+                path: absolute(&root)?,
+                access: AccessMode::ReadWrite,
+                scope: PathScope::Subtree,
+            }],
+            protected_paths: Vec::new(),
+            write_protections: Vec::new(),
+            unix_sockets: Vec::new(),
+            local_host_tcp: vec![LocalHostTcpGrant {
+                port: TcpPort::new(allowed.port()).ok_or("test port must be nonzero")?,
+                operation: LocalHostTcpOperation::Connect,
+            }],
+            network: NetworkPolicy::BlockAll,
+        },
+    };
+    let launch = ValidatedLaunch::try_from(manifest)?;
+    let profile = sandy_seatbelt::compile(launch.policy())?;
+    sandy_seatbelt::apply(&profile)?;
+
+    let _allowed_stream = TcpStream::connect(allowed)?;
+    let _same_host_stream = TcpStream::connect(same_host)?;
+    assert_permission_denied(TcpStream::connect(denied), "adjacent local-host TCP port")?;
+    let external = SocketAddr::from(([1, 1, 1, 1], allowed.port()));
+    assert_permission_denied(
+        TcpStream::connect_timeout(&external, Duration::from_secs(1)),
+        "external IPv4 address on the granted port",
+    )?;
+    assert_permission_denied(TcpStream::connect(ipv6), "IPv6 loopback connect")?;
+    assert_permission_denied(UnixStream::connect(unix_path), "Unix socket connect")?;
+    assert_permission_denied(
+        TcpListener::bind("127.0.0.1:0"),
+        "loopback bind with connect-only authority",
+    )?;
+    Ok(())
+}
+
+fn non_loopback_ipv4() -> Result<Ipv4Addr, Box<dyn std::error::Error>> {
+    let probe = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?;
+    // UDP connect chooses the interface that would route this documentation
+    // address without sending a packet. The listener below proves that the
+    // selected address belongs to this Mac.
+    probe.connect((Ipv4Addr::new(192, 0, 2, 1), 9))?;
+    match probe.local_addr()?.ip() {
+        IpAddr::V4(address) if !address.is_loopback() && !address.is_unspecified() => Ok(address),
+        address => Err(format!("no non-loopback IPv4 interface available: {address}").into()),
+    }
 }
 
 fn required_probe_path(name: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {

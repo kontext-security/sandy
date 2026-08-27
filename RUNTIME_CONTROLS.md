@@ -30,6 +30,12 @@ writable ancestors. Core validation independently rejects a manifest that
 omits that integrity closure. The bootstrap and Seatbelt compiler never receive
 an agent or service name.
 
+A local endpoint control is independent from hook discovery. For example,
+`--numbat-collector` resolves only connect authority for one IPv4 TCP port
+on the local Mac and requires the otherwise blocked network policy. The
+operator starts the collector and configures the agent's OTLP exporter
+separately; Sandy neither launches nor health-checks it.
+
 ## Why this boundary
 
 - It keeps ambient discovery and provider-specific formats in `sandy-cli`,
@@ -88,3 +94,11 @@ identity, bounded request and response framing, availability and timeout
 semantics, version negotiation, and fail-open versus fail-closed behavior. That
 architecture is intentionally deferred rather than approximated through a
 generic daemon or plugin interface.
+
+The current collector endpoint is telemetry-only. A same-user process can race
+to occupy the selected port, the agent can submit fabricated telemetry, and the
+agent can overload the listener. Seatbelt's `localhost` filter covers the
+selected port on IPv4 addresses belonging to this Mac, including non-loopback
+interfaces; external IPv4 addresses, IPv6, other ports, and bind remain denied.
+This capability does not authenticate either endpoint or make telemetry
+complete.

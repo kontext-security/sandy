@@ -37,7 +37,7 @@ fn dry_run_json_has_a_versioned_runtime_control_schema() -> Result<(), Box<dyn s
     assert!(output.status.success());
 
     let document: serde_json::Value = serde_json::from_slice(&output.stdout)?;
-    assert_eq!(document["dry_run_schema_version"], 1);
+    assert_eq!(document["dry_run_schema_version"], 2);
     assert!(document.get("schema_version").is_none());
 
     let keys = document
@@ -53,6 +53,7 @@ fn dry_run_json_has_a_versioned_runtime_control_schema() -> Result<(), Box<dyn s
             "command",
             "dry_run_schema_version",
             "file_grants",
+            "local_host_tcp_grants",
             "network",
             "profile",
             "runtime_controls",
@@ -96,6 +97,71 @@ fn blocked_network_dry_run_has_no_implicit_socket_authority()
         .stdout(predicate::str::contains(r#""network": "block_all""#))
         .stdout(predicate::str::contains(r#""unix_socket_grants": []"#))
         .stdout(predicate::str::contains("(allow network-outbound").not());
+    Ok(())
+}
+
+#[test]
+fn numbat_collector_grants_only_the_selected_local_host_port()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut default_port = Command::cargo_bin("sandy")?;
+    default_port
+        .args([
+            "run",
+            "--dry-run",
+            "--block-net",
+            "--numbat-collector",
+            "--",
+            "/bin/echo",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#""service": "Numbat collector""#))
+        .stdout(predicate::str::contains(r#""local_host_tcp_grants""#))
+        .stdout(predicate::str::contains(r#""port": 4318"#))
+        .stdout(predicate::str::contains(
+            r#"(allow network-outbound (remote tcp \"localhost:4318\"))"#,
+        ))
+        .stdout(predicate::str::contains("localhost:4317").not())
+        .stdout(predicate::str::contains("(allow network*)").not());
+
+    let mut custom_port = Command::cargo_bin("sandy")?;
+    custom_port
+        .args([
+            "run",
+            "--dry-run",
+            "--block-net",
+            "--numbat-collector=8123",
+            "--",
+            "/bin/echo",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#""port": 8123"#));
+
+    let mut zero = Command::cargo_bin("sandy")?;
+    zero.args([
+        "run",
+        "--dry-run",
+        "--block-net",
+        "--numbat-collector=0",
+        "--",
+        "/bin/echo",
+    ])
+    .assert()
+    .failure()
+    .stderr(predicate::str::contains(
+        "collector port must be between 1 and 65535",
+    ));
+
+    let mut unrestricted = Command::cargo_bin("sandy")?;
+    unrestricted
+        .args(["run", "--dry-run", "--numbat-collector", "--", "/bin/echo"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "the following required arguments were not provided",
+        ))
+        .stderr(predicate::str::contains("--block-net"));
     Ok(())
 }
 

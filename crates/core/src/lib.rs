@@ -27,8 +27,8 @@ mod validation;
 mod wire;
 
 pub use capability::{
-    AccessMode, FileGrant, NetworkPolicy, PathScope, PolicySpec, UnixSocketGrant,
-    UnixSocketOperation, WriteProtection,
+    AccessMode, FileGrant, LocalHostTcpGrant, LocalHostTcpOperation, NetworkPolicy, PathScope,
+    PolicySpec, TcpPort, UnixSocketGrant, UnixSocketOperation, WriteProtection,
 };
 pub use manifest::{
     CommandSpec, EnvironmentEntry, LaunchManifestV2, MANIFEST_SCHEMA_V2, OsValue, OsValueError,

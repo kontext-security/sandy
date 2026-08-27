@@ -16,6 +16,7 @@ const MAX_ARGUMENTS: usize = 4_096;
 const MAX_ENVIRONMENT_ENTRIES: usize = 4_096;
 const MAX_FILE_GRANTS: usize = 1_024;
 const MAX_UNIX_SOCKET_GRANTS: usize = 128;
+const MAX_LOCAL_HOST_TCP_GRANTS: usize = 128;
 const MAX_PROTECTED_PATHS: usize = 1_024;
 
 /// Policy that has passed the complete launch-validation transition.
@@ -134,6 +135,12 @@ fn validate_policy(policy: &PolicySpec) -> Result<(), ValidationError> {
     if policy.unix_sockets.len() > MAX_UNIX_SOCKET_GRANTS {
         return Err(ValidationError::TooManyUnixSocketGrants);
     }
+    if policy.local_host_tcp.len() > MAX_LOCAL_HOST_TCP_GRANTS {
+        return Err(ValidationError::TooManyLocalHostTcpGrants);
+    }
+    if policy.network == crate::NetworkPolicy::AllowAll && !policy.local_host_tcp.is_empty() {
+        return Err(ValidationError::LocalHostTcpRequiresBlockedNetwork);
+    }
     if policy.protected_paths.len() > MAX_PROTECTED_PATHS
         || policy.write_protections.len() > MAX_PROTECTED_PATHS
     {
@@ -170,6 +177,12 @@ fn validate_policy(policy: &PolicySpec) -> Result<(), ValidationError> {
             return Err(ValidationError::DuplicateUnixSocketGrant(
                 grant.path.clone(),
             ));
+        }
+    }
+    let mut seen_local_host_tcp = BTreeSet::new();
+    for grant in &policy.local_host_tcp {
+        if !seen_local_host_tcp.insert(grant) {
+            return Err(ValidationError::DuplicateLocalHostTcpGrant(grant.port));
         }
     }
     reject_duplicate_paths(&policy.protected_paths)?;
@@ -233,6 +246,9 @@ pub enum ValidationError {
     /// The policy exceeds the bounded exact Unix-socket grant count.
     #[error("launch contains too many Unix-socket grants")]
     TooManyUnixSocketGrants,
+    /// The policy exceeds the bounded exact local-host TCP grant count.
+    #[error("launch contains too many local-host TCP grants")]
+    TooManyLocalHostTcpGrants,
     /// The policy exceeds the bounded protected-path count.
     #[error("launch contains too many protected paths")]
     TooManyProtectedPaths,
@@ -254,6 +270,12 @@ pub enum ValidationError {
     /// The policy contains an exact duplicate Unix-socket capability.
     #[error("duplicate Unix-socket grant for {0:?}")]
     DuplicateUnixSocketGrant(AbsolutePath),
+    /// The policy contains an exact duplicate local-host TCP capability.
+    #[error("duplicate local-host TCP grant for port {0}")]
+    DuplicateLocalHostTcpGrant(crate::TcpPort),
+    /// A local-host exception has no narrow meaning when all networking is allowed.
+    #[error("local-host TCP grants require the block-all network policy")]
+    LocalHostTcpRequiresBlockedNetwork,
     /// A protected-path list contains the same path more than once.
     #[error("duplicate protected path for {0:?}")]
     DuplicateProtectedPath(AbsolutePath),

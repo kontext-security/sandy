@@ -57,6 +57,17 @@ pub(crate) struct RunArgs {
     #[arg(long)]
     pub(crate) numbat: bool,
 
+    /// With --block-net, allow one IPv4 TCP port on this Mac for an
+    /// operator-started Numbat OTLP/HTTP collector. PORT defaults to 4318.
+    #[arg(
+        long,
+        value_name = "PORT",
+        num_args = 0..=1,
+        default_missing_value = "4318",
+        requires = "block_net"
+    )]
+    pub(crate) numbat_collector: Option<u16>,
+
     /// Command and arguments. Sandy options must appear before --.
     #[arg(last = true, required = true, value_name = "COMMAND")]
     pub(crate) target: Vec<OsString>,

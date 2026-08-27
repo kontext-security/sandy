@@ -182,6 +182,7 @@ fn resolve_configured(
                 .collect(),
             write_protections: protected_from_write,
             unix_sockets,
+            local_host_tcp: Vec::new(),
         },
     )
 }

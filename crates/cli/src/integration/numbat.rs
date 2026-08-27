@@ -1,7 +1,8 @@
 use std::{collections::BTreeSet, ffi::OsString, fs, path::Path};
 
 use sandy_core::{
-    AccessMode, FileGrant, HookProtocol, HookSourceScope, PathScope, WriteProtection,
+    AccessMode, FileGrant, HookProtocol, HookSourceScope, LocalHostTcpGrant, LocalHostTcpOperation,
+    PathScope, TcpPort, WriteProtection,
 };
 
 use super::{
@@ -29,6 +30,8 @@ const OPENCODE_PLUGIN_SENTINELS: &[&str] = &[
     "forward(\"opencode-pre-tool\"",
     "export default NumbatPlugin;",
 ];
+
+const COLLECTOR_SERVICE: &str = "Numbat collector";
 
 mod protocol;
 
@@ -59,6 +62,29 @@ pub(crate) fn resolve(
             unavailable_reason(&error),
         )),
     }
+}
+
+/// Resolves one IPv4 TCP port on the local Mac for an operator-managed
+/// collector. This capability is independent from hook discovery: it neither
+/// starts a process nor implies that Numbat hooks are installed.
+pub(crate) fn collector(port: u16) -> Result<ResolvedRuntimeControl, AppError> {
+    let port = TcpPort::new(port).ok_or_else(|| {
+        AppError::runtime_control(
+            COLLECTOR_SERVICE,
+            "collector port must be between 1 and 65535",
+        )
+    })?;
+    ResolvedRuntimeControl::active(
+        COLLECTOR_SERVICE,
+        None,
+        RuntimeControlCapabilities {
+            local_host_tcp: vec![LocalHostTcpGrant {
+                port,
+                operation: LocalHostTcpOperation::Connect,
+            }],
+            ..RuntimeControlCapabilities::default()
+        },
+    )
 }
 
 fn discover(sources: &[ResolvedHookSource]) -> Result<Vec<ConfiguredSource>, AppError> {
@@ -189,6 +215,7 @@ fn resolve_configured(
             files,
             write_protections: protections,
             unix_sockets: Vec::new(),
+            local_host_tcp: Vec::new(),
         },
     )
 }
@@ -578,6 +605,25 @@ mod tests {
             protection.path.as_path() == canonical_rules && protection.scope == PathScope::Subtree
         }));
         assert!(policy.unix_sockets.is_empty());
+        assert!(policy.local_host_tcp.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn collector_resolves_one_selected_local_host_port() -> Result<(), Box<dyn std::error::Error>> {
+        let mut policy = sandy_core::PolicySpec {
+            network: sandy_core::NetworkPolicy::BlockAll,
+            ..sandy_core::PolicySpec::default()
+        };
+        super::super::RuntimeControls::new(vec![collector(4318)?]).apply_to(&mut policy)?;
+
+        assert_eq!(policy.local_host_tcp.len(), 1);
+        assert_eq!(policy.local_host_tcp[0].port.get(), 4318);
+        assert_eq!(
+            policy.local_host_tcp[0].operation,
+            LocalHostTcpOperation::Connect
+        );
+        assert!(collector(0).is_err());
         Ok(())
     }
 
