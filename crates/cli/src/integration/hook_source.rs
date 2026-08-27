@@ -214,23 +214,33 @@ pub(crate) fn json_hook_commands(value: &Value) -> Option<Vec<JsonHookCommand<'_
     let hooks = hooks.as_object()?;
     let mut commands = Vec::new();
     for (event, groups) in hooks {
-        let groups = groups.as_array()?;
+        let Some(groups) = groups.as_array() else {
+            continue;
+        };
         for group in groups {
-            let handlers = group.get("hooks").and_then(Value::as_array)?;
+            let Some(handlers) = group.get("hooks").and_then(Value::as_array) else {
+                continue;
+            };
             for handler in handlers {
                 if handler.get("type").and_then(Value::as_str) == Some("command")
                     && let Some(command) = handler.get("command").and_then(Value::as_str)
                 {
                     let invocation = match handler.get("args") {
                         None => JsonHookInvocation::Shell(command),
-                        Some(arguments) => JsonHookInvocation::Direct {
-                            program: command,
-                            arguments: arguments
-                                .as_array()?
-                                .iter()
-                                .map(Value::as_str)
-                                .collect::<Option<Vec<_>>>()?,
-                        },
+                        Some(arguments) => {
+                            let Some(arguments) = arguments.as_array().and_then(|arguments| {
+                                arguments
+                                    .iter()
+                                    .map(Value::as_str)
+                                    .collect::<Option<Vec<_>>>()
+                            }) else {
+                                continue;
+                            };
+                            JsonHookInvocation::Direct {
+                                program: command,
+                                arguments,
+                            }
+                        }
                     };
                     commands.push(JsonHookCommand { event, invocation });
                 }
@@ -364,6 +374,34 @@ mod tests {
             JsonHookInvocation::Direct { program, arguments }
                 if *program == "/opt/numbat"
                     && arguments == &["hook", "pre-tool", "--installed-by=numbat"]
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn nested_parser_keeps_valid_commands_when_siblings_are_malformed()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let value: Value = serde_json::from_str(
+            r#"{
+                "hooks": {
+                    "PreToolUse": [
+                        {"hooks": {"not": "an array"}},
+                        {"hooks": [
+                            {"type": "command", "command": "/opt/kontext hook pre-tool-use"},
+                            {"type": "command", "command": "/opt/ignored", "args": "not an array"}
+                        ]}
+                    ],
+                    "MalformedSibling": {}
+                }
+            }"#,
+        )?;
+
+        let commands = json_hook_commands(&value).ok_or("unexpected hook shape")?;
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].event, "PreToolUse");
+        assert!(matches!(
+            commands[0].invocation,
+            JsonHookInvocation::Shell("/opt/kontext hook pre-tool-use")
         ));
         Ok(())
     }

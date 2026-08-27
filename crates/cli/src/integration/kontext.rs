@@ -610,18 +610,41 @@ mod tests {
             r#"{"hooks": "managed-by-another-agent"}"#,
             r#"{"hooks": {"PreToolUse": {}}}"#,
             r#"{"hooks": {"PreToolUse": [{"hooks": {}}]}}"#,
+        ] {
+            let value: Value = serde_json::from_str(document)?;
+            assert!(json_hook_commands(&value).is_none_or(|commands| commands.is_empty()));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_sibling_in_drop_in_does_not_hide_owned_command()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let drop_in = root.path().join("kontext.json");
+        fs::write(
+            &drop_in,
             r#"{
                 "hooks": {
                     "PreToolUse": [{
                         "hooks": [{"type": "command", "command": "'/opt/homebrew/bin/kontext' hook 'pre-tool-use'"}]
                     }],
-                    "Unknown": {}
+                    "MalformedSibling": {}
                 }
             }"#,
-        ] {
-            let value: Value = serde_json::from_str(document)?;
-            assert!(json_hook_commands(&value).is_none());
-        }
+        )?;
+
+        let configured = find_configured_binaries(&[ResolvedHookSource::fixed(
+            HookProtocol::ClaudeSettings,
+            root.path().to_path_buf(),
+            HookSourceScope::Directory,
+        )])?;
+
+        assert_eq!(
+            configured.binaries,
+            vec![PathBuf::from("/opt/homebrew/bin/kontext")]
+        );
+        assert_eq!(configured.paths, vec![drop_in]);
         Ok(())
     }
 
