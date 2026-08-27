@@ -13,7 +13,7 @@ use thiserror::Error;
 use crate::{AccessMode, PathScope};
 
 /// Schema version accepted for embedded profile documents.
-pub const PROFILE_SCHEMA_V4: u32 = 4;
+pub const PROFILE_SCHEMA_V3: u32 = 3;
 /// Fallback profile used when no known binary name is detected.
 pub const GENERIC_PROFILE_NAME: &str = "generic";
 
@@ -136,7 +136,7 @@ pub enum HookSourceScope {
     /// Read one exact source path when it exists.
     #[default]
     File,
-    /// Inspect direct children selected by the protocol adapter.
+    /// Inspect direct children selected by the protocol resolver.
     Directory,
 }
 
@@ -243,14 +243,14 @@ pub struct DetectSpec {
     pub binary_names: Vec<String>,
 }
 
-/// Strictly typed version-4 embedded profile document.
+/// Strictly typed version-3 embedded profile document.
 ///
 /// This is the deserialized document shape, before inheritance is resolved. Unknown fields are
 /// rejected to prevent misspelled security settings from being ignored.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ProfileDocumentV4 {
-    /// Profile schema version; must equal [`PROFILE_SCHEMA_V4`].
+pub struct ProfileDocumentV3 {
+    /// Profile schema version; must equal [`PROFILE_SCHEMA_V3`].
     pub schema_version: u32,
     /// Stable lowercase profile identifier and embedded source name.
     pub name: String,
@@ -348,7 +348,7 @@ impl ResolvedProfile {
 /// rejects ambiguous detection claims before any target can be launched.
 #[derive(Debug)]
 pub struct ProfileRegistry {
-    documents: BTreeMap<String, ProfileDocumentV4>,
+    documents: BTreeMap<String, ProfileDocumentV3>,
     detection: BTreeMap<String, String>,
 }
 
@@ -363,7 +363,7 @@ impl ProfileRegistry {
             if source.len() > MAX_PROFILE_SOURCE_BYTES {
                 return Err(ProfileError::TooLarge((*source_name).to_owned()));
             }
-            let document: ProfileDocumentV4 = serde_json::from_str(source)
+            let document: ProfileDocumentV3 = serde_json::from_str(source)
                 .map_err(|error| ProfileError::Parse((*source_name).to_owned(), error))?;
             check_schema(source_name, &document)?;
             validate_name(&document.name)?;
@@ -446,7 +446,7 @@ impl ProfileRegistry {
         self.resolve(name)
     }
 
-    fn extend_chain(&self, name: &str) -> Result<Vec<&ProfileDocumentV4>, ProfileError> {
+    fn extend_chain(&self, name: &str) -> Result<Vec<&ProfileDocumentV3>, ProfileError> {
         let mut chain = Vec::new();
         let mut visited = HashSet::new();
         let mut cursor = Some(name);
@@ -483,7 +483,7 @@ struct MergedProfile {
 }
 
 impl MergedProfile {
-    fn absorb(&mut self, document: &ProfileDocumentV4) {
+    fn absorb(&mut self, document: &ProfileDocumentV3) {
         for binary in &document.detect.binary_names {
             if !self.detect.binary_names.contains(binary) {
                 self.detect.binary_names.push(binary.clone());
@@ -540,8 +540,8 @@ fn push_unique<T: Clone + PartialEq>(target: &mut Vec<T>, values: &[T]) {
     }
 }
 
-fn check_schema(source_name: &str, document: &ProfileDocumentV4) -> Result<(), ProfileError> {
-    if document.schema_version != PROFILE_SCHEMA_V4 {
+fn check_schema(source_name: &str, document: &ProfileDocumentV3) -> Result<(), ProfileError> {
+    if document.schema_version != PROFILE_SCHEMA_V3 {
         return Err(ProfileError::UnsupportedSchema {
             name: document.name.clone(),
             version: document.schema_version,

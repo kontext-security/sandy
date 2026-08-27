@@ -36,7 +36,7 @@ pub use manifest::{
 pub use path::{AbsolutePath, PathValidationError};
 pub use profile::{
     GENERIC_PROFILE_NAME, GrantTemplate, HookProtocol, HookSourceLocation, HookSourceScope,
-    HookSourceTemplate, PROFILE_SCHEMA_V4, ProfileDocumentV4, ProfileError, ProfileRegistry,
+    HookSourceTemplate, PROFILE_SCHEMA_V3, ProfileDocumentV3, ProfileError, ProfileRegistry,
     ResolvedProfile, TemplatePath,
 };
 pub use validation::{ValidatedLaunch, ValidatedPolicy, ValidationError};

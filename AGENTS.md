@@ -47,7 +47,7 @@ crates/cli/                package sandy-cli; sandy binary and product UX
 ```
 
 Do not add more crates until a distinct owner, dependency direction, and second
-consumer or security boundary exists. Runtime-control adapters and test support
+consumer or security boundary exists. Runtime-control resolvers and test support
 remain modules inside `sandy-cli` in `v0.1.x`.
 
 Keep dependencies flowing in one direction:
@@ -231,7 +231,7 @@ configuration to preserve an already-installed Numbat integration. A binary on
 `PATH` is not installation evidence.
 
 `--numbat` requires a supported installed hook. Sandy never installs,
-downloads, updates, repairs, or uninstalls Numbat. Its adapter accepts only
+downloads, updates, repairs, or uninstalls Numbat. Its resolver accepts only
 bounded, ownership-marked Claude Code, Codex, or OpenCode registrations whose
 event, lifecycle, agent, executable, and runtime arguments match the supported
 protocol.

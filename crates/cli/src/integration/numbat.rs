@@ -5,7 +5,7 @@ use sandy_core::{
 };
 
 use super::{
-    ImmutableExecutable, IntegrationMode, RuntimeControlCapabilities, RuntimeControlContribution,
+    ImmutableExecutable, IntegrationMode, ResolvedRuntimeControl, RuntimeControlCapabilities,
     hook_source::{JsonHookInvocation, json_documents, json_hook_commands, read_optional_bounded},
 };
 use crate::{
@@ -40,7 +40,7 @@ pub(crate) fn resolve(
     hook_sources: &[ResolvedHookSource],
     mode: IntegrationMode,
     paths: &ResolvedPaths,
-) -> Result<RuntimeControlContribution, AppError> {
+) -> Result<ResolvedRuntimeControl, AppError> {
     let configured = discover(hook_sources)?;
     if configured.is_empty() {
         if mode.is_required() {
@@ -48,13 +48,13 @@ pub(crate) fn resolve(
                 "--numbat requires installed hooks; run numbat hook install for the selected agent, or omit --numbat",
             ));
         }
-        return Ok(RuntimeControlContribution::inactive(SERVICE));
+        return Ok(ResolvedRuntimeControl::inactive(SERVICE));
     }
 
     match resolve_configured(&configured, paths) {
-        Ok(contribution) => Ok(contribution),
+        Ok(runtime_control) => Ok(runtime_control),
         Err(error) if mode.is_required() => Err(error),
-        Err(error) => Ok(RuntimeControlContribution::unavailable(
+        Err(error) => Ok(ResolvedRuntimeControl::unavailable(
             SERVICE,
             unavailable_reason(&error),
         )),
@@ -135,7 +135,7 @@ fn discover(sources: &[ResolvedHookSource]) -> Result<Vec<ConfiguredSource>, App
 fn resolve_configured(
     configured: &[ConfiguredSource],
     paths: &ResolvedPaths,
-) -> Result<RuntimeControlContribution, AppError> {
+) -> Result<ResolvedRuntimeControl, AppError> {
     let home = paths
         .home
         .as_deref()
@@ -181,7 +181,7 @@ fn resolve_configured(
     protections.dedup();
     reject_globally_protected_resources(&parsed_sources, &executables, &files, &paths.protected)?;
 
-    RuntimeControlContribution::active(
+    ResolvedRuntimeControl::active(
         SERVICE,
         None,
         RuntimeControlCapabilities {
@@ -207,6 +207,10 @@ fn validate_runtime_layout(
     let mut layout = RuntimeLayout::default();
     for parsed in parsed_sources {
         for directory in &parsed.runtime.rule_directories {
+            // Read-only rule directories may be configured through a symlink. Follow it here
+            // deliberately so the canonical target participates in the protected-data checks.
+            // `resource_aliases` later emits both lexical and canonical grants/protections;
+            // writable output and state leaves reject final-component symlinks separately.
             let metadata = fs::metadata(directory)
                 .map_err(|source| AppError::io("inspect Numbat rules directory", source))?;
             if !metadata.is_dir() {
@@ -548,18 +552,18 @@ mod tests {
         fs::write(&hooks, body)?;
         let source =
             ResolvedHookSource::fixed(HookProtocol::CodexHooks, hooks, HookSourceScope::File);
-        let contribution = resolve(
+        let control = resolve(
             &[source],
             IntegrationMode::Required,
             &paths(&home, &working)?,
         )?;
-        assert!(contribution.is_active());
+        assert!(control.is_active());
 
-        let plan = super::super::RuntimeControlPlan::new(vec![contribution]);
+        let controls = super::super::RuntimeControls::new(vec![control]);
         let canonical_home = fs::canonicalize(&home)?;
         let canonical_rules = fs::canonicalize(&rules)?;
         let mut policy = sandy_core::PolicySpec::default();
-        plan.apply(&mut policy)?;
+        controls.apply_to(&mut policy)?;
         assert!(policy.files.iter().any(|grant| {
             grant.path.as_path() == canonical_rules
                 && grant.access == AccessMode::Read
@@ -671,7 +675,7 @@ mod tests {
             .replace("__OUTPUT_FILE__", &output.to_string_lossy());
         fs::write(&settings, body)?;
 
-        let contribution = resolve(
+        let control = resolve(
             &[ResolvedHookSource::fixed(
                 HookProtocol::ClaudeSettings,
                 settings,
@@ -681,7 +685,7 @@ mod tests {
             &paths(&home, &working)?,
         )?;
 
-        assert!(contribution.is_active());
+        assert!(control.is_active());
         Ok(())
     }
 
@@ -799,6 +803,33 @@ mod tests {
             };
             assert!(validate_runtime_layout(&[parsed], &resolved).is_err());
         }
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_symlinked_rules_directory_inside_protected_data()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let home = root.path().join("home");
+        let working = root.path().join("working");
+        let protected = home.join(".ssh");
+        let rules = protected.join("rules");
+        let alias = root.path().join("rules-link");
+        fs::create_dir_all(&rules)?;
+        fs::create_dir(&working)?;
+        std::os::unix::fs::symlink(&rules, &alias)?;
+
+        let mut resolved = paths(&home, &working)?;
+        resolved.protected = vec![absolute_if_utf8(&fs::canonicalize(&protected)?)?];
+        let parsed = ParsedSource {
+            binary: root.path().join("numbat"),
+            runtime: HookRuntime {
+                rule_directories: vec![alias],
+                ..HookRuntime::default()
+            },
+        };
+
+        assert!(validate_runtime_layout(&[parsed], &resolved).is_err());
         Ok(())
     }
 

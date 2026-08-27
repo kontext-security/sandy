@@ -28,7 +28,7 @@ pub(crate) struct JsonHookCommand<'a> {
 /// Invocation forms used by supported JSON hook protocols.
 ///
 /// A direct program plus argument vector is kept distinct from a shell command
-/// so adapters never need to concatenate or evaluate structured arguments.
+/// so resolvers never need to concatenate or evaluate structured arguments.
 #[derive(Clone, Debug)]
 pub(crate) enum JsonHookInvocation<'a> {
     Shell(&'a str),
@@ -64,14 +64,19 @@ pub(crate) fn json_documents(
             HookSourceScope::Directory => {
                 let mut entries = directory_json_files(service, &source.path)?;
                 for path in entries.drain(..) {
-                    let Some(data) = read_optional_bounded(service, &path)? else {
+                    // A drop-in directory is shared by independent owners. Until a document
+                    // parses and exposes a recognized command, Sandy cannot attribute it to
+                    // this runtime control. Ignore failures for individual children so an
+                    // unrelated entry cannot disable an ordinary agent launch. Exact hook
+                    // sources remain strict, and an explicitly required integration still
+                    // fails when no valid owned registration can be established.
+                    let Ok(Some(data)) = read_optional_bounded(service, &path) else {
                         continue;
                     };
-                    push_document(
-                        service,
-                        &mut documents,
-                        parse_json(service, source, path, &data)?,
-                    )?;
+                    let Ok(document) = parse_json(service, source, path, &data) else {
+                        continue;
+                    };
+                    push_document(service, &mut documents, document)?;
                 }
             }
         }
@@ -236,7 +241,7 @@ pub(crate) fn json_hook_commands(value: &Value) -> Option<Vec<JsonHookCommand<'_
 }
 
 /// Splits one POSIX hook command without evaluating substitutions or shell
-/// operators. Hook adapters still validate the resulting command grammar.
+/// operators. Hook resolvers still validate the resulting command grammar.
 pub(crate) fn shell_words(command: &str) -> Option<Vec<String>> {
     #[derive(Clone, Copy)]
     enum Quote {
@@ -360,6 +365,37 @@ mod tests {
                 if *program == "/opt/numbat"
                     && arguments == &["hook", "pre-tool", "--installed-by=numbat"]
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn directory_discovery_ignores_unattributed_invalid_entries()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let valid = root.path().join("valid.json");
+        fs::write(&valid, r#"{"hooks":{}}"#)?;
+        fs::write(root.path().join("malformed.json"), "not json")?;
+        fs::write(
+            root.path().join("oversized.json"),
+            vec![b' '; (MAX_HOOK_DOCUMENT_BYTES + 1) as usize],
+        )?;
+        fs::create_dir(root.path().join("directory.json"))?;
+        std::os::unix::fs::symlink(
+            root.path().join("missing.json"),
+            root.path().join("broken.json"),
+        )?;
+
+        let documents = json_documents(
+            "test",
+            &[ResolvedHookSource::fixed(
+                HookProtocol::ClaudeSettings,
+                root.path().to_path_buf(),
+                HookSourceScope::Directory,
+            )],
+        )?;
+
+        assert_eq!(documents.len(), 1);
+        assert_eq!(documents[0].path, valid);
         Ok(())
     }
 

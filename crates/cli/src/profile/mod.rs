@@ -128,7 +128,7 @@ impl SelectedProfile {
     }
 
     /// Grants configured agent roots and protects user-controlled hook leaves
-    /// before any runtime-control adapter inspects their contents.
+    /// before any runtime-control resolver inspects their contents.
     pub(crate) fn hook_source_policy(
         &self,
         sources: &[ResolvedHookSource],

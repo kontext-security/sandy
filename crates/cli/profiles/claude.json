@@ -1,5 +1,5 @@
 {
-  "schema_version": 4,
+  "schema_version": 3,
   "name": "claude",
   "extends": ["base"],
   "detect": { "binary_names": ["claude"] },
