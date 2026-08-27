@@ -108,11 +108,37 @@ pub(crate) fn read_optional_bounded(
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(source) => return Err(AppError::io("inspect agent hook source", source)),
     }
+    let metadata = fs::metadata(path)
+        .map_err(|source| AppError::io("inspect agent hook source target", source))?;
+    validate_document_metadata(service, path, &metadata)?;
+
     let file =
         fs::File::open(path).map_err(|source| AppError::io("open agent hook source", source))?;
     let metadata = file
         .metadata()
         .map_err(|source| AppError::io("inspect agent hook source", source))?;
+    validate_document_metadata(service, path, &metadata)?;
+    let mut data = Vec::new();
+    file.take(MAX_HOOK_DOCUMENT_BYTES + 1)
+        .read_to_end(&mut data)
+        .map_err(|source| AppError::io("read agent hook source", source))?;
+    if data.len() as u64 > MAX_HOOK_DOCUMENT_BYTES {
+        return Err(error(
+            service,
+            format!(
+                "agent hook source is unexpectedly large: {}",
+                path.display()
+            ),
+        ));
+    }
+    Ok(Some(data))
+}
+
+fn validate_document_metadata(
+    service: &'static str,
+    path: &Path,
+    metadata: &fs::Metadata,
+) -> Result<(), AppError> {
     if !metadata.is_file() {
         return Err(error(
             service,
@@ -131,20 +157,7 @@ pub(crate) fn read_optional_bounded(
             ),
         ));
     }
-    let mut data = Vec::new();
-    file.take(MAX_HOOK_DOCUMENT_BYTES + 1)
-        .read_to_end(&mut data)
-        .map_err(|source| AppError::io("read agent hook source", source))?;
-    if data.len() as u64 > MAX_HOOK_DOCUMENT_BYTES {
-        return Err(error(
-            service,
-            format!(
-                "agent hook source is unexpectedly large: {}",
-                path.display()
-            ),
-        ));
-    }
-    Ok(Some(data))
+    Ok(())
 }
 
 fn directory_json_files(service: &'static str, directory: &Path) -> Result<Vec<PathBuf>, AppError> {
@@ -330,6 +343,8 @@ fn error(service: &'static str, message: impl Into<String>) -> AppError {
 
 #[cfg(test)]
 mod tests {
+    use std::{process::Command, sync::mpsc, thread, time::Duration};
+
     use super::*;
 
     #[test]
@@ -434,6 +449,23 @@ mod tests {
 
         assert_eq!(documents.len(), 1);
         assert_eq!(documents[0].path, valid);
+        Ok(())
+    }
+
+    #[test]
+    fn bounded_reader_rejects_fifo_without_blocking() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let fifo = root.path().join("hooks.json");
+        let status = Command::new("/usr/bin/mkfifo").arg(&fifo).status()?;
+        assert!(status.success());
+
+        let (sender, receiver) = mpsc::channel();
+        let reader =
+            thread::spawn(move || sender.send(read_optional_bounded("test", &fifo)).is_ok());
+        let result = receiver.recv_timeout(Duration::from_secs(2))?;
+
+        assert!(result.is_err());
+        assert_eq!(reader.join().ok(), Some(true));
         Ok(())
     }
 
