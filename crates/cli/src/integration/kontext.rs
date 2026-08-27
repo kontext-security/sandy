@@ -10,12 +10,15 @@ use std::{
 };
 
 use sandy_core::{
-    AbsolutePath, AccessMode, HookProtocol, PathScope, UnixSocketGrant, UnixSocketOperation,
+    AbsolutePath, AccessMode, FileGrant, HookProtocol, PathScope, UnixSocketGrant,
+    UnixSocketOperation, WriteProtection,
 };
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::{IntegrationMode, RuntimeControlBridge, RuntimeControlFiles};
+use super::{
+    ImmutableExecutable, IntegrationMode, ResolvedRuntimeControl, RuntimeControlCapabilities,
+};
 use crate::{
     error::AppError,
     profile::ResolvedHookSource,
@@ -56,7 +59,7 @@ pub(crate) fn resolve(
     hook_sources: &[ResolvedHookSource],
     mode: IntegrationMode,
     paths: &ResolvedPaths,
-) -> Result<RuntimeControlBridge, AppError> {
+) -> Result<ResolvedRuntimeControl, AppError> {
     let configured = find_configured_binaries(hook_sources)?;
     if configured.is_empty() {
         if mode.is_required() {
@@ -64,13 +67,13 @@ pub(crate) fn resolve(
                 "--kontext requires installed hooks; install Kontext and run kontext setup, or omit --kontext",
             ));
         }
-        return Ok(RuntimeControlBridge::inactive(SERVICE));
+        return Ok(ResolvedRuntimeControl::inactive(SERVICE));
     }
 
     match resolve_configured(configured, hook_sources, paths) {
-        Ok(bridge) => Ok(bridge),
+        Ok(runtime_control) => Ok(runtime_control),
         Err(error) if mode.is_required() => Err(error),
-        Err(error) => Ok(RuntimeControlBridge::unavailable(
+        Err(error) => Ok(ResolvedRuntimeControl::unavailable(
             SERVICE,
             unavailable_reason(&error),
         )),
@@ -81,7 +84,7 @@ fn resolve_configured(
     configured: Vec<PathBuf>,
     hook_sources: &[ResolvedHookSource],
     paths: &ResolvedPaths,
-) -> Result<RuntimeControlBridge, AppError> {
+) -> Result<ResolvedRuntimeControl, AppError> {
     let binaries = resolve_binaries(&configured)?;
     let binary = binaries
         .first()
@@ -153,7 +156,10 @@ fn resolve_configured(
     read_only.sort();
     read_only.dedup();
     let mut protected_from_write = write_protections(protection_inputs)?;
-    protected_from_write.extend(socket_paths.iter().cloned());
+    protected_from_write.extend(socket_paths.iter().cloned().map(|path| WriteProtection {
+        path,
+        scope: PathScope::Exact,
+    }));
     protected_from_write.sort();
     protected_from_write.dedup();
     let unix_sockets = socket_paths
@@ -164,16 +170,22 @@ fn resolve_configured(
         })
         .collect();
 
-    RuntimeControlBridge::active(
+    ResolvedRuntimeControl::active(
         SERVICE,
         report.installed_version,
-        RuntimeControlFiles {
-            executables: vec![executable],
-            read_only,
-            read_write: Vec::new(),
-            protected_from_write,
+        RuntimeControlCapabilities {
+            executables: vec![ImmutableExecutable::new(executable)],
+            files: read_only
+                .into_iter()
+                .map(|path| FileGrant {
+                    path,
+                    access: AccessMode::Read,
+                    scope: PathScope::Exact,
+                })
+                .collect(),
+            write_protections: protected_from_write,
+            unix_sockets,
         },
-        unix_sockets,
     )
 }
 

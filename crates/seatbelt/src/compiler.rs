@@ -74,13 +74,13 @@ pub fn compile(policy: &ValidatedPolicy) -> Result<CompiledProfile, SeatbeltErro
             path.as_str(),
         )?;
     }
-    for path in &policy.spec().protected_write_paths {
+    for protection in &policy.spec().write_protections {
         write_rule(
             &mut source,
             "deny",
             "file-write*",
-            PathScope::Exact,
-            path.as_str(),
+            protection.scope,
+            protection.path.as_str(),
         )?;
     }
 
@@ -155,9 +155,9 @@ mod tests {
     use std::ffi::OsStr;
 
     use sandy_core::{
-        AbsolutePath, AccessMode, CommandSpec, FileGrant, LaunchManifestV1, MANIFEST_SCHEMA_V1,
+        AbsolutePath, AccessMode, CommandSpec, FileGrant, LaunchManifestV2, MANIFEST_SCHEMA_V2,
         NetworkPolicy, OsValue, PathScope, PolicySpec, UnixSocketGrant, UnixSocketOperation,
-        ValidatedLaunch,
+        ValidatedLaunch, WriteProtection,
     };
 
     use super::*;
@@ -170,8 +170,8 @@ mod tests {
         network: NetworkPolicy,
         unix_sockets: Vec<UnixSocketGrant>,
     ) -> Result<ValidatedLaunch, Box<dyn std::error::Error>> {
-        let manifest = LaunchManifestV1 {
-            schema_version: MANIFEST_SCHEMA_V1,
+        let manifest = LaunchManifestV2 {
+            schema_version: MANIFEST_SCHEMA_V2,
             command: CommandSpec {
                 program: OsValue::from_os_str(OsStr::new("/bin/echo")),
                 arguments: Vec::new(),
@@ -185,7 +185,16 @@ mod tests {
                     scope: PathScope::Subtree,
                 }],
                 protected_paths: vec![AbsolutePath::new("/tmp/project/.secret")?],
-                protected_write_paths: vec![AbsolutePath::new("/tmp/project/config.toml")?],
+                write_protections: vec![
+                    WriteProtection {
+                        path: AbsolutePath::new("/tmp/project/config.toml")?,
+                        scope: PathScope::Exact,
+                    },
+                    WriteProtection {
+                        path: AbsolutePath::new("/tmp/project/operator-rules")?,
+                        scope: PathScope::Subtree,
+                    },
+                ],
                 unix_sockets,
                 network,
             },
@@ -211,6 +220,11 @@ mod tests {
             profile
                 .source()
                 .contains(r#"(deny file-write* (literal "/tmp/project/config.toml"))"#)
+        );
+        assert!(
+            profile
+                .source()
+                .contains(r#"(deny file-write* (subpath "/tmp/project/operator-rules"))"#)
         );
         assert!(!profile.source().contains("(allow network*)"));
         Ok(())

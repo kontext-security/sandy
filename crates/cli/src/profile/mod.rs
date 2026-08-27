@@ -86,7 +86,7 @@ impl SelectedProfile {
     pub(crate) fn protected_write_paths(
         &self,
         paths: &ResolvedPaths,
-    ) -> Result<Vec<AbsolutePath>, AppError> {
+    ) -> Result<Vec<sandy_core::WriteProtection>, AppError> {
         write_protections(
             self.resolved
                 .protected_write_paths()

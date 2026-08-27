@@ -1,7 +1,7 @@
 //! Versioned description of one fully resolved Sandy launch.
 //!
 //! These types are serializable transport types, not proof of validity. Constructing or decoding
-//! a [`LaunchManifestV1`] does not authorize execution; callers must convert it into
+//! a [`LaunchManifestV2`] does not authorize execution; callers must convert it into
 //! [`crate::ValidatedLaunch`] first.
 
 use std::ffi::{OsStr, OsString};
@@ -17,7 +17,7 @@ use crate::{AbsolutePath, PolicySpec};
 ///
 /// A schema change is an execution-protocol decision: old bootstraps reject unknown versions
 /// rather than interpreting them permissively.
-pub const MANIFEST_SCHEMA_V1: u32 = 1;
+pub const MANIFEST_SCHEMA_V2: u32 = 2;
 
 /// Complete transport representation of one target launch.
 ///
@@ -25,7 +25,7 @@ pub const MANIFEST_SCHEMA_V1: u32 = 1;
 /// validates it again before compiling and applying the contained policy.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct LaunchManifestV1 {
+pub struct LaunchManifestV2 {
     /// Version of the manifest and bootstrap protocol.
     pub schema_version: u32,
     /// Target executable and byte-preserving arguments.

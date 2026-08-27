@@ -1,7 +1,7 @@
 //! Platform-neutral contracts shared by Sandy's resolver and enforcement backend.
 //!
 //! The crate deliberately contains no ambient discovery and no native sandbox code. The CLI
-//! resolves profiles, paths, and integrations into a [`LaunchManifestV1`], then treats that
+//! resolves profiles, paths, and integrations into a [`LaunchManifestV2`], then treats that
 //! manifest as untrusted input when it crosses the bootstrap wire boundary. Only
 //! [`ValidatedLaunch`] and its [`ValidatedPolicy`] may proceed to policy compilation.
 //!
@@ -9,7 +9,7 @@
 //!
 //! ```text
 //! embedded profile documents -> ResolvedProfile
-//! CLI filesystem resolution  -> LaunchManifestV1
+//! CLI filesystem resolution  -> LaunchManifestV2
 //! bounded wire decode        -> ValidatedLaunch -> ValidatedPolicy
 //! ```
 //!
@@ -28,10 +28,10 @@ mod wire;
 
 pub use capability::{
     AccessMode, FileGrant, NetworkPolicy, PathScope, PolicySpec, UnixSocketGrant,
-    UnixSocketOperation,
+    UnixSocketOperation, WriteProtection,
 };
 pub use manifest::{
-    CommandSpec, EnvironmentEntry, LaunchManifestV1, MANIFEST_SCHEMA_V1, OsValue, OsValueError,
+    CommandSpec, EnvironmentEntry, LaunchManifestV2, MANIFEST_SCHEMA_V2, OsValue, OsValueError,
 };
 pub use path::{AbsolutePath, PathValidationError};
 pub use profile::{

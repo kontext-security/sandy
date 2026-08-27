@@ -112,7 +112,7 @@ pub struct GrantTemplate {
     pub if_exists: bool,
 }
 
-/// Agent-owned hook configuration grammar understood by an integration adapter.
+/// Agent-owned hook configuration grammar understood by an integration resolver.
 ///
 /// Profiles identify protocol shape, not provider policy. For example, a Codex hook source may
 /// contain a Kontext integration today and a different verified service later.
@@ -195,7 +195,7 @@ pub struct ProfileDocumentV2 {
     /// Readable but immutable exact paths contributed by the profile.
     #[serde(default)]
     pub protected_write_paths: Vec<TemplatePath>,
-    /// Agent hook sources available to optional runtime-control adapters.
+    /// Agent hook sources available to optional runtime-control resolvers.
     #[serde(default)]
     pub hook_sources: Vec<HookSourceTemplate>,
 }
