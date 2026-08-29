@@ -22,6 +22,10 @@ pub(crate) enum AppError {
     InvalidWriteProtection(PathBuf),
     #[error("requested path overlaps protected data: {0}")]
     ProtectedPath(PathBuf),
+    #[error("policy path must be absolute and must not be the filesystem root: {0}")]
+    InvalidPolicyPath(PathBuf),
+    #[error("policy intent is invalid: {0}")]
+    PolicyIntent(#[from] sandy_core::PolicyIntentError),
     #[error("launch manifest is invalid: {0}")]
     Core(#[from] sandy_core::ValidationError),
     #[error("launch protocol failed: {0}")]
@@ -85,6 +89,7 @@ impl AppError {
             | Self::UnsupportedPlatform
             | Self::Wire(_)
             | Self::Core(_)
+            | Self::PolicyIntent(_)
             | Self::Launch(_) => 126,
             _ => 1,
         }

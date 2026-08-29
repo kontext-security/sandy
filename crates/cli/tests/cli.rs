@@ -123,7 +123,7 @@ fn dry_run_json_has_a_versioned_runtime_control_schema() -> Result<(), Box<dyn s
     assert!(output.status.success());
 
     let document: serde_json::Value = serde_json::from_slice(&output.stdout)?;
-    assert_eq!(document["dry_run_schema_version"], 2);
+    assert_eq!(document["dry_run_schema_version"], 3);
     assert!(document.get("schema_version").is_none());
 
     let keys = document
@@ -139,6 +139,7 @@ fn dry_run_json_has_a_versioned_runtime_control_schema() -> Result<(), Box<dyn s
             "command",
             "dry_run_schema_version",
             "file_grants",
+            "file_metadata",
             "local_host_tcp_grants",
             "network",
             "profile",
@@ -169,6 +170,26 @@ fn dry_run_json_has_a_versioned_runtime_control_schema() -> Result<(), Box<dyn s
     }
     assert_eq!(controls[0]["service"], "Kontext");
     assert_eq!(controls[1]["service"], "Numbat");
+
+    let grants = document["file_grants"]
+        .as_array()
+        .ok_or("file_grants must be an array")?;
+    assert!(grants.iter().any(|grant| {
+        grant["path"] == "/" && grant["access"] == "read" && grant["scope"] == "exact"
+    }));
+    assert!(grants.iter().any(|grant| {
+        grant["path"] == "/bin" && grant["access"] == "read" && grant["scope"] == "subtree"
+    }));
+    assert!(grants.iter().any(|grant| {
+        grant["path"] == "/dev/null" && grant["access"] == "read_write" && grant["scope"] == "exact"
+    }));
+    assert_eq!(document["file_metadata"], "allow");
+    assert!(
+        document["seatbelt_profile"]
+            .as_str()
+            .ok_or("seatbelt_profile must be a string")?
+            .contains("file-read-metadata")
+    );
     Ok(())
 }
 

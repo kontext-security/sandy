@@ -27,7 +27,9 @@ inherit the resulting restrictions.
 
 Typed capabilities are the only input to policy compilation. Raw Seatbelt
 source is not accepted. Unsafe Rust is confined to the private native wrapper
-in `sandy-seatbelt`.
+in `sandy-seatbelt`. The compiler adds no implicit filesystem or network
+authority. The CLI explicitly composes its typed macOS runtime baseline before
+validation, including the metadata lookup needed to resolve system path aliases.
 
 ## In scope
 
