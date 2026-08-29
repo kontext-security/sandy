@@ -36,4 +36,4 @@ jobs:
       - name: Check release formula
         run: make formula-check
       - name: Test Seatbelt enforcement
-        run: cargo test -p sandy-cli --test live_macos -- --ignored
+        run: make test-live

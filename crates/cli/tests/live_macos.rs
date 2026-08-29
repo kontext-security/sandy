@@ -17,8 +17,8 @@ use predicates::prelude::*;
 use sandy_core::{
     AbsolutePath, AccessMode, CommandSpec, FileGrant, FileMetadataPolicy, LaunchManifestV2,
     LocalHostTcpGrant, LocalHostTcpOperation, MANIFEST_SCHEMA_V2, NetworkPolicy, OsValue,
-    PathScope, PolicySpec, TcpPort, UnixSocketGrant, UnixSocketOperation, ValidatedLaunch,
-    WriteProtection,
+    PathScope, PolicySpec, RuntimeCompatibility, TcpPort, UnixSocketGrant, UnixSocketOperation,
+    ValidatedLaunch, WriteProtection,
 };
 
 const SOCKET_PROBE_MODE: &str = "SANDY_TEST_EXACT_SOCKET_PROBE";
@@ -342,6 +342,7 @@ fn run_scoped_write_probe() -> Result<(), Box<dyn std::error::Error>> {
             access: AccessMode::ReadWrite,
             scope: PathScope::Subtree,
         }],
+        executables: Vec::new(),
         protected_paths: Vec::new(),
         write_protections: vec![WriteProtection {
             path: absolute(&protected)?,
@@ -350,6 +351,8 @@ fn run_scoped_write_probe() -> Result<(), Box<dyn std::error::Error>> {
         unix_sockets: Vec::new(),
         local_host_tcp: Vec::new(),
         file_metadata: FileMetadataPolicy::Deny,
+        allow_subprocesses: false,
+        runtime_compatibility: RuntimeCompatibility::Minimal,
         network: NetworkPolicy::BlockAll,
     };
     policy.close_write_protection_ancestors();
@@ -540,6 +543,7 @@ fn run_exact_socket_probe() -> Result<(), Box<dyn std::error::Error>> {
                 access: AccessMode::ReadWrite,
                 scope: PathScope::Subtree,
             }],
+            executables: Vec::new(),
             protected_paths: Vec::new(),
             write_protections: socket_paths
                 .iter()
@@ -558,6 +562,8 @@ fn run_exact_socket_probe() -> Result<(), Box<dyn std::error::Error>> {
                 .collect(),
             local_host_tcp: Vec::new(),
             file_metadata: FileMetadataPolicy::Allow,
+            allow_subprocesses: false,
+            runtime_compatibility: RuntimeCompatibility::Minimal,
             network: NetworkPolicy::BlockAll,
         },
     };
@@ -638,6 +644,7 @@ fn run_local_host_tcp_probe() -> Result<(), Box<dyn std::error::Error>> {
                 access: AccessMode::ReadWrite,
                 scope: PathScope::Subtree,
             }],
+            executables: Vec::new(),
             protected_paths: Vec::new(),
             write_protections: Vec::new(),
             unix_sockets: Vec::new(),
@@ -646,6 +653,8 @@ fn run_local_host_tcp_probe() -> Result<(), Box<dyn std::error::Error>> {
                 operation: LocalHostTcpOperation::Connect,
             }],
             file_metadata: FileMetadataPolicy::Deny,
+            allow_subprocesses: false,
+            runtime_compatibility: RuntimeCompatibility::Minimal,
             network: NetworkPolicy::BlockAll,
         },
     };

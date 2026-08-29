@@ -426,6 +426,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sandy-sandbox"
+version = "0.1.6"
+dependencies = [
+ "sandy-core",
+ "sandy-seatbelt",
+ "tempfile",
+]
+
+[[package]]
 name = "sandy-seatbelt"
 version = "0.1.6"
 dependencies = [

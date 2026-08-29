@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help build test fmt fmt-check clippy deny formula-check check run
+.PHONY: help build test test-live fmt fmt-check clippy deny formula-check check run
 
 help: ## Show available targets.
 	@awk 'BEGIN {FS = ":.*##"; printf "Usage:\n  make <target>\n\n"} /^[a-zA-Z_0-9-]+:.*?##/ { printf "  %-12s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -10,6 +10,10 @@ build: ## Build the Sandy binary.
 
 test: ## Run workspace tests.
 	cargo test --workspace --locked
+
+test-live: ## Run sacrificial macOS Seatbelt enforcement tests.
+	cargo test -p sandy-cli --test live_macos --locked -- --ignored --test-threads=1
+	cargo test -p sandy-sandbox --test live_macos --features live-tests --locked
 
 fmt: ## Format Rust sources.
 	cargo fmt --all

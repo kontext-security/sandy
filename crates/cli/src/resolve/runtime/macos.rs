@@ -2,7 +2,9 @@
 
 use std::path::Path;
 
-use sandy_core::{AccessMode, PathScope, SandboxPolicy, allow_file_metadata};
+use sandy_core::{
+    AccessMode, PathScope, SandboxPolicy, allow_file_metadata, allow_foreground_cli_compatibility,
+};
 
 const READ_ONLY_SUBTREES: &[&str] = &[
     "/System",
@@ -32,6 +34,7 @@ pub(crate) fn add_to(policy: SandboxPolicy) -> SandboxPolicy {
 
 fn add_matching(mut policy: SandboxPolicy, mut include: impl FnMut(&str) -> bool) -> SandboxPolicy {
     policy = allow_file_metadata(policy);
+    policy = allow_foreground_cli_compatibility(policy);
     policy = policy.grant("/", AccessMode::Read, PathScope::Exact);
     for path in READ_ONLY_SUBTREES {
         if include(path) {
@@ -72,6 +75,11 @@ mod tests {
         assert!(parts.denied_subtrees.is_empty());
         assert!(parts.write_denied_exact.is_empty());
         assert_eq!(parts.file_metadata, sandy_core::FileMetadataPolicy::Allow);
+        assert!(parts.allow_subprocesses);
+        assert_eq!(
+            parts.runtime_compatibility,
+            sandy_core::RuntimeCompatibility::ForegroundCli
+        );
         Ok(())
     }
 }

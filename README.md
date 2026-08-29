@@ -49,6 +49,43 @@ Check that sandboxing works:
 sandy doctor
 ```
 
+### Use from Rust
+
+The Rust package applies a typed policy directly to the calling process. It has
+no Sandy executable dependency and adds no application compatibility baseline.
+
+```toml
+[dependencies]
+sandy = { package = "sandy-sandbox", path = "crates/sandy" }
+```
+
+The registry dependency is enabled by the release change that follows this API
+implementation.
+
+```rust,no_run
+use sandy::{AccessMode, NetworkPolicy, PathScope, SandboxPolicy};
+
+let workspace = std::env::current_dir()?;
+let policy = SandboxPolicy::new(NetworkPolicy::BlockAll).grant(
+    &workspace,
+    AccessMode::ReadWrite,
+    PathScope::Subtree,
+);
+
+sandy::apply(policy)?;
+// Start the restricted application here.
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Reading a path does not make it executable. Chain `allow_execute(path, scope)`
+for programs, libraries, or generated code. Launching one also requires the
+policy to select `allow_subprocesses()`.
+
+`apply` is irreversible. Call it before creating threads, opening sensitive
+resources, or starting untrusted work. If native enforcement fails, terminate
+the process instead of continuing with a weaker boundary. The initial backend
+is macOS; other platforms return `ErrorKind::Unsupported`.
+
 ## Run
 
 Sandy recognizes Claude Code, Codex, and OpenCode:
@@ -94,7 +131,8 @@ sandy run --dry-run -- claude
 Dry-run output is a versioned JSON document. `dry_run_schema_version` identifies
 its public schema independently from the internal launch-manifest protocol.
 The resolved policy includes the CLI's explicit runtime baseline and reports
-its filesystem metadata behavior in `file_metadata`.
+its filesystem metadata, executable, subprocess, and foreground compatibility
+behavior.
 Optional host integrations are reported in the canonical `runtime_controls`
 array, with one object per resolved runtime control containing `service`,
 `enabled`, and nullable `version` fields.
