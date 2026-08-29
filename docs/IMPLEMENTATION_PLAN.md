@@ -57,8 +57,10 @@ Review gates:
 ## PR 3: package and release safely
 
 Prepare implementation packages and the supported facade for coordinated
-publication. Add an external-consumer packaging test and publish packages in
-dependency order before producing the existing CLI artifacts.
+publication. Verify the normalized package sources, compile a separate consumer
+through the documented dependency alias, and publish packages in dependency
+order after both CLI archives have built and before the draft release becomes
+public.
 
 Review gates:
 

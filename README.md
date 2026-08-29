@@ -56,11 +56,8 @@ no Sandy executable dependency and adds no application compatibility baseline.
 
 ```toml
 [dependencies]
-sandy = { package = "sandy-sandbox", path = "crates/sandy" }
+sandy = { package = "sandy-sandbox", version = "0.1" }
 ```
-
-The registry dependency is enabled by the release change that follows this API
-implementation.
 
 ```rust,no_run
 use sandy::{AccessMode, NetworkPolicy, PathScope, SandboxPolicy};

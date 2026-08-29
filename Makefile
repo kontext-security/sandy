@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help build test test-live fmt fmt-check clippy deny formula-check check run
+.PHONY: help build test test-live fmt fmt-check clippy deny package-check formula-check check run
 
 help: ## Show available targets.
 	@awk 'BEGIN {FS = ":.*##"; printf "Usage:\n  make <target>\n\n"} /^[a-zA-Z_0-9-]+:.*?##/ { printf "  %-12s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -27,10 +27,14 @@ clippy: ## Run strict Clippy checks.
 deny: ## Check dependency advisories, licenses, and sources.
 	cargo deny check
 
+package-check: ## Verify publishable packages and the external consumer fixture.
+	cargo package --workspace --exclude sandy-cli --allow-dirty --locked
+	cargo check --manifest-path tests/package-consumer/Cargo.toml --locked
+
 formula-check: ## Validate the generated public Homebrew formula.
 	./scripts/test-render-homebrew-formula.sh
 
-check: fmt-check clippy test deny formula-check ## Run the authoritative local verification.
+check: fmt-check clippy test deny package-check formula-check ## Run the authoritative local verification.
 
 run: ## Run Sandy's help from source.
 	cargo run -p sandy-cli -- --help
