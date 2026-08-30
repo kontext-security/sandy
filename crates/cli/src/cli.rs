@@ -81,6 +81,11 @@ pub(crate) struct RunArgs {
     #[arg(long, value_name = "NAME")]
     pub(crate) profile: Option<String>,
 
+    /// Load one user-authored session profile. The document must extend one
+    /// built-in profile and may add typed filesystem and executable policy.
+    #[arg(long, value_name = "PATH", conflicts_with = "profile")]
+    pub(crate) profile_file: Option<PathBuf>,
+
     /// Grant read-only access to an existing path.
     #[arg(long, value_name = "PATH")]
     pub(crate) read: Vec<PathBuf>,
@@ -88,6 +93,12 @@ pub(crate) struct RunArgs {
     /// Grant read/write access to an existing path.
     #[arg(long = "read-write", value_name = "PATH")]
     pub(crate) read_write: Vec<PathBuf>,
+
+    /// Allow executable mapping and launch from an existing path.
+    ///
+    /// This does not grant ordinary file reads or writes.
+    #[arg(long, value_name = "PATH")]
+    pub(crate) execute: Vec<PathBuf>,
 
     /// Block IP networking and ungranted Unix-socket connections. An active
     /// Kontext integration retains its exact verified socket connection.

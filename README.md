@@ -113,6 +113,15 @@ sandy run --read ../shared-library -- claude
 sandy run --read-write ~/Downloads/output -- codex --sandbox danger-full-access
 ```
 
+File grants do not make content executable. Grant executable mapping and
+launch separately when a target must run programs or generated code from an
+additional path:
+
+```bash
+sandy run --read ../shared-tools --execute ../shared-tools -- \
+  /bin/sh -c '../shared-tools/build'
+```
+
 Block network access:
 
 ```bash
@@ -127,6 +136,9 @@ sandy run --dry-run -- claude
 
 Dry-run output is a versioned JSON document. `dry_run_schema_version` identifies
 its public schema independently from the internal launch-manifest protocol.
+Schema version 5 identifies the selected profile's `source` as `embedded` or
+`user_file`; user-file selections also report their built-in `base` without
+placing the source path or document contents in profile metadata.
 The resolved policy includes the CLI's explicit runtime baseline and reports
 its filesystem metadata, executable, subprocess, and foreground compatibility
 behavior.
@@ -151,6 +163,19 @@ sandy run --profile codex -- my-codex-wrapper
 
 Profiles are versioned documents built into Sandy. They use Sandy's supported
 permissions and cannot contain raw sandbox rules.
+
+For one explicit session policy, load a user-authored profile file:
+
+```bash
+sandy run --profile-file ./project-sandbox.json -- codex --sandbox danger-full-access
+```
+
+The strict JSON document extends one selectable built-in profile and may add
+typed filesystem grants, executable grants, and terminal filesystem denials.
+Filesystem and executable authority are independent and must be requested
+separately. Sandy does not discover profile files automatically. See [User
+profile files](docs/PROFILE_FORMAT.md) for the complete format and security
+semantics.
 
 ## How it works
 

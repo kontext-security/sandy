@@ -42,9 +42,11 @@ pub use path::{AbsolutePath, PathValidationError};
 #[doc(hidden)]
 pub use policy_draft::{FileGrantConflict, ResolvedPolicyDraft};
 pub use profile::{
-    GENERIC_PROFILE_NAME, GrantTemplate, HookProtocol, HookSourceLocation, HookSourceScope,
-    HookSourceTemplate, PROFILE_SCHEMA_V3, ProfileDocumentV3, ProfileError, ProfileRegistry,
-    ResolvedProfile, TemplatePath,
+    ExecutableTemplate, GENERIC_PROFILE_NAME, GrantTemplate, HookProtocol, HookSourceLocation,
+    HookSourceScope, HookSourceTemplate, MAX_USER_PROFILE_SOURCE_BYTES, PROFILE_SCHEMA_V4,
+    ProfileDocumentV4, ProfileError, ProfileRegistry, ResolvedProfile, ResolvedUserProfile,
+    TemplatePath, USER_PROFILE_SCHEMA_V1, UserExecutableTemplate, UserGrantTemplate,
+    UserProfileDocumentV1, UserProfileError,
 };
 pub use sandbox_policy::{
     PolicyIntentError, SandboxPolicy, SandboxPolicyParts, UnresolvedExecutable, UnresolvedGrant,

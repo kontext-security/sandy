@@ -41,6 +41,19 @@ in `sandy-seatbelt`. The compiler adds no implicit filesystem or network
 authority. The CLI explicitly composes its typed macOS runtime baseline before
 validation, including the metadata lookup needed to resolve system path aliases.
 
+An explicitly selected user profile file is parsed through a narrower schema
+than embedded profiles. It can only add required filesystem grants, executable
+grants, and terminal denials to one selectable embedded base; it cannot remove
+inherited policy or declare integration behavior. Filesystem grants never add
+executable authority. The CLI reads from the canonical path selected before
+opening and denies both that target and the supplied absolute lexical path
+inside the launched sandbox.
+
+The user profile is operator-selected security configuration, not agent input:
+it can add host filesystem or executable authority. The operator must trust and
+control it. Current-session source denial does not authenticate the document or
+prevent a target from altering a writable source before a later launch.
+
 ## In scope
 
 - reads and writes outside explicit filesystem grants;
@@ -71,6 +84,8 @@ must apply before creating them.
 - all confused-deputy behavior through allowed Mach/XPC services;
 - outbound data disclosure while network is enabled;
 - mutation between path canonicalization and later use;
+- replacement of a user-profile pathname after trusted preparation, and access
+  through a hard-link alias not named by the lexical or canonical source path;
 - replacement of an explicitly granted Unix socket after the trusted parent
   verifies its path, type, and owner;
 - access to Kontext's exact Unix socket when the integration is active, even

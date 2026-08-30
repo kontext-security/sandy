@@ -1,4 +1,4 @@
-use std::{fs, os::unix::fs::PermissionsExt as _};
+use std::{fs, os::unix::fs::PermissionsExt as _, sync::mpsc, thread, time::Duration};
 
 use assert_cmd::Command;
 use predicates::prelude::*;
@@ -14,6 +14,19 @@ fn help_exposes_only_public_commands() -> Result<(), Box<dyn std::error::Error>>
         .stdout(predicate::str::contains("doctor"))
         .stdout(predicate::str::contains("integrations"))
         .stdout(predicate::str::contains("__bootstrap").not());
+    Ok(())
+}
+
+#[test]
+fn run_help_documents_explicit_user_profile_files() -> Result<(), Box<dyn std::error::Error>> {
+    let mut command = Command::cargo_bin("sandy")?;
+    command
+        .args(["run", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--profile-file <PATH>"))
+        .stdout(predicate::str::contains("--execute <PATH>"))
+        .stdout(predicate::str::contains("built-in profile"));
     Ok(())
 }
 
@@ -124,7 +137,7 @@ fn dry_run_json_has_a_versioned_runtime_control_schema() -> Result<(), Box<dyn s
     assert!(output.status.success());
 
     let document: serde_json::Value = serde_json::from_slice(&output.stdout)?;
-    assert_eq!(document["dry_run_schema_version"], 4);
+    assert_eq!(document["dry_run_schema_version"], 5);
     assert!(document.get("schema_version").is_none());
 
     let keys = document
@@ -218,15 +231,16 @@ fn dry_run_json_has_a_versioned_runtime_control_schema() -> Result<(), Box<dyn s
 }
 
 #[test]
-fn cli_filesystem_grants_keep_explicit_execution_compatibility()
--> Result<(), Box<dyn std::error::Error>> {
+fn cli_file_and_executable_grants_are_independent() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let home = directory.path().join("home");
     let readable = directory.path().join("readable");
     let writable = directory.path().join("writable");
+    let executable = directory.path().join("executable");
     fs::create_dir(&home)?;
     fs::create_dir(&readable)?;
     fs::create_dir(&writable)?;
+    fs::create_dir(&executable)?;
 
     let mut command = Command::cargo_bin("sandy")?;
     let output = command
@@ -238,6 +252,8 @@ fn cli_filesystem_grants_keep_explicit_execution_compatibility()
             readable.to_str().ok_or("test path must be UTF-8")?,
             "--read-write",
             writable.to_str().ok_or("test path must be UTF-8")?,
+            "--execute",
+            executable.to_str().ok_or("test path must be UTF-8")?,
             "--",
             "/bin/echo",
         ])
@@ -259,12 +275,18 @@ fn cli_filesystem_grants_keep_explicit_execution_compatibility()
         assert!(files.iter().any(|grant| {
             grant["path"] == path && grant["access"] == access && grant["scope"] == "subtree"
         }));
-        assert!(
-            executables
-                .iter()
-                .any(|grant| { grant["path"] == path && grant["scope"] == "subtree" })
-        );
+        assert!(!executables.iter().any(|grant| grant["path"] == path));
     }
+    let executable = fs::canonicalize(executable)?;
+    let executable = executable
+        .to_str()
+        .ok_or("canonical test path must be UTF-8")?;
+    assert!(
+        executables
+            .iter()
+            .any(|grant| { grant["path"] == executable && grant["scope"] == "subtree" })
+    );
+    assert!(!files.iter().any(|grant| grant["path"] == executable));
     Ok(())
 }
 
@@ -375,6 +397,707 @@ fn explicit_profile_overrides_detection() -> Result<(), Box<dyn std::error::Erro
         .success()
         .stdout(predicate::str::contains(r#""name": "generic""#))
         .stdout(predicate::str::contains(r#""detected": false"#));
+    Ok(())
+}
+
+#[test]
+fn profile_and_profile_file_conflict_at_the_cli_boundary() -> Result<(), Box<dyn std::error::Error>>
+{
+    let mut command = Command::cargo_bin("sandy")?;
+    command
+        .args([
+            "run",
+            "--profile",
+            "generic",
+            "--profile-file",
+            "session.json",
+            "--",
+            "/bin/echo",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be used with"));
+    Ok(())
+}
+
+#[test]
+fn profile_file_may_be_supplied_only_once() -> Result<(), Box<dyn std::error::Error>> {
+    let mut command = Command::cargo_bin("sandy")?;
+    command
+        .args([
+            "run",
+            "--profile-file",
+            "first.json",
+            "--profile-file",
+            "second.json",
+            "--",
+            "/bin/echo",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "argument '--profile-file <PATH>' cannot be used multiple times",
+        ));
+    Ok(())
+}
+
+#[test]
+fn user_profile_composes_with_one_embedded_base_and_reports_safe_source()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let home = directory.path().join("home");
+    let readable = directory.path().join("readable");
+    let executable = directory.path().join("executable");
+    let protected = directory.path().join("protected");
+    let immutable = directory.path().join("immutable.json");
+    let profile = directory.path().join("session.json");
+    fs::create_dir(&home)?;
+    fs::create_dir(&readable)?;
+    fs::create_dir(&executable)?;
+    fs::create_dir(&protected)?;
+    fs::write(&immutable, "{}")?;
+    fs::write(
+        &profile,
+        format!(
+            r#"{{
+                "schema_version": 1,
+                "name": "team-session",
+                "extends": "generic",
+                "grants": [{{
+                    "path": "{}",
+                    "access": "read",
+                    "scope": "subtree"
+                }}],
+                "executable_grants": [{{
+                    "path": "{}",
+                    "scope": "subtree"
+                }}],
+                "deny_subtrees": ["{}"],
+                "deny_write_exact": ["{}"]
+            }}"#,
+            readable.display(),
+            executable.display(),
+            protected.display(),
+            immutable.display(),
+        ),
+    )?;
+
+    let mut command = Command::cargo_bin("sandy")?;
+    let output = command
+        .env("HOME", &home)
+        .args([
+            "run",
+            "--dry-run",
+            "--profile-file",
+            profile.to_str().ok_or("profile path must be UTF-8")?,
+            "--",
+            "/bin/echo",
+        ])
+        .output()?;
+    assert!(output.status.success());
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+
+    assert_eq!(document["dry_run_schema_version"], 5);
+    assert_eq!(document["profile"]["name"], "team-session");
+    assert_eq!(document["profile"]["source"], "user_file");
+    assert_eq!(document["profile"]["base"], "generic");
+    assert_eq!(document["profile"]["detected"], false);
+    let metadata = document["profile"].to_string();
+    assert!(!metadata.contains(profile.to_string_lossy().as_ref()));
+    assert!(!metadata.contains("schema_version"));
+
+    let readable = fs::canonicalize(readable)?;
+    let executable = fs::canonicalize(executable)?;
+    let grants = document["file_grants"]
+        .as_array()
+        .ok_or("file_grants must be an array")?;
+    let executables = document["executable_grants"]
+        .as_array()
+        .ok_or("executable_grants must be an array")?;
+    assert!(grants.iter().any(|grant| {
+        grant["path"] == readable.to_string_lossy().as_ref()
+            && grant["access"] == "read"
+            && grant["scope"] == "subtree"
+    }));
+    assert!(
+        !executables
+            .iter()
+            .any(|grant| { grant["path"] == readable.to_string_lossy().as_ref() })
+    );
+    assert!(executables.iter().any(|grant| {
+        grant["path"] == executable.to_string_lossy().as_ref() && grant["scope"] == "subtree"
+    }));
+    assert!(
+        !grants
+            .iter()
+            .any(|grant| { grant["path"] == executable.to_string_lossy().as_ref() })
+    );
+
+    let rendered = document["seatbelt_profile"]
+        .as_str()
+        .ok_or("seatbelt_profile must be a string")?;
+    for denied in [&profile, &protected, &immutable] {
+        assert!(rendered.contains(denied.to_string_lossy().as_ref()));
+    }
+    Ok(())
+}
+
+#[test]
+fn user_protected_alias_conflicts_with_a_grant_to_its_canonical_target()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let home = directory.path().join("home");
+    let target = directory.path().join("sensitive-target");
+    let alias = directory.path().join("sensitive-alias");
+    let profile = directory.path().join("session.json");
+    fs::create_dir(&home)?;
+    fs::create_dir(&target)?;
+    std::os::unix::fs::symlink(&target, &alias)?;
+    fs::write(
+        &profile,
+        format!(
+            r#"{{
+                "schema_version": 1,
+                "name": "session",
+                "extends": "generic",
+                "grants": [{{
+                    "path": "{}",
+                    "access": "read",
+                    "scope": "subtree"
+                }}],
+                "deny_subtrees": ["{}"]
+            }}"#,
+            target.display(),
+            alias.display(),
+        ),
+    )?;
+
+    let mut command = Command::cargo_bin("sandy")?;
+    command
+        .env("HOME", home)
+        .args([
+            "run",
+            "--dry-run",
+            "--profile-file",
+            profile.to_str().ok_or("profile path must be UTF-8")?,
+            "--",
+            "/bin/echo",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "user profile grant 1 overlaps protected data",
+        ))
+        .stderr(predicate::str::contains(target.to_string_lossy().as_ref()).not())
+        .stderr(predicate::str::contains(alias.to_string_lossy().as_ref()).not());
+    Ok(())
+}
+
+#[test]
+fn user_protected_working_directory_error_is_positioned_and_redacted()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let home = directory.path().join("home");
+    let protected_working_directory = directory
+        .path()
+        .join("sentinel-user-protected-working-directory");
+    let profile = directory.path().join("session.json");
+    let marker = protected_working_directory.join("target-ran");
+    fs::create_dir(&home)?;
+    fs::create_dir(&protected_working_directory)?;
+    fs::write(
+        &profile,
+        format!(
+            r#"{{
+                "schema_version": 1,
+                "name": "session",
+                "extends": "generic",
+                "deny_subtrees": ["{}"]
+            }}"#,
+            protected_working_directory.display(),
+        ),
+    )?;
+
+    let mut command = Command::cargo_bin("sandy")?;
+    command
+        .env("HOME", home)
+        .current_dir(&protected_working_directory)
+        .args([
+            "run",
+            "--profile-file",
+            profile.to_str().ok_or("profile path must be UTF-8")?,
+            "--",
+            "/usr/bin/touch",
+            "target-ran",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "user profile deny_subtrees entry 1 overlaps the working directory",
+        ))
+        .stderr(
+            predicate::str::contains(protected_working_directory.to_string_lossy().as_ref()).not(),
+        );
+    assert!(!marker.exists());
+    Ok(())
+}
+
+#[test]
+fn user_protected_target_error_is_positioned_and_redacted() -> Result<(), Box<dyn std::error::Error>>
+{
+    let directory = tempfile::tempdir()?;
+    let home = directory.path().join("home");
+    let project = directory.path().join("project");
+    let profile = directory.path().join("session.json");
+    fs::create_dir(&home)?;
+    fs::create_dir(&project)?;
+    fs::write(
+        &profile,
+        r#"{
+            "schema_version": 1,
+            "name": "session",
+            "extends": "generic",
+            "deny_subtrees": ["/bin/echo"]
+        }"#,
+    )?;
+
+    let mut command = Command::cargo_bin("sandy")?;
+    command
+        .env("HOME", home)
+        .current_dir(project)
+        .args([
+            "run",
+            "--dry-run",
+            "--profile-file",
+            profile.to_str().ok_or("profile path must be UTF-8")?,
+            "--",
+            "/bin/echo",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "user profile deny_subtrees entry 1 overlaps a required launch path",
+        ))
+        .stderr(predicate::str::contains("/bin/echo").not())
+        .stderr(predicate::str::contains("/usr/bin/echo").not());
+    Ok(())
+}
+
+#[test]
+fn embedded_profile_dry_run_reports_version_five_source_metadata()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut command = Command::cargo_bin("sandy")?;
+    let output = command
+        .args(["run", "--dry-run", "--", "/bin/echo"])
+        .output()?;
+    assert!(output.status.success());
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(document["dry_run_schema_version"], 5);
+    assert_eq!(document["profile"]["source"], "embedded");
+    assert!(document["profile"]["base"].is_null());
+    assert_eq!(sandy_core::MANIFEST_SCHEMA_V2, 2);
+    Ok(())
+}
+
+#[test]
+fn missing_user_profile_grants_fail_before_target_execution()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let home = directory.path().join("home");
+    let profile = directory.path().join("session.json");
+    let marker = directory.path().join("target-ran");
+    let missing = directory.path().join("missing-sensitive-policy-path");
+    fs::create_dir(&home)?;
+    fs::write(
+        &profile,
+        format!(
+            r#"{{
+                "schema_version": 1,
+                "name": "session",
+                "extends": "generic",
+                "grants": [{{
+                    "path": "{}",
+                    "access": "read",
+                    "scope": "exact"
+                }}]
+            }}"#,
+            missing.display()
+        ),
+    )?;
+
+    let mut command = Command::cargo_bin("sandy")?;
+    command
+        .env("HOME", home)
+        .args([
+            "run",
+            "--profile-file",
+            profile.to_str().ok_or("profile path must be UTF-8")?,
+            "--",
+            "/usr/bin/touch",
+            marker.to_str().ok_or("marker path must be UTF-8")?,
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "user profile grant 1 is unavailable",
+        ))
+        .stderr(predicate::str::contains(missing.to_string_lossy().as_ref()).not());
+    assert!(!marker.exists());
+    Ok(())
+}
+
+#[test]
+fn missing_user_profile_executable_grants_fail_before_target_execution()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let home = directory.path().join("home");
+    let profile = directory.path().join("session.json");
+    let marker = directory.path().join("target-ran");
+    let missing = directory.path().join("missing-executable-policy-path");
+    fs::create_dir(&home)?;
+    fs::write(
+        &profile,
+        format!(
+            r#"{{
+                "schema_version": 1,
+                "name": "session",
+                "extends": "generic",
+                "executable_grants": [{{
+                    "path": "{}",
+                    "scope": "exact"
+                }}]
+            }}"#,
+            missing.display()
+        ),
+    )?;
+
+    let mut command = Command::cargo_bin("sandy")?;
+    command
+        .env("HOME", home)
+        .args([
+            "run",
+            "--profile-file",
+            profile.to_str().ok_or("profile path must be UTF-8")?,
+            "--",
+            "/usr/bin/touch",
+            marker.to_str().ok_or("marker path must be UTF-8")?,
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "user profile executable_grants entry 1 is unavailable",
+        ))
+        .stderr(predicate::str::contains(missing.to_string_lossy().as_ref()).not());
+    assert!(!marker.exists());
+    Ok(())
+}
+
+#[test]
+fn protected_user_profile_grant_errors_are_redacted() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let home = directory.path().join("home");
+    let protected = home.join(".ssh/sensitive-policy-sentinel");
+    let profile = directory.path().join("session.json");
+    fs::create_dir_all(protected.parent().ok_or("protected path needs a parent")?)?;
+    fs::write(&protected, "not secret")?;
+    fs::write(
+        &profile,
+        format!(
+            r#"{{
+                "schema_version": 1,
+                "name": "session",
+                "extends": "generic",
+                "grants": [{{
+                    "path": "{}",
+                    "access": "read",
+                    "scope": "exact"
+                }}]
+            }}"#,
+            protected.display()
+        ),
+    )?;
+
+    let mut command = Command::cargo_bin("sandy")?;
+    command
+        .env("HOME", home)
+        .args([
+            "run",
+            "--dry-run",
+            "--profile-file",
+            profile.to_str().ok_or("profile path must be UTF-8")?,
+            "--",
+            "/bin/echo",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "user profile grant 1 overlaps protected data",
+        ))
+        .stderr(predicate::str::contains("sensitive-policy-sentinel").not());
+    Ok(())
+}
+
+#[test]
+fn user_profile_write_protection_errors_are_redacted() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let home = directory.path().join("home");
+    let profile = directory.path().join("session.json");
+    let loop_path = directory.path().join("sensitive-protection-sentinel");
+    fs::create_dir(&home)?;
+    std::os::unix::fs::symlink(&loop_path, &loop_path)?;
+    fs::write(
+        &profile,
+        format!(
+            r#"{{
+                "schema_version": 1,
+                "name": "session",
+                "extends": "generic",
+                "deny_write_exact": ["{}"]
+            }}"#,
+            loop_path.display()
+        ),
+    )?;
+
+    let mut command = Command::cargo_bin("sandy")?;
+    command
+        .env("HOME", home)
+        .args([
+            "run",
+            "--dry-run",
+            "--profile-file",
+            profile.to_str().ok_or("profile path must be UTF-8")?,
+            "--",
+            "/bin/echo",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "user profile deny_write_exact entry 1 could not be resolved safely",
+        ))
+        .stderr(predicate::str::contains("sensitive-protection-sentinel").not());
+    Ok(())
+}
+
+#[test]
+fn user_profile_input_is_bounded_regular_utf8_and_strict() -> Result<(), Box<dyn std::error::Error>>
+{
+    let directory = tempfile::tempdir()?;
+    let home = directory.path().join("home");
+    fs::create_dir(&home)?;
+
+    let missing = directory.path().join("missing.json");
+    let malformed = directory.path().join("malformed.json");
+    let oversized = directory.path().join("oversized.json");
+    let non_utf8 = directory.path().join("non-utf8.json");
+    let non_regular = directory.path().join("profile-directory");
+    let unknown = directory.path().join("unknown.json");
+    let bad_version = directory.path().join("version.json");
+    fs::write(&malformed, "secret-material is not JSON")?;
+    fs::write(
+        &oversized,
+        vec![b' '; sandy_core::MAX_USER_PROFILE_SOURCE_BYTES + 1],
+    )?;
+    fs::write(&non_utf8, [0xff, 0xfe])?;
+    fs::create_dir(&non_regular)?;
+    fs::write(
+        &unknown,
+        r#"{
+            "schema_version": 1,
+            "name": "session",
+            "extends": "generic",
+            "sensitive_policy_sentinel": "must-not-appear"
+        }"#,
+    )?;
+    fs::write(
+        &bad_version,
+        r#"{ "schema_version": 2, "name": "session", "extends": "generic" }"#,
+    )?;
+
+    for (path, message) in [
+        (&missing, "resolve user profile file"),
+        (&malformed, "malformed or does not match its schema"),
+        (&oversized, "source-size limit"),
+        (&non_utf8, "strict UTF-8 JSON"),
+        (&non_regular, "regular file"),
+        (&unknown, "malformed or does not match its schema"),
+        (&bad_version, "unsupported schema version 2"),
+    ] {
+        let mut command = Command::cargo_bin("sandy")?;
+        command
+            .env("HOME", &home)
+            .args([
+                "run",
+                "--dry-run",
+                "--profile-file",
+                path.to_str().ok_or("test path must be UTF-8")?,
+                "--",
+                "/bin/echo",
+            ])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains(message))
+            .stderr(predicate::str::contains("secret-material").not())
+            .stderr(predicate::str::contains("sensitive_policy_sentinel").not())
+            .stderr(predicate::str::contains("must-not-appear").not());
+    }
+    Ok(())
+}
+
+#[test]
+fn expanded_user_protections_and_source_denials_fit_the_final_bound()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let home = directory.path().join("home");
+    let canonical_parent = directory.path().join("canonical-parent");
+    let lexical_parent = directory.path().join("lexical-parent");
+    let stored_profile = directory.path().join("stored-profile.json");
+    let profile = directory.path().join("session.json");
+    fs::create_dir(&home)?;
+    fs::create_dir(&canonical_parent)?;
+    std::os::unix::fs::symlink(&canonical_parent, &lexical_parent)?;
+    let deny_subtrees = (0..508)
+        .map(|index| lexical_parent.join(format!("future-{index}")))
+        .collect::<Vec<_>>();
+    fs::write(
+        &stored_profile,
+        serde_json::json!({
+            "schema_version": 1,
+            "name": "session",
+            "extends": "generic",
+            "deny_subtrees": deny_subtrees,
+        })
+        .to_string(),
+    )?;
+    std::os::unix::fs::symlink(&stored_profile, &profile)?;
+
+    let mut command = Command::cargo_bin("sandy")?;
+    command
+        .env("HOME", home)
+        .args([
+            "run",
+            "--dry-run",
+            "--profile-file",
+            profile.to_str().ok_or("profile path must be UTF-8")?,
+            "--",
+            "/bin/echo",
+        ])
+        .assert()
+        .success();
+    Ok(())
+}
+
+#[test]
+fn user_profile_fifo_is_rejected_without_blocking() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let fifo = directory.path().join("session.json");
+    assert!(
+        std::process::Command::new("/usr/bin/mkfifo")
+            .arg(&fifo)
+            .status()?
+            .success()
+    );
+
+    let mut command = Command::cargo_bin("sandy")?;
+    command.args([
+        "run",
+        "--dry-run",
+        "--profile-file",
+        fifo.to_str().ok_or("FIFO path must be UTF-8")?,
+        "--",
+        "/bin/echo",
+    ]);
+    let (sender, receiver) = mpsc::channel();
+    let child = thread::spawn(move || sender.send(command.output()).is_ok());
+    let output = receiver.recv_timeout(Duration::from_secs(2))??;
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8(output.stderr)?.contains("regular file"));
+    assert_eq!(child.join().ok(), Some(true));
+    Ok(())
+}
+
+#[test]
+fn user_profile_rejects_unknown_abstract_and_colliding_embedded_names()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let home = directory.path().join("home");
+    fs::create_dir(&home)?;
+
+    for (name, base, message) in [
+        ("session", "missing", "unknown embedded profile"),
+        ("session", "base", "inheritance-only profile"),
+        ("generic", "generic", "collides with an embedded profile"),
+    ] {
+        let profile = directory.path().join(format!("{name}-{base}.json"));
+        fs::write(
+            &profile,
+            format!(r#"{{ "schema_version": 1, "name": "{name}", "extends": "{base}" }}"#),
+        )?;
+        let mut command = Command::cargo_bin("sandy")?;
+        command
+            .env("HOME", &home)
+            .args([
+                "run",
+                "--dry-run",
+                "--profile-file",
+                profile.to_str().ok_or("test path must be UTF-8")?,
+                "--",
+                "/bin/echo",
+            ])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains(message));
+    }
+    Ok(())
+}
+
+#[test]
+fn user_profiles_are_never_discovered_implicitly() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let home = directory.path().join("home");
+    fs::create_dir(&home)?;
+    fs::write(directory.path().join("sandy-profile.json"), "not JSON")?;
+
+    let mut command = Command::cargo_bin("sandy")?;
+    command
+        .current_dir(directory.path())
+        .env("HOME", home)
+        .args(["run", "--dry-run", "--", "/bin/echo"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#""source": "embedded""#));
+    Ok(())
+}
+
+#[test]
+fn empty_user_profile_preserves_optional_base_paths_without_home()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let profile = directory.path().join("session.json");
+    fs::write(
+        &profile,
+        r#"{
+            "schema_version": 1,
+            "name": "session",
+            "extends": "generic"
+        }"#,
+    )?;
+
+    let mut command = Command::cargo_bin("sandy")?;
+    command
+        .env_remove("HOME")
+        .args([
+            "run",
+            "--dry-run",
+            "--profile-file",
+            profile.to_str().ok_or("profile path must be UTF-8")?,
+            "--",
+            "/bin/echo",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#""source": "user_file""#));
+
     Ok(())
 }
 

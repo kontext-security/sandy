@@ -51,6 +51,19 @@ pub(crate) enum AppError {
     Launch(String),
     #[error("agent profile failed: {0}")]
     Profile(String),
+    #[error("user profile failed: {0}")]
+    UserProfile(String),
+    #[error("user profile grant {position} {reason}")]
+    UserProfileGrant {
+        position: usize,
+        reason: &'static str,
+    },
+    #[error("user profile {section} entry {position} {reason}")]
+    UserProfilePath {
+        section: &'static str,
+        position: usize,
+        reason: &'static str,
+    },
     #[error("unknown agent profile {name:?}; available profiles: {}", available.join(", "))]
     UnknownProfile {
         name: String,

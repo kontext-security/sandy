@@ -12,7 +12,7 @@ use sandy_core::{
 use serde_json::json;
 use tempfile::Builder;
 
-const DRY_RUN_SCHEMA_VERSION: u32 = 4;
+const DRY_RUN_SCHEMA_VERSION: u32 = 5;
 
 use crate::{
     cli::RunArgs,
@@ -30,14 +30,34 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
         return Err(AppError::UnsupportedPlatform);
     }
     let command = resolve_command(&arguments.target)?;
-    let selected = profile::select(arguments.profile.as_ref(), &command.requested_name)?;
+    let selected = match arguments.profile_file.as_deref() {
+        Some(path) => profile::load_user(path)?,
+        None => profile::select(arguments.profile.as_ref(), &command.requested_name)?,
+    };
     if selected.detected() {
         eprintln!(
             "sandy: applying detected agent profile '{}' (override with --profile)",
             selected.name()
         );
     }
-    let paths = resolve_paths(selected.protected_templates())?;
+    let inherited_protected_templates = selected.inherited_protected_templates();
+    let mut paths = resolve_paths(&inherited_protected_templates)?;
+    selected.validate_user_paths(&paths.user)?;
+    let profile_protected_paths = selected.protected_paths(&paths.user)?;
+    if let Some(position) =
+        profile_protected_paths.user_entry_containing(paths.working_directory.as_path())
+    {
+        return Err(AppError::UserProfilePath {
+            section: "deny_subtrees",
+            position,
+            reason: "overlaps the working directory",
+        });
+    }
+    for protected in profile_protected_paths.paths() {
+        if !paths.user.protected.contains(protected) {
+            paths.user.protected.push(protected.clone());
+        }
+    }
     let session = Builder::new()
         .prefix("sandy-")
         .tempdir()
@@ -49,25 +69,18 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
         NetworkPolicy::AllowAll
     };
     let mut intent = runtime::macos::intent(network);
-    intent = intent.grant_with_execution_compatibility(
+    intent = intent.grant_file_and_execute(
         paths.working_directory.as_path(),
         AccessMode::ReadWrite,
         PathScope::Subtree,
     );
-    intent = intent.grant_with_execution_compatibility(
-        command.program.clone(),
-        AccessMode::Read,
-        PathScope::Exact,
-    );
+    intent =
+        intent.grant_file_and_execute(command.program.clone(), AccessMode::Read, PathScope::Exact);
     if let Some(parent) = command.program.parent() {
-        intent =
-            intent.grant_with_execution_compatibility(parent, AccessMode::Read, PathScope::Subtree);
+        intent = intent.grant_file_and_execute(parent, AccessMode::Read, PathScope::Subtree);
     }
-    intent = intent.grant_with_execution_compatibility(
-        session.path(),
-        AccessMode::ReadWrite,
-        PathScope::Subtree,
-    );
+    intent =
+        intent.grant_file_and_execute(session.path(), AccessMode::ReadWrite, PathScope::Subtree);
     let ca_bundle = if arguments.block_net {
         None
     } else {
@@ -81,22 +94,22 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
                 PathScope::Exact,
                 &paths.user.protected,
             )
+            .map_err(|error| profile_protected_paths.redact_conflict(error))
         })
         .transpose()?;
     if let Some(bundle) = &ca_bundle {
         intent = intent.grant_resolved_file(bundle.clone());
     }
     intent = selected.contribute_grants(intent, &paths.user)?;
+    intent = selected.contribute_executable_grants(intent, &paths.user)?;
     for path in &arguments.read {
-        intent =
-            intent.grant_with_execution_compatibility(path, AccessMode::Read, PathScope::Subtree);
+        intent = intent.grant_file(path, AccessMode::Read, PathScope::Subtree);
     }
     for path in &arguments.read_write {
-        intent = intent.grant_with_execution_compatibility(
-            path,
-            AccessMode::ReadWrite,
-            PathScope::Subtree,
-        );
+        intent = intent.grant_file(path, AccessMode::ReadWrite, PathScope::Subtree);
+    }
+    for path in &arguments.execute {
+        intent = intent.allow_execute(path, PathScope::Subtree);
     }
 
     let kontext_mode = if arguments.kontext {
@@ -131,18 +144,20 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
     }
     let mut write_protections = selected.protected_write_paths(&paths.user)?;
     write_protections.extend(hook_source_protections);
-    for path in selected.protected_paths(&paths.user) {
+    for path in profile_protected_paths.paths() {
         intent = intent.deny_subtree(path.as_path());
     }
+    intent = selected.protect_source(intent);
     for protection in write_protections {
         if protection.scope != PathScope::Exact {
             return Err(AppError::Launch(
                 "base policy contains an unsupported recursive write protection".to_owned(),
             ));
         }
-        intent = intent.deny_write_exact(protection.path.as_path());
+        intent = intent.deny_resolved_write(protection);
     }
-    let draft = resolve_policy(intent, &paths.user.protected)?;
+    let draft = resolve_policy(intent, &paths.user.protected)
+        .map_err(|error| profile_protected_paths.redact_conflict(error))?;
     let draft = runtime_controls.contribute(draft)?;
     let policy = draft.finish()?.into_spec();
 
@@ -181,6 +196,8 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
             "profile": {
                 "name": selected.name(),
                 "detected": selected.detected(),
+                "source": selected.source_name(),
+                "base": selected.base_name(),
             },
             "network": validated.manifest().policy.network,
             "allow_subprocesses": validated.manifest().policy.allow_subprocesses,

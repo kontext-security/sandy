@@ -20,8 +20,8 @@ Sandy is a process sandbox, not a container or VM. Describe its guarantees
 narrowly.
 
 Version `0.1.x` is limited to macOS, one foreground `run` mode, Claude Code,
-Codex, OpenCode, and generic profiles, explicit filesystem grants, network
-allow/block with exact runtime Unix-socket and IPv4 local-host TCP exceptions,
+Codex, OpenCode, and generic profiles, explicit filesystem and executable
+grants, network allow/block with exact runtime Unix-socket and IPv4 local-host TCP exceptions,
 dry-run output, and optional self-serve Kontext and host-installed Numbat hook
 compatibility. It also includes an explicit foreground integration setup
 command for Kontext and Numbat. Setup is not part of sandbox launch.
@@ -36,6 +36,14 @@ CLI at compile time. Profiles resolve through deterministic inheritance in
 `sandy-core` and may express only existing typed capabilities. Adding an agent
 requires a profile document, an embedded registry entry, and tests; it must not
 require renderer or bootstrap changes.
+
+`sandy run --profile-file PATH` accepts one explicit, bounded, strict UTF-8 JSON
+user profile. Its narrow schema extends exactly one selectable embedded profile
+and may add only required filesystem grants, executable grants, and terminal
+filesystem denials.
+There is no implicit discovery, include, URL, fallback, or user-to-user
+inheritance. File I/O and ambient resolution remain in `sandy-cli`; lexical
+validation and deterministic additive composition remain in `sandy-core`.
 
 Do not add Linux, detached sessions, a PTY proxy, domain filtering, credential
 brokering, dynamic grants, rollback, resource limits, raw Seatbelt input, or
@@ -127,6 +135,9 @@ These rules are release-blocking:
 - Sandy never falls back to unrestricted execution.
 - Restrictions are inherited by every target descendant.
 - The CLI and profiles accept typed capabilities, never raw Seatbelt rules.
+- User-authored profiles are additive and cannot remove an embedded base's
+  grants, protections, or hook behavior. Missing required user paths fail the
+  launch rather than being skipped.
 - The renderer adds no implicit filesystem or network capabilities. Product
   compatibility baselines must be explicit typed policy input.
 - File reads never imply executable mapping. Executable paths and subprocess
@@ -211,6 +222,16 @@ The public interface is:
 sandy run [SANDY OPTIONS] -- COMMAND [ARGUMENTS...]
 sandy integrations setup kontext|numbat --agent claude|codex|opencode
 ```
+
+`--profile-file PATH` is an explicit `run` option and conflicts with
+`--profile`. Its source is a bounded existing regular strict-UTF-8 JSON file.
+Both the absolute lexical source path and canonical target receive terminal
+subtree denials; these pathname rules do not eliminate replacement races or
+cover hard-link aliases.
+
+`--read` and `--read-write` add only filesystem authority. `--execute` adds
+only executable mapping and launch authority. A path requiring both must be
+named through both capability types.
 
 All Sandy options precede `--`. Everything after `--` is opaque target data
 and must pass through unchanged. Do not add ambiguous shorthand.

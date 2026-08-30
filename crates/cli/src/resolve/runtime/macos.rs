@@ -43,11 +43,7 @@ fn add_matching(network: NetworkPolicy, mut include: impl FnMut(&str) -> bool) -
         CliPolicyIntent::new(policy).grant_file("/", AccessMode::Read, PathScope::Exact);
     for path in READ_EXECUTE_SUBTREES {
         if include(path) {
-            intent = intent.grant_with_execution_compatibility(
-                path,
-                AccessMode::Read,
-                PathScope::Subtree,
-            );
+            intent = intent.grant_file_and_execute(path, AccessMode::Read, PathScope::Subtree);
         }
     }
     for path in READ_ONLY_DATA_SUBTREES {

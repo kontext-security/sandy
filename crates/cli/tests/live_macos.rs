@@ -66,6 +66,196 @@ fn allows_project_writes_and_denies_sibling_reads() -> Result<(), Box<dyn std::e
 
 #[test]
 #[ignore = "irreversibly applies Seatbelt; run on a host, not inside another sandbox"]
+fn explicit_executable_grants_allow_only_selected_descendant_tools()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let home = root.path().join("home");
+    let project = root.path().join("project");
+    let allowed_root = root.path().join("allowed-tools");
+    let read_only_root = root.path().join("read-only-tools");
+    let adjacent_root = root.path().join("adjacent-tools");
+    for path in [
+        &home,
+        &project,
+        &allowed_root,
+        &read_only_root,
+        &adjacent_root,
+    ] {
+        fs::create_dir(path)?;
+    }
+    let allowed = write_test_tool(&allowed_root.join("tool"))?;
+    let read_only = write_test_tool(&read_only_root.join("tool"))?;
+    let adjacent = write_test_tool(&adjacent_root.join("tool"))?;
+
+    let cli_allowed_marker = project.join("cli-allowed");
+    let cli_read_only_marker = project.join("cli-read-only");
+    let cli_adjacent_marker = project.join("cli-adjacent");
+    let mut cli = Command::cargo_bin("sandy")?;
+    cli.env("HOME", &home)
+        .current_dir(&project)
+        .args(["run", "--read"])
+        .arg(&allowed_root)
+        .args(["--read"])
+        .arg(&read_only_root)
+        .args(["--read"])
+        .arg(&adjacent_root)
+        .args(["--execute"])
+        .arg(&allowed_root)
+        .args(["--", "/bin/sh", "-c", descendant_tool_probe(), "tool-probe"])
+        .arg(&allowed)
+        .arg(&read_only)
+        .arg(&adjacent)
+        .arg(&cli_allowed_marker)
+        .arg(&cli_read_only_marker)
+        .arg(&cli_adjacent_marker)
+        .assert()
+        .success();
+    assert!(cli_allowed_marker.is_file());
+    assert!(!cli_read_only_marker.exists());
+    assert!(!cli_adjacent_marker.exists());
+
+    let profile = root.path().join("session.json");
+    fs::write(
+        &profile,
+        format!(
+            r#"{{
+                "schema_version": 1,
+                "name": "tool-session",
+                "extends": "generic",
+                "grants": [
+                    {{ "path": "{}", "access": "read", "scope": "subtree" }},
+                    {{ "path": "{}", "access": "read", "scope": "subtree" }},
+                    {{ "path": "{}", "access": "read", "scope": "subtree" }}
+                ],
+                "executable_grants": [
+                    {{ "path": "{}", "scope": "subtree" }}
+                ]
+            }}"#,
+            allowed_root.display(),
+            read_only_root.display(),
+            adjacent_root.display(),
+            allowed_root.display(),
+        ),
+    )?;
+    let profile_allowed_marker = project.join("profile-allowed");
+    let profile_read_only_marker = project.join("profile-read-only");
+    let profile_adjacent_marker = project.join("profile-adjacent");
+    let mut profile_run = Command::cargo_bin("sandy")?;
+    profile_run
+        .env("HOME", &home)
+        .current_dir(&project)
+        .args(["run", "--profile-file"])
+        .arg(&profile)
+        .args(["--", "/bin/sh", "-c", descendant_tool_probe(), "tool-probe"])
+        .arg(&allowed)
+        .arg(&read_only)
+        .arg(&adjacent)
+        .arg(&profile_allowed_marker)
+        .arg(&profile_read_only_marker)
+        .arg(&profile_adjacent_marker)
+        .assert()
+        .success();
+    assert!(profile_allowed_marker.is_file());
+    assert!(!profile_read_only_marker.exists());
+    assert!(!profile_adjacent_marker.exists());
+    Ok(())
+}
+
+fn write_test_tool(path: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    fs::write(path, "#!/bin/sh\n/usr/bin/touch \"$1\"\n")?;
+    let mut permissions = fs::metadata(path)?.permissions();
+    permissions.set_mode(0o700);
+    fs::set_permissions(path, permissions)?;
+    Ok(path.to_owned())
+}
+
+fn descendant_tool_probe() -> &'static str {
+    r#"
+        "$1" "$4" &&
+        ! "$2" "$5" 2>/dev/null &&
+        ! "$3" "$6" 2>/dev/null
+    "#
+}
+
+#[test]
+#[ignore = "irreversibly applies Seatbelt; run on a host, not inside another sandbox"]
+fn user_profile_source_paths_and_inherited_sensitive_data_remain_denied()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let home = root.path().join("home");
+    let ssh = home.join(".ssh");
+    let project = root.path().join("project");
+    let stored_profile = project.join("operator-profile.json");
+    let profile_link = project.join("session.json");
+    let protected_target = project.join("protected-target.txt");
+    let protected_alias = project.join("protected-alias.txt");
+    let adjacent = project.join("adjacent.txt");
+    fs::create_dir_all(&ssh)?;
+    fs::create_dir(&project)?;
+    fs::write(ssh.join("sentinel"), "protected")?;
+    fs::write(
+        &stored_profile,
+        format!(
+            r#"{{
+                "schema_version": 1,
+                "name": "session",
+                "extends": "generic",
+                "deny_subtrees": ["{}"]
+            }}"#,
+            protected_alias.display(),
+        ),
+    )?;
+    std::os::unix::fs::symlink(&stored_profile, &profile_link)?;
+    fs::write(&protected_target, "protected")?;
+    std::os::unix::fs::symlink(&protected_target, &protected_alias)?;
+    fs::write(&adjacent, "before")?;
+
+    let script = r#"
+        ! /bin/cat "$1" >/dev/null 2>&1 &&
+        ! /usr/bin/printf changed > "$1" 2>/dev/null &&
+        ! /bin/cat "$2" >/dev/null 2>&1 &&
+        ! /usr/bin/printf changed > "$2" 2>/dev/null &&
+        ! /bin/cat "$3" >/dev/null 2>&1 &&
+        ! /bin/cat "$4" >/dev/null 2>&1 &&
+        ! /usr/bin/printf changed > "$4" 2>/dev/null &&
+        ! /bin/cat "$5" >/dev/null 2>&1 &&
+        ! /usr/bin/printf changed > "$5" 2>/dev/null &&
+        /usr/bin/printf changed > "$6"
+    "#;
+    let mut command = Command::cargo_bin("sandy")?;
+    command
+        .env("HOME", &home)
+        .current_dir(&project)
+        .args([
+            "run",
+            "--profile-file",
+            profile_link
+                .to_str()
+                .ok_or("profile link path must be UTF-8")?,
+            "--",
+            "/bin/sh",
+            "-c",
+            script,
+            "profile-probe",
+        ])
+        .arg(&profile_link)
+        .arg(&stored_profile)
+        .arg(ssh.join("sentinel"))
+        .arg(&protected_alias)
+        .arg(&protected_target)
+        .arg(&adjacent)
+        .assert()
+        .success();
+
+    assert!(fs::read_to_string(&stored_profile)?.contains("schema_version"));
+    assert_eq!(fs::read_to_string(ssh.join("sentinel"))?, "protected");
+    assert_eq!(fs::read_to_string(&protected_target)?, "protected");
+    assert_eq!(fs::read_to_string(adjacent)?, "changed");
+    Ok(())
+}
+
+#[test]
+#[ignore = "irreversibly applies Seatbelt; run on a host, not inside another sandbox"]
 fn allows_timezone_runtime_data_without_opening_adjacent_databases()
 -> Result<(), Box<dyn std::error::Error>> {
     let project = tempfile::tempdir()?;
