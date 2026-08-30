@@ -81,7 +81,7 @@ pub(crate) fn grant(
         return Err(AppError::MissingPath(path.to_path_buf()));
     }
     let path = fs::canonicalize(path).map_err(|error| AppError::io("canonicalize grant", error))?;
-    if path == Path::new("/") {
+    if path == Path::new("/") && (access != AccessMode::Read || scope != PathScope::Exact) {
         return Err(AppError::UnsafeWorkingDirectory);
     }
     if protected

@@ -6,8 +6,8 @@
 use std::fmt::Write as _;
 
 use sandy_core::{
-    AccessMode, FileGrant, LocalHostTcpGrant, LocalHostTcpOperation, NetworkPolicy, PathScope,
-    UnixSocketGrant, UnixSocketOperation, ValidatedPolicy,
+    AccessMode, FileGrant, FileMetadataPolicy, LocalHostTcpGrant, LocalHostTcpOperation,
+    NetworkPolicy, PathScope, UnixSocketGrant, UnixSocketOperation, ValidatedPolicy,
 };
 
 use crate::{SeatbeltError, baseline, escape::quoted};
@@ -41,13 +41,9 @@ impl CompiledProfile {
 pub fn compile(policy: &ValidatedPolicy) -> Result<CompiledProfile, SeatbeltError> {
     let mut source = String::from(baseline::STATIC_RULES);
     source.push_str(baseline::FOREGROUND_TERMINAL_RULES);
-    source.push_str(baseline::ROOT_TRAVERSAL_RULE);
-    for path in baseline::READ_ONLY_SUBTREES {
-        write_rule(&mut source, "allow", "file-read*", PathScope::Subtree, path)?;
-    }
-    for path in baseline::READ_WRITE_LITERALS {
-        write_rule(&mut source, "allow", "file-read*", PathScope::Exact, path)?;
-        write_rule(&mut source, "allow", "file-write*", PathScope::Exact, path)?;
+
+    if policy.spec().file_metadata == FileMetadataPolicy::Allow {
+        source.push_str("(allow file-read-metadata)\n");
     }
 
     for grant in &policy.spec().files {
@@ -223,6 +219,7 @@ mod tests {
                 ],
                 unix_sockets,
                 local_host_tcp: Vec::new(),
+                file_metadata: FileMetadataPolicy::Deny,
                 network,
             },
         };
@@ -281,22 +278,25 @@ mod tests {
     }
 
     #[test]
-    fn renders_narrow_system_runtime_reads() -> Result<(), Box<dyn std::error::Error>> {
+    fn does_not_add_implicit_filesystem_runtime_grants() -> Result<(), Box<dyn std::error::Error>> {
         let source = compile(policy(NetworkPolicy::BlockAll)?.policy())?;
+        assert!(!source.source().contains("file-read-metadata"));
+        assert!(!source.source().contains(r#"(subpath "/System")"#));
+        assert!(!source.source().contains(r#"(literal "/dev/null")"#));
+        assert!(!source.source().contains(r#"(literal "/")"#));
+        Ok(())
+    }
+
+    #[test]
+    fn renders_metadata_only_when_typed_policy_allows_it() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut manifest = policy(NetworkPolicy::BlockAll)?.into_manifest();
+        manifest.policy.file_metadata = FileMetadataPolicy::Allow;
+        let launch = ValidatedLaunch::try_from(manifest)?;
         assert!(
-            source
+            compile(launch.policy())?
                 .source()
-                .contains(r#"(allow file-read* (subpath "/private/var/db/timezone"))"#)
-        );
-        assert!(
-            !source
-                .source()
-                .contains(r#"(allow file-read* (subpath "/private/var/db"))"#)
-        );
-        assert!(
-            !source
-                .source()
-                .contains(r#"(allow file-write* (subpath "/private/var/db/timezone"))"#)
+                .contains("(allow file-read-metadata)")
         );
         Ok(())
     }

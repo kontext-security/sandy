@@ -93,6 +93,8 @@ sandy run --dry-run -- claude
 
 Dry-run output is a versioned JSON document. `dry_run_schema_version` identifies
 its public schema independently from the internal launch-manifest protocol.
+The resolved policy includes the CLI's explicit runtime baseline and reports
+its filesystem metadata behavior in `file_metadata`.
 Optional host integrations are reported in the canonical `runtime_controls`
 array, with one object per resolved runtime control containing `service`,
 `enabled`, and nullable `version` fields.

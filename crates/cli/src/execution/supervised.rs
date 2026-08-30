@@ -7,19 +7,22 @@ use std::{
 
 use sandy_core::{
     AccessMode, CommandSpec, FileGrant, LaunchManifestV2, MANIFEST_SCHEMA_V2, NetworkPolicy,
-    OsValue, PathScope, PolicySpec, ValidatedLaunch, encode_launch,
+    OsValue, PathScope, SandboxPolicy, ValidatedLaunch, encode_launch,
 };
 use serde_json::json;
 use tempfile::Builder;
 
-const DRY_RUN_SCHEMA_VERSION: u32 = 2;
+const DRY_RUN_SCHEMA_VERSION: u32 = 3;
 
 use crate::{
     cli::RunArgs,
     error::AppError,
     integration::{IntegrationMode, RuntimeControls, kontext, numbat},
     profile,
-    resolve::{default_ca_bundle, grant, resolve_command, resolve_paths, sanitized_environment},
+    resolve::{
+        default_ca_bundle, grant, resolve_command, resolve_paths, resolve_policy, runtime,
+        sanitized_environment,
+    },
 };
 
 pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
@@ -138,19 +141,24 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
     } else {
         NetworkPolicy::AllowAll
     };
-    write_protections.sort();
-    write_protections.dedup();
-    let protected_paths = selected.protected_paths(&paths.user);
-    let mut policy = PolicySpec {
-        files,
-        protected_paths,
-        write_protections,
-        unix_sockets: Vec::new(),
-        local_host_tcp: Vec::new(),
-        network,
-    };
+    let mut intent = runtime::macos::add_to(SandboxPolicy::new(network));
+    for file in files {
+        intent = intent.grant(file.path.as_path(), file.access, file.scope);
+    }
+    for path in selected.protected_paths(&paths.user) {
+        intent = intent.deny_subtree(path.as_path());
+    }
+    for protection in write_protections {
+        if protection.scope != PathScope::Exact {
+            return Err(AppError::Launch(
+                "base policy contains an unsupported recursive write protection".to_owned(),
+            ));
+        }
+        intent = intent.deny_write_exact(protection.path.as_path());
+    }
+    let mut policy = resolve_policy(intent, &paths.user.protected)?;
     runtime_controls.apply_to(&mut policy)?;
-    normalize_policy(&mut policy);
+    policy.normalize();
 
     let manifest = LaunchManifestV2 {
         schema_version: MANIFEST_SCHEMA_V2,
@@ -189,6 +197,7 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
                 "detected": selected.detected(),
             },
             "network": validated.manifest().policy.network,
+            "file_metadata": validated.manifest().policy.file_metadata,
             "file_grants": validated.manifest().policy.files,
             "unix_socket_grants": validated.manifest().policy.unix_sockets,
             "local_host_tcp_grants": validated.manifest().policy.local_host_tcp,
@@ -239,15 +248,4 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
         return Ok(code);
     }
     Ok(status.signal().map_or(1, |signal| 128 + signal))
-}
-
-fn normalize_policy(policy: &mut PolicySpec) {
-    policy.files.sort();
-    policy.files.dedup();
-    policy.unix_sockets.sort();
-    policy.unix_sockets.dedup();
-    policy.local_host_tcp.sort();
-    policy.local_host_tcp.dedup();
-    policy.write_protections.sort();
-    policy.write_protections.dedup();
 }

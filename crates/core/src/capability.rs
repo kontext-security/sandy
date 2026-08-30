@@ -3,7 +3,11 @@
 //! This module describes intent only. It does not discover paths or contain Seatbelt source;
 //! platform backends are responsible for lowering a validated policy into native rules.
 
-use std::{collections::BTreeSet, fmt, num::NonZeroU16};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+    num::NonZeroU16,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -122,14 +126,27 @@ pub struct LocalHostTcpGrant {
 }
 
 /// Network policy for the complete sandboxed process tree.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NetworkPolicy {
     /// Permit network operations for agent compatibility.
-    #[default]
     AllowAll,
     /// Emit no network allow rule, leaving the deny-first backend baseline in force.
     BlockAll,
+}
+
+/// Whether filesystem metadata may be queried independently of content access.
+///
+/// The macOS CLI requests this explicitly for system path aliases. The
+/// supported Rust facade does not enable it implicitly.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileMetadataPolicy {
+    /// Do not add global metadata lookup authority.
+    #[default]
+    Deny,
+    /// Permit metadata lookup without granting file-content reads or writes.
+    Allow,
 }
 
 /// Complete typed policy accepted by launch validation.
@@ -137,7 +154,7 @@ pub enum NetworkPolicy {
 /// Protected paths are explicit terminal denies. They remain separate from grants because the
 /// current macOS backend can enforce a narrow deny inside a broader allowed subtree. Future
 /// backends must demonstrate equivalent semantics rather than silently dropping them.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PolicySpec {
     /// Positive filesystem capabilities.
     pub files: Vec<FileGrant>,
@@ -153,11 +170,79 @@ pub struct PolicySpec {
     /// authority, preserving fail-closed decoding for existing manifests.
     #[serde(default)]
     pub local_host_tcp: Vec<LocalHostTcpGrant>,
+    /// Filesystem metadata behavior, separate from content grants.
+    #[serde(default)]
+    pub file_metadata: FileMetadataPolicy,
     /// Network access for the sandboxed process tree.
     pub network: NetworkPolicy,
 }
 
+impl Default for PolicySpec {
+    fn default() -> Self {
+        Self {
+            files: Vec::new(),
+            protected_paths: Vec::new(),
+            write_protections: Vec::new(),
+            unix_sockets: Vec::new(),
+            local_host_tcp: Vec::new(),
+            file_metadata: FileMetadataPolicy::Deny,
+            network: NetworkPolicy::BlockAll,
+        }
+    }
+}
+
 impl PolicySpec {
+    /// Deterministically removes redundant capabilities without broadening them.
+    ///
+    /// Exact and subtree rules remain distinct. For an identical path and scope,
+    /// read/write subsumes read. Recursive write protection subsumes exact write
+    /// protection at the same path. No other overlapping paths are merged.
+    pub fn normalize(&mut self) {
+        let mut files = BTreeMap::new();
+        for grant in self.files.drain(..) {
+            files
+                .entry((grant.path, grant.scope))
+                .and_modify(|access| {
+                    if grant.access == AccessMode::ReadWrite {
+                        *access = AccessMode::ReadWrite;
+                    }
+                })
+                .or_insert(grant.access);
+        }
+        self.files = files
+            .into_iter()
+            .map(|((path, scope), access)| FileGrant {
+                path,
+                access,
+                scope,
+            })
+            .collect();
+
+        self.protected_paths.sort();
+        self.protected_paths.dedup();
+
+        let mut write_protections = BTreeMap::new();
+        for protection in self.write_protections.drain(..) {
+            write_protections
+                .entry(protection.path)
+                .and_modify(|scope| {
+                    if protection.scope == PathScope::Subtree {
+                        *scope = PathScope::Subtree;
+                    }
+                })
+                .or_insert(protection.scope);
+        }
+        self.write_protections = write_protections
+            .into_iter()
+            .map(|(path, scope)| WriteProtection { path, scope })
+            .collect();
+
+        self.unix_sockets.sort();
+        self.unix_sockets.dedup();
+        self.local_host_tcp.sort();
+        self.local_host_tcp.dedup();
+    }
+
     /// Pins every writable ancestor of a protected resource.
     ///
     /// A terminal deny on `/workspace/config/hooks.json` does not by itself
@@ -275,6 +360,71 @@ mod tests {
 
     fn path(value: &str) -> Result<AbsolutePath, crate::PathValidationError> {
         AbsolutePath::new(value)
+    }
+
+    #[test]
+    fn normalization_removes_only_semantically_redundant_rules()
+    -> Result<(), crate::PathValidationError> {
+        let root = path("/workspace")?;
+        let settings = path("/workspace/settings.json")?;
+        let mut policy = PolicySpec {
+            files: vec![
+                FileGrant {
+                    path: root.clone(),
+                    access: AccessMode::Read,
+                    scope: PathScope::Subtree,
+                },
+                FileGrant {
+                    path: root.clone(),
+                    access: AccessMode::ReadWrite,
+                    scope: PathScope::Subtree,
+                },
+                FileGrant {
+                    path: root.clone(),
+                    access: AccessMode::Read,
+                    scope: PathScope::Exact,
+                },
+            ],
+            protected_paths: vec![settings.clone(), settings.clone()],
+            write_protections: vec![
+                WriteProtection {
+                    path: settings.clone(),
+                    scope: PathScope::Exact,
+                },
+                WriteProtection {
+                    path: settings.clone(),
+                    scope: PathScope::Subtree,
+                },
+            ],
+            ..PolicySpec::default()
+        };
+
+        policy.normalize();
+
+        assert_eq!(
+            policy.files,
+            [
+                FileGrant {
+                    path: root.clone(),
+                    access: AccessMode::Read,
+                    scope: PathScope::Exact,
+                },
+                FileGrant {
+                    path: root,
+                    access: AccessMode::ReadWrite,
+                    scope: PathScope::Subtree,
+                },
+            ]
+        );
+        assert_eq!(policy.protected_paths, std::slice::from_ref(&settings));
+        assert_eq!(
+            policy.write_protections,
+            [WriteProtection {
+                path: settings,
+                scope: PathScope::Subtree,
+            }]
+        );
+        Ok(())
     }
 
     #[test]

@@ -1,10 +1,10 @@
 use std::ffi::OsStr;
 
 use sandy_core::{
-    AbsolutePath, AccessMode, CommandSpec, FileGrant, LaunchManifestV2, LocalHostTcpGrant,
-    LocalHostTcpOperation, MANIFEST_SCHEMA_V2, NetworkPolicy, OsValue, PathScope, PolicySpec,
-    TcpPort, UnixSocketGrant, UnixSocketOperation, ValidatedLaunch, ValidationError, WireError,
-    WriteProtection, decode_launch, encode_launch,
+    AbsolutePath, AccessMode, CommandSpec, FileGrant, FileMetadataPolicy, LaunchManifestV2,
+    LocalHostTcpGrant, LocalHostTcpOperation, MANIFEST_SCHEMA_V2, NetworkPolicy, OsValue,
+    PathScope, PolicySpec, TcpPort, UnixSocketGrant, UnixSocketOperation, ValidatedLaunch,
+    ValidationError, WireError, WriteProtection, decode_launch, encode_launch,
 };
 
 fn manifest() -> Result<LaunchManifestV2, Box<dyn std::error::Error>> {
@@ -59,6 +59,37 @@ fn rejects_root_and_duplicate_protected_paths() -> Result<(), Box<dyn std::error
         },
     ];
     assert!(ValidatedLaunch::try_from(duplicate).is_err());
+    Ok(())
+}
+
+#[test]
+fn allows_only_exact_read_access_to_the_filesystem_root() -> Result<(), Box<dyn std::error::Error>>
+{
+    let root = AbsolutePath::new("/")?;
+    let mut exact_read = manifest()?;
+    exact_read.policy.files.push(FileGrant {
+        path: root.clone(),
+        access: AccessMode::Read,
+        scope: PathScope::Exact,
+    });
+    assert!(ValidatedLaunch::try_from(exact_read).is_ok());
+
+    for (access, scope) in [
+        (AccessMode::Read, PathScope::Subtree),
+        (AccessMode::ReadWrite, PathScope::Exact),
+        (AccessMode::ReadWrite, PathScope::Subtree),
+    ] {
+        let mut unsafe_root = manifest()?;
+        unsafe_root.policy.files.push(FileGrant {
+            path: root.clone(),
+            access,
+            scope,
+        });
+        assert!(matches!(
+            ValidatedLaunch::try_from(unsafe_root),
+            Err(ValidationError::RootGrant)
+        ));
+    }
     Ok(())
 }
 
@@ -128,6 +159,10 @@ fn manifest_v2_without_endpoint_grants_remains_fail_closed()
     let launch = decode_launch(encoded)?;
     assert!(launch.manifest().policy.unix_sockets.is_empty());
     assert!(launch.manifest().policy.local_host_tcp.is_empty());
+    assert_eq!(
+        launch.manifest().policy.file_metadata,
+        FileMetadataPolicy::Deny
+    );
     Ok(())
 }
 

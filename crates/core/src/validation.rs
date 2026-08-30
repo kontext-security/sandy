@@ -80,10 +80,17 @@ impl TryFrom<LaunchManifestV2> for ValidatedLaunch {
         if manifest.working_directory.is_root() {
             return Err(ValidationError::RootWorkingDirectory);
         }
-        validate_policy(&manifest.policy)?;
-
-        let policy = ValidatedPolicy(manifest.policy.clone());
+        let policy = ValidatedPolicy::try_from(manifest.policy.clone())?;
         Ok(Self { manifest, policy })
+    }
+}
+
+impl TryFrom<PolicySpec> for ValidatedPolicy {
+    type Error = ValidationError;
+
+    fn try_from(policy: PolicySpec) -> Result<Self, Self::Error> {
+        validate_policy(&policy)?;
+        Ok(Self(policy))
     }
 }
 
@@ -146,7 +153,10 @@ fn validate_policy(policy: &PolicySpec) -> Result<(), ValidationError> {
     {
         return Err(ValidationError::TooManyProtectedPaths);
     }
-    if policy.files.iter().any(|grant| grant.path.is_root()) {
+    if policy.files.iter().any(|grant| {
+        grant.path.is_root()
+            && (grant.access != crate::AccessMode::Read || grant.scope != crate::PathScope::Exact)
+    }) {
         return Err(ValidationError::RootGrant);
     }
     if policy.unix_sockets.iter().any(|grant| grant.path.is_root()) {
@@ -255,8 +265,8 @@ pub enum ValidationError {
     /// Sandy refuses to treat the filesystem root as a project directory.
     #[error("the filesystem root cannot be used as the working directory")]
     RootWorkingDirectory,
-    /// Sandy refuses a host-wide positive filesystem capability.
-    #[error("the filesystem root cannot be granted")]
+    /// Sandy refuses a recursive or writable root capability.
+    #[error("the filesystem root may only be granted exact read access")]
     RootGrant,
     /// Sandy refuses the filesystem root as an exact Unix-socket pathname.
     #[error("the filesystem root cannot be granted as a Unix socket")]

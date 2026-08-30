@@ -3,7 +3,8 @@
 //! The crate deliberately contains no ambient discovery and no native sandbox code. The CLI
 //! resolves profiles, paths, and integrations into a [`LaunchManifestV2`], then treats that
 //! manifest as untrusted input when it crosses the bootstrap wire boundary. Only
-//! [`ValidatedLaunch`] and its [`ValidatedPolicy`] may proceed to policy compilation.
+//! [`ValidatedLaunch`] or a directly validated [`ValidatedPolicy`] may proceed
+//! to policy compilation.
 //!
 //! The main data flow is:
 //!
@@ -11,6 +12,7 @@
 //! embedded profile documents -> ResolvedProfile
 //! CLI filesystem resolution  -> LaunchManifestV2
 //! bounded wire decode        -> ValidatedLaunch -> ValidatedPolicy
+//! SandboxPolicy resolution   -> PolicySpec      -> ValidatedPolicy
 //! ```
 //!
 //! Keeping those states as different types makes it difficult to accidentally compile or apply
@@ -23,12 +25,14 @@ mod capability;
 mod manifest;
 mod path;
 mod profile;
+mod sandbox_policy;
 mod validation;
 mod wire;
 
 pub use capability::{
-    AccessMode, FileGrant, LocalHostTcpGrant, LocalHostTcpOperation, NetworkPolicy, PathScope,
-    PolicySpec, TcpPort, UnixSocketGrant, UnixSocketOperation, WriteProtection,
+    AccessMode, FileGrant, FileMetadataPolicy, LocalHostTcpGrant, LocalHostTcpOperation,
+    NetworkPolicy, PathScope, PolicySpec, TcpPort, UnixSocketGrant, UnixSocketOperation,
+    WriteProtection,
 };
 pub use manifest::{
     CommandSpec, EnvironmentEntry, LaunchManifestV2, MANIFEST_SCHEMA_V2, OsValue, OsValueError,
@@ -38,6 +42,10 @@ pub use profile::{
     GENERIC_PROFILE_NAME, GrantTemplate, HookProtocol, HookSourceLocation, HookSourceScope,
     HookSourceTemplate, PROFILE_SCHEMA_V3, ProfileDocumentV3, ProfileError, ProfileRegistry,
     ResolvedProfile, TemplatePath,
+};
+pub use sandbox_policy::{
+    PolicyIntentError, SandboxPolicy, SandboxPolicyParts, UnresolvedGrant, allow_file_metadata,
+    into_policy_parts,
 };
 pub use validation::{ValidatedLaunch, ValidatedPolicy, ValidationError};
 pub use wire::{MAX_WIRE_BYTES, WireError, decode_launch, encode_launch};

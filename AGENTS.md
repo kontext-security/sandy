@@ -69,7 +69,12 @@ optional integrations
 `sandy-core` performs deterministic validation but no ambient filesystem
 discovery. `sandy-seatbelt` receives only validated policy and does not see
 argv, environment, agent preset names, Clap, or service configuration. The CLI
-does not render policy.
+does not render policy. `SandboxPolicy` is the shared, side-effect-free intent
+builder; the owning product boundary resolves its paths before validation.
+
+The enforcement backend adds no implicit filesystem or network capabilities.
+The CLI owns an explicit typed macOS runtime baseline and composes it through
+the same policy model as profiles and command-line grants.
 
 ## Execution model
 
@@ -98,6 +103,8 @@ These rules are release-blocking:
 - Sandy never falls back to unrestricted execution.
 - Restrictions are inherited by every target descendant.
 - The CLI and profiles accept typed capabilities, never raw Seatbelt rules.
+- The renderer adds no implicit filesystem or network capabilities. Product
+  compatibility baselines must be explicit typed policy input.
 - One centralized renderer validates and escapes every value used in policy.
 - Paths are absolute, canonicalized, bounded, and compared as `Path`
   components rather than string prefixes.
