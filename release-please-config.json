@@ -5,6 +5,21 @@
   "draft": true,
   "force-tag-creation": true,
   "include-component-in-tag": false,
+  "changelog-sections": [
+    { "type": "feat", "section": "Features", "hidden": false },
+    { "type": "fix", "section": "Bug Fixes", "hidden": false },
+    { "type": "perf", "section": "Performance Improvements", "hidden": false },
+    { "type": "refactor", "section": "Code Refactoring", "hidden": false },
+    { "type": "docs", "section": "Documentation", "hidden": false },
+    { "type": "test", "section": "Tests", "hidden": false },
+    { "type": "build", "section": "Build System", "hidden": false },
+    { "type": "ci", "section": "Continuous Integration", "hidden": false },
+    { "type": "chore", "section": "Miscellaneous Chores", "hidden": false },
+    { "type": "style", "section": "Styles", "hidden": false },
+    { "type": "revert", "section": "Reverts", "hidden": false },
+    { "type": "deps", "section": "Dependencies", "hidden": false },
+    { "type": "security", "section": "Security", "hidden": false }
+  ],
   "packages": {
     ".": {
       "release-type": "simple",

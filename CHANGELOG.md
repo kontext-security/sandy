@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.1.7](https://github.com/kontext-security/sandy/compare/v0.1.6...v0.1.7) (2026-08-30)
+
+
+### Features
+
+* add the current-process Rust sandbox API ([#34](https://github.com/kontext-security/sandy/issues/34)) ([e77c1b7](https://github.com/kontext-security/sandy/commit/e77c1b704aa6aae6ea7c5085ba5ce88a60c3faa2))
+
+
+### Code Refactoring
+
+* make the macOS CLI baseline explicit ([#33](https://github.com/kontext-security/sandy/issues/33)) ([8c0af2d](https://github.com/kontext-security/sandy/commit/8c0af2ddcbe25a7b67c4b8c56ce0a769204b809c))
+
+
+### Build System
+
+* publish the Rust sandbox packages ([#35](https://github.com/kontext-security/sandy/issues/35)) ([77c4ab4](https://github.com/kontext-security/sandy/commit/77c4ab41be2fad1f24dbc51f66e2a17915c0ea6e))
+
+
+### Miscellaneous Chores
+
+* prepare public Homebrew distribution ([#32](https://github.com/kontext-security/sandy/issues/32)) ([2f910a5](https://github.com/kontext-security/sandy/commit/2f910a50b004ee57ef16c7e3977ff2a0f5df893a))
+
 ## [0.1.6](https://github.com/kontext-security/sandy/compare/v0.1.5...v0.1.6) (2026-08-27)
 
 
