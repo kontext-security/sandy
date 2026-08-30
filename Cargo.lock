@@ -402,7 +402,7 @@ dependencies = [
 
 [[package]]
 name = "sandy-cli"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "assert_cmd",
  "clap",
@@ -418,7 +418,7 @@ dependencies = [
 
 [[package]]
 name = "sandy-core"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "serde",
  "serde_json",
@@ -427,7 +427,7 @@ dependencies = [
 
 [[package]]
 name = "sandy-sandbox"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "sandy-core",
  "sandy-seatbelt",
@@ -436,7 +436,7 @@ dependencies = [
 
 [[package]]
 name = "sandy-seatbelt"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "libc",
  "sandy-core",
