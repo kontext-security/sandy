@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.1.9](https://github.com/kontext-security/sandy/compare/v0.1.8...v0.1.9) (2026-08-30)
+
+
+### Features
+
+* **cli:** add explicit executable grants and user profile files ([#41](https://github.com/kontext-security/sandy/issues/41)) ([0526d11](https://github.com/kontext-security/sandy/commit/0526d11f92b67cc6527e0b047aa3cbd62d1afbee))
+* **sandbox:** accept versioned JSON policies ([#42](https://github.com/kontext-security/sandy/issues/42)) ([915ffda](https://github.com/kontext-security/sandy/commit/915ffda20646cf6a2963837f7554bf85121cdbd2))
+
+
+### Code Refactoring
+
+* **cli:** assemble policy before finalization ([#40](https://github.com/kontext-security/sandy/issues/40)) ([88c0cd3](https://github.com/kontext-security/sandy/commit/88c0cd388a29671578ebfd118fc8d62947da32be))
+* **core:** centralize trusted policy finalization ([#39](https://github.com/kontext-security/sandy/issues/39)) ([a730487](https://github.com/kontext-security/sandy/commit/a730487f615f2e017750ebde5d30f4a908908ff5))
+
 ## [0.1.8](https://github.com/kontext-security/sandy/compare/v0.1.7...v0.1.8) (2026-08-30)
 
 

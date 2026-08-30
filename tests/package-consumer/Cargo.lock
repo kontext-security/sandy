@@ -40,7 +40,7 @@ dependencies = [
 
 [[package]]
 name = "sandy-core"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "serde",
  "serde_json",
@@ -56,7 +56,7 @@ dependencies = [
 
 [[package]]
 name = "sandy-sandbox"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "sandy-core",
  "sandy-seatbelt",
@@ -64,7 +64,7 @@ dependencies = [
 
 [[package]]
 name = "sandy-seatbelt"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "libc",
  "sandy-core",
