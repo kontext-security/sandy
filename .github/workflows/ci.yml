@@ -23,6 +23,8 @@ jobs:
           persist-credentials: false
       - name: Install Rust toolchain
         run: rustup toolchain install 1.91.1 --profile minimal --component clippy,rustfmt
+      - name: Check release version metadata
+        run: make release-version-check
       - name: Check formatting
         run: cargo fmt --all --check
       - name: Lint

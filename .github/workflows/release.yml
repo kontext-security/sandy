@@ -103,10 +103,7 @@ jobs:
       - name: Verify tag version
         env:
           TAG_NAME: ${{ inputs.tag_name }}
-        run: |
-          version="${TAG_NAME#v}"
-          cargo_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
-          test "$version" = "$cargo_version"
+        run: ./scripts/verify-release-version.sh "$TAG_NAME"
       - name: Build release binary
         run: cargo build --release --locked --target "${{ matrix.target }}" -p sandy-cli
       - name: Package release
@@ -147,10 +144,7 @@ jobs:
       - name: Verify tag version
         env:
           TAG_NAME: ${{ inputs.tag_name }}
-        run: |
-          version="${TAG_NAME#v}"
-          cargo_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
-          test "$version" = "$cargo_version"
+        run: ./scripts/verify-release-version.sh "$TAG_NAME"
       - name: Verify publishable packages
         run: cargo package --workspace --exclude sandy-cli --locked
       - name: Install cargo-release
