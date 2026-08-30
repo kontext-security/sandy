@@ -10,4 +10,4 @@ pub(crate) use paths::{
     ResolvedUserPaths, absolute_if_utf8, grant, resolve_paths, resolve_user_paths,
     scoped_write_protections, write_protections,
 };
-pub(crate) use policy::resolve_policy;
+pub(crate) use policy::{CliPolicyIntent, resolve_policy};

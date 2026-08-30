@@ -151,6 +151,38 @@ pub struct SandboxPolicyParts {
     pub runtime_compatibility: crate::RuntimeCompatibility,
 }
 
+impl SandboxPolicyParts {
+    /// Checks product-owned unresolved contributions before ambient expansion.
+    ///
+    /// Sibling packages use this when a typed product intent deliberately
+    /// stays outside the supported facade builder until one shared path
+    /// resolution produces multiple independent capabilities.
+    #[doc(hidden)]
+    pub fn check_additional_bounds(
+        &self,
+        grants: usize,
+        executables: usize,
+    ) -> Result<(), PolicyIntentError> {
+        if self
+            .grants
+            .len()
+            .checked_add(grants)
+            .is_none_or(|count| count > MAX_REQUESTED_GRANTS)
+        {
+            return Err(PolicyIntentError::TooManyGrants);
+        }
+        if self
+            .executables
+            .len()
+            .checked_add(executables)
+            .is_none_or(|count| count > MAX_REQUESTED_EXECUTABLES)
+        {
+            return Err(PolicyIntentError::TooManyExecutables);
+        }
+        Ok(())
+    }
+}
+
 /// Enables the CLI's typed macOS metadata compatibility capability.
 ///
 /// This function is intentionally not re-exported by the supported facade.
@@ -258,5 +290,24 @@ mod tests {
             into_policy_parts(policy),
             Err(PolicyIntentError::TooManyExecutables)
         ));
+    }
+
+    #[test]
+    fn bounds_product_owned_intent_before_resolution() -> Result<(), PolicyIntentError> {
+        let parts = into_policy_parts(SandboxPolicy::new(NetworkPolicy::BlockAll).grant(
+            "base",
+            AccessMode::Read,
+            PathScope::Exact,
+        ))?;
+
+        assert!(matches!(
+            parts.check_additional_bounds(MAX_REQUESTED_GRANTS, 0),
+            Err(PolicyIntentError::TooManyGrants)
+        ));
+        assert!(matches!(
+            parts.check_additional_bounds(0, MAX_REQUESTED_EXECUTABLES + 1),
+            Err(PolicyIntentError::TooManyExecutables)
+        ));
+        Ok(())
     }
 }

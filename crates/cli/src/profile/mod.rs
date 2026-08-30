@@ -14,7 +14,7 @@ use sandy_core::{
 
 use crate::{
     error::AppError,
-    resolve::{ResolvedUserPaths, absolute_if_utf8, grant, write_protections},
+    resolve::{CliPolicyIntent, ResolvedUserPaths, absolute_if_utf8, write_protections},
 };
 
 const EMBEDDED_PROFILES: &[(&str, &str)] = &[
@@ -76,11 +76,17 @@ impl SelectedProfile {
         self.resolved.protected_paths()
     }
 
-    pub(crate) fn grants(
+    /// Adds this profile's typed filesystem intent after expanding its
+    /// product-owned path templates.
+    ///
+    /// Optional entries are filtered here because profile discovery belongs
+    /// to the CLI. Positive path canonicalization remains centralized in
+    /// `resolve_policy`.
+    pub(crate) fn contribute_grants(
         &self,
+        mut intent: CliPolicyIntent,
         paths: &ResolvedUserPaths,
-    ) -> Result<Vec<sandy_core::FileGrant>, AppError> {
-        let mut resolved_grants = Vec::new();
+    ) -> Result<CliPolicyIntent, AppError> {
         for template in self.resolved.grants() {
             let Some(path) = expand(&template.path, paths) else {
                 continue;
@@ -88,14 +94,10 @@ impl SelectedProfile {
             if template.if_exists && !path.exists() {
                 continue;
             }
-            resolved_grants.push(grant(
-                &path,
-                template.access,
-                template.scope,
-                &paths.protected,
-            )?);
+            intent =
+                intent.grant_with_execution_compatibility(path, template.access, template.scope);
         }
-        Ok(resolved_grants)
+        Ok(intent)
     }
 
     pub(crate) fn protected_paths(&self, paths: &ResolvedUserPaths) -> Vec<AbsolutePath> {
@@ -129,12 +131,12 @@ impl SelectedProfile {
 
     /// Grants configured agent roots and protects user-controlled hook leaves
     /// before any runtime-control resolver inspects their contents.
-    pub(crate) fn hook_source_policy(
+    pub(crate) fn contribute_hook_source_policy(
         &self,
+        mut intent: CliPolicyIntent,
         sources: &[ResolvedHookSource],
         paths: &ResolvedUserPaths,
-    ) -> Result<(Vec<sandy_core::FileGrant>, Vec<sandy_core::WriteProtection>), AppError> {
-        let mut grants = Vec::new();
+    ) -> Result<(CliPolicyIntent, Vec<sandy_core::WriteProtection>), AppError> {
         let mut protected = Vec::new();
         for source in sources.iter().filter(|source| source.user_source) {
             if let Some(root) = &source.additional_grant_root {
@@ -155,12 +157,11 @@ impl SelectedProfile {
                         root.display()
                     )));
                 }
-                grants.push(grant(
-                    root,
+                intent = intent.grant_with_execution_compatibility(
+                    root.clone(),
                     AccessMode::ReadWrite,
                     PathScope::Subtree,
-                    &paths.protected,
-                )?);
+                );
             }
 
             let hook_path = match (source.protocol, source.scope) {
@@ -172,11 +173,9 @@ impl SelectedProfile {
             };
             protected.extend(write_protections([hook_path])?);
         }
-        grants.sort();
-        grants.dedup();
         protected.sort();
         protected.dedup();
-        Ok((grants, protected))
+        Ok((intent, protected))
     }
 }
 
@@ -317,6 +316,8 @@ fn expand_all(templates: &[TemplatePath], paths: &ResolvedUserPaths) -> Vec<Abso
 
 #[cfg(test)]
 mod tests {
+    use sandy_core::SandboxPolicy;
+
     use super::*;
 
     fn test_paths() -> Result<ResolvedUserPaths, sandy_core::PathValidationError> {
@@ -507,7 +508,11 @@ mod tests {
                 resolved: selected,
                 detected: false,
             }
-            .hook_source_policy(&sources, &paths)?;
+            .contribute_hook_source_policy(
+                CliPolicyIntent::new(SandboxPolicy::new(sandy_core::NetworkPolicy::BlockAll)),
+                &sources,
+                &paths,
+            )?;
             assert!(
                 protections
                     .iter()
@@ -540,15 +545,66 @@ mod tests {
             resolved,
             detected: false,
         };
-        let (grants, protections) = selected.hook_source_policy(&[source], &paths)?;
+        let (intent, protections) = selected.contribute_hook_source_policy(
+            CliPolicyIntent::new(SandboxPolicy::new(sandy_core::NetworkPolicy::BlockAll)),
+            &[source],
+            &paths,
+        )?;
+        let policy = crate::resolve::resolve_policy(intent, &paths.protected)?
+            .finish()?
+            .into_spec();
         let canonical = fs::canonicalize(&config)?;
-        assert!(grants.iter().any(|grant| {
+        assert!(policy.files.iter().any(|grant| {
+            grant.path.as_path() == canonical
+                && grant.access == AccessMode::ReadWrite
+                && grant.scope == PathScope::Subtree
+        }));
+        assert!(policy.executables.iter().any(|grant| {
             grant.path.as_path() == canonical && grant.scope == PathScope::Subtree
         }));
         assert!(
             protections
                 .iter()
                 .any(|item| { item.path.as_path() == canonical.join("plugins/numbat.ts") })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn profile_grants_share_one_resolved_file_and_execution_identity()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let home = root.path().join("home");
+        let codex = home.join(".codex");
+        fs::create_dir_all(&codex)?;
+        let paths = ResolvedUserPaths {
+            home: Some(home),
+            protected: Vec::new(),
+        };
+        let selected = SelectedProfile {
+            resolved: resolve_by_name("codex")?,
+            detected: false,
+        };
+
+        let intent = selected.contribute_grants(
+            CliPolicyIntent::new(SandboxPolicy::new(sandy_core::NetworkPolicy::BlockAll)),
+            &paths,
+        )?;
+        let policy = crate::resolve::resolve_policy(intent, &paths.protected)?
+            .finish()?
+            .into_spec();
+        let codex = fs::canonicalize(codex)?;
+
+        assert!(policy.files.iter().any(|grant| {
+            grant.path.as_path() == codex
+                && grant.access == AccessMode::ReadWrite
+                && grant.scope == PathScope::Subtree
+        }));
+        assert!(
+            policy
+                .executables
+                .iter()
+                .any(|grant| grant.path.as_path() == codex && grant.scope == PathScope::Subtree)
         );
         Ok(())
     }

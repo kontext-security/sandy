@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
 use sandy_core::{
-    AbsolutePath, AccessMode, FileGrant, LocalHostTcpGrant, PathScope, PolicySpec, UnixSocketGrant,
-    WriteProtection,
+    AbsolutePath, AccessMode, ExecutableGrant, FileGrant, FileGrantConflict, LocalHostTcpGrant,
+    PathScope, ResolvedPolicyDraft, UnixSocketGrant, WriteProtection,
 };
 
 use crate::error::AppError;
@@ -229,34 +229,39 @@ impl RuntimeControls {
         self.controls.iter()
     }
 
-    pub(crate) fn apply_to(&self, policy: &mut PolicySpec) -> Result<(), AppError> {
-        let mut composed = policy.clone();
+    /// Atomically contributes every active runtime control to one trusted
+    /// policy draft.
+    ///
+    /// The draft is consumed so a failed composition cannot leave partially
+    /// added provider capabilities in the launch path.
+    pub(crate) fn contribute(
+        &self,
+        mut draft: ResolvedPolicyDraft,
+    ) -> Result<ResolvedPolicyDraft, AppError> {
         for control in &self.controls {
             let Some(capabilities) = control.capabilities() else {
                 continue;
             };
-            composed.files.extend(
-                capabilities
-                    .executables
-                    .iter()
-                    .map(ImmutableExecutable::file_grant),
-            );
-            composed.write_protections.extend(
-                capabilities
-                    .executables
-                    .iter()
-                    .map(ImmutableExecutable::write_protection),
-            );
-            composed.files.extend(capabilities.files.iter().cloned());
-            composed
-                .write_protections
-                .extend(capabilities.write_protections.iter().cloned());
-            composed
-                .unix_sockets
-                .extend(capabilities.unix_sockets.iter().cloned());
-            composed
-                .local_host_tcp
-                .extend(capabilities.local_host_tcp.iter().cloned());
+            for executable in &capabilities.executables {
+                draft.add_file(executable.file_grant());
+                draft.add_executable(ExecutableGrant {
+                    path: executable.path().clone(),
+                    scope: PathScope::Exact,
+                });
+                draft.add_write_protection(executable.write_protection());
+            }
+            for grant in &capabilities.files {
+                draft.add_file(grant.clone());
+            }
+            for protection in &capabilities.write_protections {
+                draft.add_write_protection(protection.clone());
+            }
+            for socket in &capabilities.unix_sockets {
+                draft.add_unix_socket(socket.clone());
+            }
+            for endpoint in &capabilities.local_host_tcp {
+                draft.add_local_host_tcp(endpoint.clone());
+            }
         }
 
         for control in &self.controls {
@@ -269,65 +274,33 @@ impl RuntimeControls {
                 .map(ImmutableExecutable::file_grant)
                 .chain(capabilities.files.iter().cloned())
             {
-                validate_final_access(control.service(), &grant, &composed)?;
+                validate_final_access(control.service(), &grant, &draft)?;
             }
         }
 
-        composed.close_write_protection_ancestors();
-        *policy = composed;
-        Ok(())
+        Ok(draft)
     }
 }
 
 fn validate_final_access(
     service: &'static str,
     grant: &FileGrant,
-    policy: &PolicySpec,
+    draft: &ResolvedPolicyDraft,
 ) -> Result<(), AppError> {
-    if policy
-        .protected_paths
-        .iter()
-        .any(|protected| scopes_overlap(&grant.path, grant.scope, protected, PathScope::Subtree))
-    {
-        return Err(AppError::runtime_control(
+    match draft.file_grant_conflict(grant) {
+        Some(FileGrantConflict::Protected) => Err(AppError::runtime_control(
             service,
             "a required filesystem resource overlaps a protected path",
-        ));
-    }
-
-    if grant.access == AccessMode::ReadWrite
-        && policy.write_protections.iter().any(|protection| {
-            scopes_overlap(&grant.path, grant.scope, &protection.path, protection.scope)
-        })
-    {
-        return Err(AppError::runtime_control(
+        )),
+        Some(FileGrantConflict::WriteProtected) => Err(AppError::runtime_control(
             service,
             "a required writable filesystem resource overlaps a write protection",
-        ));
-    }
-    Ok(())
-}
-
-fn scopes_overlap(
-    first_path: &AbsolutePath,
-    first_scope: PathScope,
-    second_path: &AbsolutePath,
-    second_scope: PathScope,
-) -> bool {
-    match (first_scope, second_scope) {
-        (PathScope::Exact, PathScope::Exact) => first_path == second_path,
-        (PathScope::Exact, PathScope::Subtree) => {
-            first_path.as_path().starts_with(second_path.as_path())
-        }
-        (PathScope::Subtree, PathScope::Exact) => {
-            second_path.as_path().starts_with(first_path.as_path())
-        }
-        (PathScope::Subtree, PathScope::Subtree) => {
-            first_path.as_path().starts_with(second_path.as_path())
-                || second_path.as_path().starts_with(first_path.as_path())
-        }
-        // A future scope cannot be assumed disjoint until this resolver models it.
-        _ => true,
+        )),
+        None => Ok(()),
+        Some(_) => Err(AppError::runtime_control(
+            service,
+            "a required filesystem resource conflicts with the launch policy",
+        )),
     }
 }
 
@@ -341,6 +314,10 @@ fn duplicate_file_intent(service: &'static str) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn empty_draft() -> ResolvedPolicyDraft {
+        ResolvedPolicyDraft::new(sandy_core::NetworkPolicy::BlockAll)
+    }
 
     fn read_exact(path: AbsolutePath) -> FileGrant {
         FileGrant {
@@ -372,9 +349,9 @@ mod tests {
             ResolvedRuntimeControl::inactive("inactive"),
             ResolvedRuntimeControl::unavailable("unavailable", "provider is unavailable"),
         ]);
-        let mut policy = PolicySpec::default();
-        controls.apply_to(&mut policy)?;
+        let policy = controls.contribute(empty_draft())?.finish()?.into_spec();
         assert!(policy.files.is_empty());
+        assert!(policy.executables.is_empty());
         assert!(policy.write_protections.is_empty());
         assert!(policy.unix_sockets.is_empty());
         assert_eq!(
@@ -430,8 +407,7 @@ mod tests {
             },
         )?;
         let controls = RuntimeControls::new(vec![first, second]);
-        let mut policy = PolicySpec::default();
-        controls.apply_to(&mut policy)?;
+        let policy = controls.contribute(empty_draft())?.finish()?.into_spec();
 
         assert_eq!(policy.files.len(), 4);
         assert!(policy.files.iter().any(|grant| {
@@ -449,6 +425,21 @@ mod tests {
                 && grant.access == AccessMode::ReadWrite
                 && grant.scope == PathScope::Subtree
         }));
+        assert_eq!(policy.executables.len(), 1);
+        assert!(
+            policy
+                .executables
+                .iter()
+                .any(|grant| { grant.path == executable && grant.scope == PathScope::Exact })
+        );
+        for file_only in [&rules, &socket, &output] {
+            assert!(
+                !policy
+                    .executables
+                    .iter()
+                    .any(|grant| &grant.path == file_only)
+            );
+        }
         assert!(policy.write_protections.iter().any(|protection| {
             protection.path == executable && protection.scope == PathScope::Exact
         }));
@@ -516,16 +507,17 @@ mod tests {
                 ..RuntimeControlCapabilities::default()
             },
         )?;
-        let mut policy = PolicySpec {
-            files: vec![FileGrant {
-                path: AbsolutePath::new("/workspace")?,
-                access: AccessMode::ReadWrite,
-                scope: PathScope::Subtree,
-            }],
-            ..PolicySpec::default()
-        };
+        let mut draft = empty_draft();
+        draft.add_file(FileGrant {
+            path: AbsolutePath::new("/workspace")?,
+            access: AccessMode::ReadWrite,
+            scope: PathScope::Subtree,
+        });
 
-        RuntimeControls::new(vec![control]).apply_to(&mut policy)?;
+        let policy = RuntimeControls::new(vec![control])
+            .contribute(draft)?
+            .finish()?
+            .into_spec();
 
         for expected in [
             "/workspace/plugins",
@@ -551,13 +543,11 @@ mod tests {
                 ..RuntimeControlCapabilities::default()
             },
         )?;
-        let mut policy = PolicySpec {
-            protected_paths: vec![AbsolutePath::new("/workspace/private")?],
-            ..PolicySpec::default()
-        };
+        let mut draft = empty_draft();
+        draft.add_protected_path(AbsolutePath::new("/workspace/private")?);
 
-        let error = match RuntimeControls::new(vec![control]).apply_to(&mut policy) {
-            Ok(()) => return Err("base protection unexpectedly allowed the runtime control".into()),
+        let error = match RuntimeControls::new(vec![control]).contribute(draft) {
+            Ok(_) => return Err("base protection unexpectedly allowed the runtime control".into()),
             Err(error) => error,
         };
 
@@ -566,7 +556,6 @@ mod tests {
                 .to_string()
                 .starts_with("first runtime control failed:")
         );
-        assert!(policy.files.is_empty());
         Ok(())
     }
 
@@ -597,10 +586,8 @@ mod tests {
                 ..RuntimeControlCapabilities::default()
             },
         )?;
-        let mut policy = PolicySpec::default();
-
-        let error = match RuntimeControls::new(vec![writer, protector]).apply_to(&mut policy) {
-            Ok(()) => return Err("runtime-control conflict unexpectedly composed".into()),
+        let error = match RuntimeControls::new(vec![writer, protector]).contribute(empty_draft()) {
+            Ok(_) => return Err("runtime-control conflict unexpectedly composed".into()),
             Err(error) => error,
         };
 
@@ -609,8 +596,6 @@ mod tests {
                 .to_string()
                 .starts_with("writer runtime control failed:")
         );
-        assert!(policy.files.is_empty());
-        assert!(policy.write_protections.is_empty());
         Ok(())
     }
 }

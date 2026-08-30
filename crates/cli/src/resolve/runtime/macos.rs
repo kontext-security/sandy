@@ -3,19 +3,22 @@
 use std::path::Path;
 
 use sandy_core::{
-    AccessMode, PathScope, SandboxPolicy, allow_file_metadata, allow_foreground_cli_compatibility,
+    AccessMode, NetworkPolicy, PathScope, SandboxPolicy, allow_file_metadata,
+    allow_foreground_cli_compatibility,
 };
 
-const READ_ONLY_SUBTREES: &[&str] = &[
+use crate::resolve::CliPolicyIntent;
+
+const READ_EXECUTE_SUBTREES: &[&str] = &[
     "/System",
     "/usr",
     "/bin",
     "/sbin",
     "/Library/Apple",
-    "/private/etc",
     "/private/var/db/dyld",
-    "/private/var/db/timezone",
 ];
+
+const READ_ONLY_DATA_SUBTREES: &[&str] = &["/private/etc", "/private/var/db/timezone"];
 
 const READ_WRITE_LITERALS: &[&str] = &[
     "/dev/null",
@@ -28,58 +31,99 @@ const READ_WRITE_LITERALS: &[&str] = &[
 /// Adds the CLI's ordinary command-runtime permissions through the shared
 /// policy builder. These entries have no privileged precedence over profile or
 /// user policy, and terminal denies still override them.
-pub(crate) fn add_to(policy: SandboxPolicy) -> SandboxPolicy {
-    add_matching(policy, |path| Path::new(path).exists())
+pub(crate) fn intent(network: NetworkPolicy) -> CliPolicyIntent {
+    add_matching(network, |path| Path::new(path).exists())
 }
 
-fn add_matching(mut policy: SandboxPolicy, mut include: impl FnMut(&str) -> bool) -> SandboxPolicy {
+fn add_matching(network: NetworkPolicy, mut include: impl FnMut(&str) -> bool) -> CliPolicyIntent {
+    let mut policy = SandboxPolicy::new(network);
     policy = allow_file_metadata(policy);
     policy = allow_foreground_cli_compatibility(policy);
-    policy = policy.grant("/", AccessMode::Read, PathScope::Exact);
-    for path in READ_ONLY_SUBTREES {
+    let mut intent =
+        CliPolicyIntent::new(policy).grant_file("/", AccessMode::Read, PathScope::Exact);
+    for path in READ_EXECUTE_SUBTREES {
         if include(path) {
-            policy = policy.grant(path, AccessMode::Read, PathScope::Subtree);
+            intent = intent.grant_with_execution_compatibility(
+                path,
+                AccessMode::Read,
+                PathScope::Subtree,
+            );
+        }
+    }
+    for path in READ_ONLY_DATA_SUBTREES {
+        if include(path) {
+            intent = intent.grant_file(path, AccessMode::Read, PathScope::Subtree);
         }
     }
     for path in READ_WRITE_LITERALS {
         if include(path) {
-            policy = policy.grant(path, AccessMode::ReadWrite, PathScope::Exact);
+            intent = intent.grant_file(path, AccessMode::ReadWrite, PathScope::Exact);
         }
     }
-    policy
+    intent
 }
 
 #[cfg(test)]
 mod tests {
-    use sandy_core::{NetworkPolicy, into_policy_parts};
+    use sandy_core::NetworkPolicy;
+
+    use crate::resolve::resolve_policy;
 
     use super::*;
 
     #[test]
     fn baseline_is_only_explicit_policy_input() -> Result<(), Box<dyn std::error::Error>> {
-        let parts = into_policy_parts(add_matching(
-            SandboxPolicy::new(NetworkPolicy::BlockAll),
-            |_| true,
-        ))?;
+        let policy = resolve_policy(add_matching(NetworkPolicy::BlockAll, |_| false), &[])?
+            .finish()?
+            .into_spec();
 
-        assert!(parts.grants.iter().any(|grant| {
-            grant.path == std::path::Path::new("/")
+        assert!(policy.files.iter().any(|grant| {
+            grant.path.as_path() == std::path::Path::new("/")
                 && grant.access == AccessMode::Read
                 && grant.scope == PathScope::Exact
         }));
-        assert!(parts.grants.iter().any(|grant| {
-            grant.path == std::path::Path::new("/System")
-                && grant.access == AccessMode::Read
-                && grant.scope == PathScope::Subtree
-        }));
-        assert!(parts.denied_subtrees.is_empty());
-        assert!(parts.write_denied_exact.is_empty());
-        assert_eq!(parts.file_metadata, sandy_core::FileMetadataPolicy::Allow);
-        assert!(parts.allow_subprocesses);
+        assert!(policy.protected_paths.is_empty());
+        assert!(policy.write_protections.is_empty());
+        assert_eq!(policy.file_metadata, sandy_core::FileMetadataPolicy::Allow);
+        assert!(policy.allow_subprocesses);
+        assert!(policy.executables.is_empty());
         assert_eq!(
-            parts.runtime_compatibility,
+            policy.runtime_compatibility,
             sandy_core::RuntimeCompatibility::ForegroundCli
         );
+        Ok(())
+    }
+
+    #[test]
+    fn data_and_device_paths_do_not_gain_executable_authority()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let policy = resolve_policy(
+            add_matching(NetworkPolicy::BlockAll, |path| {
+                READ_ONLY_DATA_SUBTREES.contains(&path) || READ_WRITE_LITERALS.contains(&path)
+            }),
+            &[],
+        )?
+        .finish()?
+        .into_spec();
+
+        for path in READ_ONLY_DATA_SUBTREES
+            .iter()
+            .chain(READ_WRITE_LITERALS)
+            .filter_map(|path| std::fs::canonicalize(path).ok())
+        {
+            assert!(
+                policy
+                    .files
+                    .iter()
+                    .any(|grant| grant.path.as_path() == path)
+            );
+            assert!(
+                !policy
+                    .executables
+                    .iter()
+                    .any(|grant| grant.path.as_path() == path)
+            );
+        }
         Ok(())
     }
 }

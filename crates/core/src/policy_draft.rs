@@ -21,6 +21,20 @@ pub struct ResolvedPolicyDraft {
     policy: PolicySpec,
 }
 
+/// Conflict between a resolved filesystem capability and a terminal denial.
+///
+/// The classification deliberately omits resource identity so a product
+/// boundary can provide source-specific, redacted diagnostics.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum FileGrantConflict {
+    /// The capability overlaps a terminal read/write denial.
+    Protected,
+    /// A writable capability overlaps a terminal write denial.
+    WriteProtected,
+}
+
 impl ResolvedPolicyDraft {
     /// Starts an empty resolved policy with explicit network behavior.
     pub fn new(network: NetworkPolicy) -> Self {
@@ -77,6 +91,35 @@ impl ResolvedPolicyDraft {
         self.policy.runtime_compatibility = compatibility;
     }
 
+    /// Checks one resolved filesystem capability against every terminal deny
+    /// currently assembled in this draft.
+    ///
+    /// This is intended for product boundaries that need to attribute a
+    /// conflict to the policy source that requested the capability. Complete
+    /// policy validation still runs in [`Self::finish`].
+    pub fn file_grant_conflict(&self, grant: &FileGrant) -> Option<FileGrantConflict> {
+        if self.policy.protected_paths.iter().any(|protected| {
+            scopes_overlap(
+                &grant.path,
+                grant.scope,
+                protected,
+                crate::PathScope::Subtree,
+            )
+        }) {
+            return Some(FileGrantConflict::Protected);
+        }
+
+        if grant.access == crate::AccessMode::ReadWrite
+            && self.policy.write_protections.iter().any(|protection| {
+                scopes_overlap(&grant.path, grant.scope, &protection.path, protection.scope)
+            })
+        {
+            return Some(FileGrantConflict::WriteProtected);
+        }
+
+        None
+    }
+
     /// Normalizes trusted contributions, closes ancestor protections, and
     /// returns the proof required by an enforcement backend.
     ///
@@ -90,6 +133,27 @@ impl ResolvedPolicyDraft {
         validate_policy_bounds(&self.policy)?;
         self.policy.normalize();
         ValidatedPolicy::try_from(self.policy)
+    }
+}
+
+fn scopes_overlap(
+    first_path: &AbsolutePath,
+    first_scope: crate::PathScope,
+    second_path: &AbsolutePath,
+    second_scope: crate::PathScope,
+) -> bool {
+    match (first_scope, second_scope) {
+        (crate::PathScope::Exact, crate::PathScope::Exact) => first_path == second_path,
+        (crate::PathScope::Exact, crate::PathScope::Subtree) => {
+            first_path.as_path().starts_with(second_path.as_path())
+        }
+        (crate::PathScope::Subtree, crate::PathScope::Exact) => {
+            second_path.as_path().starts_with(first_path.as_path())
+        }
+        (crate::PathScope::Subtree, crate::PathScope::Subtree) => {
+            first_path.as_path().starts_with(second_path.as_path())
+                || second_path.as_path().starts_with(first_path.as_path())
+        }
     }
 }
 
@@ -292,6 +356,51 @@ mod tests {
             ValidatedPolicy::try_from(policy),
             Err(ValidationError::DuplicateGrant(_))
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn classifies_terminal_conflicts_without_exposing_resource_identity()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut draft = ResolvedPolicyDraft::new(NetworkPolicy::BlockAll);
+        draft.add_protected_path(path("/workspace/secrets")?);
+        draft.add_write_protection(WriteProtection {
+            path: path("/workspace/config.json")?,
+            scope: PathScope::Exact,
+        });
+
+        assert_eq!(
+            draft.file_grant_conflict(&FileGrant {
+                path: path("/workspace/secrets/token")?,
+                access: AccessMode::Read,
+                scope: PathScope::Exact,
+            }),
+            Some(FileGrantConflict::Protected)
+        );
+        assert_eq!(
+            draft.file_grant_conflict(&FileGrant {
+                path: path("/workspace")?,
+                access: AccessMode::ReadWrite,
+                scope: PathScope::Subtree,
+            }),
+            Some(FileGrantConflict::Protected)
+        );
+        assert_eq!(
+            draft.file_grant_conflict(&FileGrant {
+                path: path("/workspace/config.json")?,
+                access: AccessMode::ReadWrite,
+                scope: PathScope::Exact,
+            }),
+            Some(FileGrantConflict::WriteProtected)
+        );
+        assert_eq!(
+            draft.file_grant_conflict(&FileGrant {
+                path: path("/workspace/config.json")?,
+                access: AccessMode::Read,
+                scope: PathScope::Exact,
+            }),
+            None
+        );
         Ok(())
     }
 }
