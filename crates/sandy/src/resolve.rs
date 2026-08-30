@@ -5,7 +5,7 @@ use std::{
 };
 
 use sandy_core::{
-    AbsolutePath, ExecutableGrant, FileGrant, FileMetadataPolicy, PathScope, PolicySpec,
+    AbsolutePath, ExecutableGrant, FileGrant, FileMetadataPolicy, PathScope, ResolvedPolicyDraft,
     RuntimeCompatibility, SandboxPolicy, ValidatedPolicy, WriteProtection, into_policy_parts,
 };
 
@@ -23,7 +23,9 @@ pub(crate) fn resolve(policy: SandboxPolicy) -> Result<ValidatedPolicy, SandboxE
         return Err(SandboxError::new(ErrorKind::InvalidPolicy));
     }
 
-    let mut files = Vec::with_capacity(parts.grants.len());
+    let mut draft = ResolvedPolicyDraft::new(parts.network);
+    draft.set_allow_subprocesses(parts.allow_subprocesses);
+
     for grant in parts.grants {
         let path = canonical_existing(&working_directory, &grant.path)?;
         if path == Path::new("/")
@@ -31,18 +33,17 @@ pub(crate) fn resolve(policy: SandboxPolicy) -> Result<ValidatedPolicy, SandboxE
         {
             return Err(SandboxError::new(ErrorKind::InvalidPolicy));
         }
-        files.push(FileGrant {
+        draft.add_file(FileGrant {
             path: absolute(&path)?,
             access: grant.access,
             scope: grant.scope,
         });
     }
 
-    let mut executables = Vec::with_capacity(parts.executables.len());
     for grant in parts.executables {
         let path = canonical_existing(&working_directory, &grant.path)?;
         reject_root(&path)?;
-        executables.push(ExecutableGrant {
+        draft.add_executable(ExecutableGrant {
             path: absolute(&path)?,
             scope: grant.scope,
         });
@@ -67,21 +68,16 @@ pub(crate) fn resolve(policy: SandboxPolicy) -> Result<ValidatedPolicy, SandboxE
         }
     }
 
-    let mut policy = PolicySpec {
-        files,
-        executables,
-        protected_paths: protected_paths.into_iter().collect(),
-        write_protections: write_protections.into_iter().collect(),
-        unix_sockets: Vec::new(),
-        local_host_tcp: Vec::new(),
-        file_metadata: FileMetadataPolicy::Deny,
-        allow_subprocesses: parts.allow_subprocesses,
-        runtime_compatibility: RuntimeCompatibility::Minimal,
-        network: parts.network,
-    };
-    policy.close_write_protection_ancestors();
-    policy.normalize();
-    ValidatedPolicy::try_from(policy).map_err(|_| SandboxError::new(ErrorKind::InvalidPolicy))
+    for path in protected_paths {
+        draft.add_protected_path(path);
+    }
+    for protection in write_protections {
+        draft.add_write_protection(protection);
+    }
+
+    draft
+        .finish()
+        .map_err(|_| SandboxError::new(ErrorKind::InvalidPolicy))
 }
 
 fn lexical_and_canonical(
@@ -151,7 +147,7 @@ fn absolute(path: &Path) -> Result<AbsolutePath, SandboxError> {
 mod tests {
     use std::{error::Error as _, os::unix::fs::symlink};
 
-    use sandy_core::{AccessMode, NetworkPolicy};
+    use sandy_core::{AccessMode, NetworkPolicy, PolicySpec};
 
     use super::*;
 
@@ -181,6 +177,77 @@ mod tests {
             RuntimeCompatibility::Minimal
         );
         assert_eq!(resolved.spec().network, NetworkPolicy::BlockAll);
+        Ok(())
+    }
+
+    #[test]
+    fn preserves_complete_facade_policy_semantics() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let workspace = root.path().join("workspace");
+        let configuration = workspace.join("configuration");
+        let settings = configuration.join("settings.json");
+        let credentials = workspace.join("credentials");
+        let tool = workspace.join("tool");
+        fs::create_dir_all(&configuration)?;
+        fs::create_dir(&credentials)?;
+        fs::write(&settings, "settings")?;
+        fs::write(&tool, "tool")?;
+        let lexical_credentials = absolute(&normalize_without_parent(&credentials)?)?;
+        let lexical_settings = absolute(&normalize_without_parent(&settings)?)?;
+
+        let resolved = resolve(
+            SandboxPolicy::new(NetworkPolicy::BlockAll)
+                .grant(&workspace, AccessMode::Read, PathScope::Subtree)
+                .grant(&workspace, AccessMode::ReadWrite, PathScope::Subtree)
+                .allow_execute(&tool, PathScope::Exact)
+                .allow_execute(&tool, PathScope::Exact)
+                .allow_subprocesses()
+                .deny_subtree(&credentials)
+                .deny_write_exact(&settings),
+        )?;
+
+        let workspace = absolute(&fs::canonicalize(workspace)?)?;
+        let configuration = absolute(&fs::canonicalize(configuration)?)?;
+        let settings = absolute(&fs::canonicalize(settings)?)?;
+        let credentials = absolute(&fs::canonicalize(credentials)?)?;
+        let tool = absolute(&fs::canonicalize(tool)?)?;
+        let protected_paths = BTreeSet::from([lexical_credentials, credentials])
+            .into_iter()
+            .collect();
+        let write_protections = BTreeSet::from([
+            WriteProtection {
+                path: configuration,
+                scope: PathScope::Exact,
+            },
+            WriteProtection {
+                path: lexical_settings,
+                scope: PathScope::Exact,
+            },
+            WriteProtection {
+                path: settings,
+                scope: PathScope::Exact,
+            },
+        ])
+        .into_iter()
+        .collect();
+        let expected = PolicySpec {
+            files: vec![FileGrant {
+                path: workspace,
+                access: AccessMode::ReadWrite,
+                scope: PathScope::Subtree,
+            }],
+            executables: vec![ExecutableGrant {
+                path: tool,
+                scope: PathScope::Exact,
+            }],
+            protected_paths,
+            write_protections,
+            allow_subprocesses: true,
+            network: NetworkPolicy::BlockAll,
+            ..PolicySpec::default()
+        };
+
+        assert_eq!(resolved.spec(), &expected);
         Ok(())
     }
 

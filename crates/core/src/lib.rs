@@ -12,7 +12,7 @@
 //! embedded profile documents -> ResolvedProfile
 //! CLI filesystem resolution  -> LaunchManifestV2
 //! bounded wire decode        -> ValidatedLaunch -> ValidatedPolicy
-//! SandboxPolicy resolution   -> PolicySpec      -> ValidatedPolicy
+//! SandboxPolicy resolution   -> ResolvedPolicyDraft -> ValidatedPolicy
 //! ```
 //!
 //! Keeping those states as different types makes it difficult to accidentally compile or apply
@@ -24,6 +24,7 @@
 mod capability;
 mod manifest;
 mod path;
+mod policy_draft;
 mod profile;
 mod sandbox_policy;
 mod validation;
@@ -38,6 +39,8 @@ pub use manifest::{
     CommandSpec, EnvironmentEntry, LaunchManifestV2, MANIFEST_SCHEMA_V2, OsValue, OsValueError,
 };
 pub use path::{AbsolutePath, PathValidationError};
+#[doc(hidden)]
+pub use policy_draft::ResolvedPolicyDraft;
 pub use profile::{
     GENERIC_PROFILE_NAME, GrantTemplate, HookProtocol, HookSourceLocation, HookSourceScope,
     HookSourceTemplate, PROFILE_SCHEMA_V3, ProfileDocumentV3, ProfileError, ProfileRegistry,

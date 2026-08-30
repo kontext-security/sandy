@@ -14,11 +14,11 @@ use crate::{
 
 const MAX_ARGUMENTS: usize = 4_096;
 const MAX_ENVIRONMENT_ENTRIES: usize = 4_096;
-const MAX_FILE_GRANTS: usize = 1_024;
-const MAX_EXECUTABLE_GRANTS: usize = 1_024;
-const MAX_UNIX_SOCKET_GRANTS: usize = 128;
-const MAX_LOCAL_HOST_TCP_GRANTS: usize = 128;
-const MAX_PROTECTED_PATHS: usize = 1_024;
+pub(crate) const MAX_FILE_GRANTS: usize = 1_024;
+pub(crate) const MAX_EXECUTABLE_GRANTS: usize = 1_024;
+pub(crate) const MAX_UNIX_SOCKET_GRANTS: usize = 128;
+pub(crate) const MAX_LOCAL_HOST_TCP_GRANTS: usize = 128;
+pub(crate) const MAX_PROTECTED_PATHS: usize = 1_024;
 
 /// Policy that has passed the complete policy-validation transition.
 ///
@@ -142,25 +142,9 @@ fn validate_policy(policy: &PolicySpec) -> Result<(), ValidationError> {
     {
         return Err(ValidationError::ForegroundRequiresSubprocesses);
     }
-    if policy.files.len() > MAX_FILE_GRANTS {
-        return Err(ValidationError::TooManyFileGrants);
-    }
-    if policy.executables.len() > MAX_EXECUTABLE_GRANTS {
-        return Err(ValidationError::TooManyExecutableGrants);
-    }
-    if policy.unix_sockets.len() > MAX_UNIX_SOCKET_GRANTS {
-        return Err(ValidationError::TooManyUnixSocketGrants);
-    }
-    if policy.local_host_tcp.len() > MAX_LOCAL_HOST_TCP_GRANTS {
-        return Err(ValidationError::TooManyLocalHostTcpGrants);
-    }
+    validate_policy_bounds(policy)?;
     if policy.network == crate::NetworkPolicy::AllowAll && !policy.local_host_tcp.is_empty() {
         return Err(ValidationError::LocalHostTcpRequiresBlockedNetwork);
-    }
-    if policy.protected_paths.len() > MAX_PROTECTED_PATHS
-        || policy.write_protections.len() > MAX_PROTECTED_PATHS
-    {
-        return Err(ValidationError::TooManyProtectedPaths);
     }
     if policy.files.iter().any(|grant| {
         grant.path.is_root()
@@ -230,6 +214,27 @@ fn validate_policy(policy: &PolicySpec) -> Result<(), ValidationError> {
             resource: resource.clone(),
             ancestor,
         });
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_policy_bounds(policy: &PolicySpec) -> Result<(), ValidationError> {
+    if policy.files.len() > MAX_FILE_GRANTS {
+        return Err(ValidationError::TooManyFileGrants);
+    }
+    if policy.executables.len() > MAX_EXECUTABLE_GRANTS {
+        return Err(ValidationError::TooManyExecutableGrants);
+    }
+    if policy.unix_sockets.len() > MAX_UNIX_SOCKET_GRANTS {
+        return Err(ValidationError::TooManyUnixSocketGrants);
+    }
+    if policy.local_host_tcp.len() > MAX_LOCAL_HOST_TCP_GRANTS {
+        return Err(ValidationError::TooManyLocalHostTcpGrants);
+    }
+    if policy.protected_paths.len() > MAX_PROTECTED_PATHS
+        || policy.write_protections.len() > MAX_PROTECTED_PATHS
+    {
+        return Err(ValidationError::TooManyProtectedPaths);
     }
     Ok(())
 }
