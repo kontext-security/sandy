@@ -34,6 +34,17 @@ impl ValidatedPolicy {
     pub fn spec(&self) -> &PolicySpec {
         &self.0
     }
+
+    /// Consumes the validation proof and returns its normalized wire policy.
+    ///
+    /// Trusted parents use this to construct a launch manifest. A bootstrap
+    /// must still validate the decoded manifest independently; this method
+    /// does not place a trusted marker on serialized data.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn into_spec(self) -> PolicySpec {
+        self.0
+    }
 }
 
 /// Launch manifest whose schema, native values, bounds, and policy invariants are valid.

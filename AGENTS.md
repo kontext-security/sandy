@@ -85,7 +85,10 @@ builder; the owning product boundary resolves its paths before validation.
 
 The enforcement backend adds no implicit filesystem or network capabilities.
 The CLI owns an explicit typed macOS runtime baseline and composes it through
-the same policy model as profiles and command-line grants.
+the same policy model as profiles and command-line grants. Profiles, CLI
+options, runtime resources, and optional integrations must all contribute
+typed capabilities before the trusted parent finishes `ValidatedPolicy`.
+Product code must not mutate the resulting wire policy after validation.
 
 ## Execution model
 

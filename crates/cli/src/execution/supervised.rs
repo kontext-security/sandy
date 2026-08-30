@@ -6,8 +6,8 @@ use std::{
 };
 
 use sandy_core::{
-    AccessMode, CommandSpec, ExecutableGrant, FileGrant, LaunchManifestV2, MANIFEST_SCHEMA_V2,
-    NetworkPolicy, OsValue, PathScope, SandboxPolicy, ValidatedLaunch, encode_launch,
+    AccessMode, CommandSpec, LaunchManifestV2, MANIFEST_SCHEMA_V2, NetworkPolicy, OsValue,
+    PathScope, ValidatedLaunch, encode_launch,
 };
 use serde_json::json;
 use tempfile::Builder;
@@ -43,31 +43,31 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
         .tempdir()
         .map_err(|error| AppError::io("create private Sandy session", error))?;
 
-    let mut files = vec![FileGrant {
-        path: paths.working_directory.clone(),
-        access: AccessMode::ReadWrite,
-        scope: PathScope::Subtree,
-    }];
-    files.push(grant(
-        &command.program,
+    let network = if arguments.block_net {
+        NetworkPolicy::BlockAll
+    } else {
+        NetworkPolicy::AllowAll
+    };
+    let mut intent = runtime::macos::intent(network);
+    intent = intent.grant_with_execution_compatibility(
+        paths.working_directory.as_path(),
+        AccessMode::ReadWrite,
+        PathScope::Subtree,
+    );
+    intent = intent.grant_with_execution_compatibility(
+        command.program.clone(),
         AccessMode::Read,
         PathScope::Exact,
-        &paths.user.protected,
-    )?);
+    );
     if let Some(parent) = command.program.parent() {
-        files.push(grant(
-            parent,
-            AccessMode::Read,
-            PathScope::Subtree,
-            &paths.user.protected,
-        )?);
+        intent =
+            intent.grant_with_execution_compatibility(parent, AccessMode::Read, PathScope::Subtree);
     }
-    files.push(grant(
+    intent = intent.grant_with_execution_compatibility(
         session.path(),
         AccessMode::ReadWrite,
         PathScope::Subtree,
-        &paths.user.protected,
-    )?);
+    );
     let ca_bundle = if arguments.block_net {
         None
     } else {
@@ -84,24 +84,19 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
         })
         .transpose()?;
     if let Some(bundle) = &ca_bundle {
-        files.push(bundle.clone());
+        intent = intent.grant_resolved_file(bundle.clone());
     }
-    files.extend(selected.grants(&paths.user)?);
+    intent = selected.contribute_grants(intent, &paths.user)?;
     for path in &arguments.read {
-        files.push(grant(
-            path,
-            AccessMode::Read,
-            PathScope::Subtree,
-            &paths.user.protected,
-        )?);
+        intent =
+            intent.grant_with_execution_compatibility(path, AccessMode::Read, PathScope::Subtree);
     }
     for path in &arguments.read_write {
-        files.push(grant(
+        intent = intent.grant_with_execution_compatibility(
             path,
             AccessMode::ReadWrite,
             PathScope::Subtree,
-            &paths.user.protected,
-        )?);
+        );
     }
 
     let kontext_mode = if arguments.kontext {
@@ -115,9 +110,9 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
         IntegrationMode::Detect
     };
     let hook_sources = selected.hook_sources(&paths.user)?;
-    let (hook_source_grants, hook_source_protections) =
-        selected.hook_source_policy(&hook_sources, &paths.user)?;
-    files.extend(hook_source_grants);
+    let (next_intent, hook_source_protections) =
+        selected.contribute_hook_source_policy(intent, &hook_sources, &paths.user)?;
+    intent = next_intent;
     let mut controls = vec![
         kontext::resolve(&hook_sources, kontext_mode, &paths.user)?,
         numbat::resolve(&hook_sources, numbat_mode, &paths.user)?,
@@ -136,15 +131,6 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
     }
     let mut write_protections = selected.protected_write_paths(&paths.user)?;
     write_protections.extend(hook_source_protections);
-    let network = if arguments.block_net {
-        NetworkPolicy::BlockAll
-    } else {
-        NetworkPolicy::AllowAll
-    };
-    let mut intent = runtime::macos::add_to(SandboxPolicy::new(network));
-    for file in files {
-        intent = intent.grant(file.path.as_path(), file.access, file.scope);
-    }
     for path in selected.protected_paths(&paths.user) {
         intent = intent.deny_subtree(path.as_path());
     }
@@ -156,19 +142,9 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
         }
         intent = intent.deny_write_exact(protection.path.as_path());
     }
-    let mut policy = resolve_policy(intent, &paths.user.protected)?;
-    runtime_controls.apply_to(&mut policy)?;
-    policy.executables.extend(
-        policy
-            .files
-            .iter()
-            .filter(|grant| !grant.path.is_root())
-            .map(|grant| ExecutableGrant {
-                path: grant.path.clone(),
-                scope: grant.scope,
-            }),
-    );
-    policy.normalize();
+    let draft = resolve_policy(intent, &paths.user.protected)?;
+    let draft = runtime_controls.contribute(draft)?;
+    let policy = draft.finish()?.into_spec();
 
     let manifest = LaunchManifestV2 {
         schema_version: MANIFEST_SCHEMA_V2,

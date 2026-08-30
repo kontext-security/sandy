@@ -118,6 +118,7 @@ fn dry_run_does_not_require_kontext() -> Result<(), Box<dyn std::error::Error>> 
 fn dry_run_json_has_a_versioned_runtime_control_schema() -> Result<(), Box<dyn std::error::Error>> {
     let mut command = Command::cargo_bin("sandy")?;
     let output = command
+        .env_remove("SSL_CERT_FILE")
         .args(["run", "--dry-run", "--", "/bin/echo", "hello"])
         .output()?;
     assert!(output.status.success());
@@ -194,12 +195,76 @@ fn dry_run_json_has_a_versioned_runtime_control_schema() -> Result<(), Box<dyn s
             .as_array()
             .is_some_and(|grants| !grants.is_empty())
     );
+    let executables = document["executable_grants"]
+        .as_array()
+        .ok_or("executable_grants must be an array")?;
+    assert!(!executables.iter().any(|grant| grant["path"] == "/"));
+    if let Ok(ca_bundle) = fs::canonicalize("/etc/ssl/cert.pem") {
+        let ca_bundle = ca_bundle
+            .to_str()
+            .ok_or("canonical CA bundle path must be UTF-8")?;
+        assert!(grants.iter().any(|grant| {
+            grant["path"] == ca_bundle && grant["access"] == "read" && grant["scope"] == "exact"
+        }));
+        assert!(!executables.iter().any(|grant| grant["path"] == ca_bundle));
+    }
     assert!(
         document["seatbelt_profile"]
             .as_str()
             .ok_or("seatbelt_profile must be a string")?
             .contains("file-read-metadata")
     );
+    Ok(())
+}
+
+#[test]
+fn cli_filesystem_grants_keep_explicit_execution_compatibility()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let home = directory.path().join("home");
+    let readable = directory.path().join("readable");
+    let writable = directory.path().join("writable");
+    fs::create_dir(&home)?;
+    fs::create_dir(&readable)?;
+    fs::create_dir(&writable)?;
+
+    let mut command = Command::cargo_bin("sandy")?;
+    let output = command
+        .env("HOME", home)
+        .args([
+            "run",
+            "--dry-run",
+            "--read",
+            readable.to_str().ok_or("test path must be UTF-8")?,
+            "--read-write",
+            writable.to_str().ok_or("test path must be UTF-8")?,
+            "--",
+            "/bin/echo",
+        ])
+        .output()?;
+    assert!(output.status.success());
+
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    let files = document["file_grants"]
+        .as_array()
+        .ok_or("file_grants must be an array")?;
+    let executables = document["executable_grants"]
+        .as_array()
+        .ok_or("executable_grants must be an array")?;
+    for (path, access) in [
+        (fs::canonicalize(readable)?, "read"),
+        (fs::canonicalize(writable)?, "read_write"),
+    ] {
+        let path = path.to_str().ok_or("canonical test path must be UTF-8")?;
+        assert!(files.iter().any(|grant| {
+            grant["path"] == path && grant["access"] == access && grant["scope"] == "subtree"
+        }));
+        assert!(
+            executables
+                .iter()
+                .any(|grant| { grant["path"] == path && grant["scope"] == "subtree" })
+        );
+    }
     Ok(())
 }
 

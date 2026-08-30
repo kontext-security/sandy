@@ -582,8 +582,12 @@ mod tests {
         let controls = super::super::RuntimeControls::new(vec![control]);
         let canonical_home = fs::canonicalize(&home)?;
         let canonical_rules = fs::canonicalize(&rules)?;
-        let mut policy = sandy_core::PolicySpec::default();
-        controls.apply_to(&mut policy)?;
+        let policy = controls
+            .contribute(sandy_core::ResolvedPolicyDraft::new(
+                sandy_core::NetworkPolicy::BlockAll,
+            ))?
+            .finish()?
+            .into_spec();
         assert!(policy.files.iter().any(|grant| {
             grant.path.as_path() == canonical_rules
                 && grant.access == AccessMode::Read
@@ -604,11 +608,12 @@ mod tests {
 
     #[test]
     fn collector_resolves_one_selected_local_host_port() -> Result<(), Box<dyn std::error::Error>> {
-        let mut policy = sandy_core::PolicySpec {
-            network: sandy_core::NetworkPolicy::BlockAll,
-            ..sandy_core::PolicySpec::default()
-        };
-        super::super::RuntimeControls::new(vec![collector(4318)?]).apply_to(&mut policy)?;
+        let policy = super::super::RuntimeControls::new(vec![collector(4318)?])
+            .contribute(sandy_core::ResolvedPolicyDraft::new(
+                sandy_core::NetworkPolicy::BlockAll,
+            ))?
+            .finish()?
+            .into_spec();
 
         assert_eq!(policy.local_host_tcp.len(), 1);
         assert_eq!(policy.local_host_tcp[0].port.get(), 4318);

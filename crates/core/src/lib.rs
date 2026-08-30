@@ -40,7 +40,7 @@ pub use manifest::{
 };
 pub use path::{AbsolutePath, PathValidationError};
 #[doc(hidden)]
-pub use policy_draft::ResolvedPolicyDraft;
+pub use policy_draft::{FileGrantConflict, ResolvedPolicyDraft};
 pub use profile::{
     GENERIC_PROFILE_NAME, GrantTemplate, HookProtocol, HookSourceLocation, HookSourceScope,
     HookSourceTemplate, PROFILE_SCHEMA_V3, ProfileDocumentV3, ProfileError, ProfileRegistry,
