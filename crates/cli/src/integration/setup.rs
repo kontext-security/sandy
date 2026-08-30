@@ -32,7 +32,8 @@ impl SetupContext {
     fn resolve(agent: SupportedAgent) -> Result<Self, AppError> {
         let profile_name = agent.profile_name().to_owned();
         let selected = profile::select(Some(&profile_name), OsStr::new(&profile_name))?;
-        let paths = resolve_user_paths(selected.protected_templates())?;
+        let protected_templates = selected.inherited_protected_templates();
+        let paths = resolve_user_paths(&protected_templates)?;
         let hook_sources = selected.hook_sources(&paths)?;
         Ok(Self {
             agent,

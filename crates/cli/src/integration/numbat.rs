@@ -259,10 +259,9 @@ fn validate_runtime_layout(
                         || protected.as_path().starts_with(&canonical)
                 })
             {
-                return Err(error(format!(
-                    "configured rules directory is too broad or overlaps Sandy-protected data: {}",
-                    directory.display()
-                )));
+                return Err(error(
+                    "configured rules directory is too broad or overlaps Sandy-protected data",
+                ));
             }
             layout
                 .rule_directories

@@ -16,6 +16,12 @@ pull requests.
 - Both entry points lower the same `SandboxPolicy` intent through validation and
   the native backend. The renderer never adds hidden filesystem or network
   capabilities.
+- The CLI may load one explicit narrow user profile file. Deterministic schema
+  validation and additive base composition of independent filesystem,
+  executable, and terminal-deny capabilities live in `sandy-core`; bounded
+  file loading, template expansion, canonicalization, diagnostics, and
+  source-path protection remain in `sandy-cli`. No additional package boundary
+  is needed.
 
 ## PR 1: make the CLI baseline explicit
 

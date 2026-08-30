@@ -1,20 +1,25 @@
 use std::{
+    borrow::Cow,
     env,
     ffi::{OsStr, OsString},
-    fs,
+    fs::{self, File},
+    io::Read as _,
     path::{Path, PathBuf},
     sync::OnceLock,
 };
 
 use sandy_core::{
     AbsolutePath, AccessMode, GENERIC_PROFILE_NAME, HookProtocol, HookSourceLocation,
-    HookSourceScope, HookSourceTemplate, PathScope, ProfileError, ProfileRegistry, ResolvedProfile,
-    TemplatePath,
+    HookSourceScope, HookSourceTemplate, MAX_USER_PROFILE_SOURCE_BYTES, PathScope, ProfileError,
+    ProfileRegistry, ResolvedProfile, ResolvedUserProfile, TemplatePath, UserProfileDocumentV1,
 };
 
 use crate::{
     error::AppError,
-    resolve::{CliPolicyIntent, ResolvedUserPaths, absolute_if_utf8, write_protections},
+    resolve::{
+        CliPolicyIntent, ResolvedUserPaths, absolute_if_utf8, protection_path_spellings,
+        write_protections,
+    },
 };
 
 const EMBEDDED_PROFILES: &[(&str, &str)] = &[
@@ -34,9 +39,49 @@ fn registry() -> Result<&'static ProfileRegistry, AppError> {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct SelectedProfile {
-    resolved: ResolvedProfile,
-    detected: bool,
+pub(crate) enum SelectedProfile {
+    Embedded {
+        profile: ResolvedProfile,
+        detected: bool,
+    },
+    UserFile {
+        profile: ResolvedUserProfile,
+        source_paths: Vec<AbsolutePath>,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ResolvedProfileProtections {
+    paths: Vec<AbsolutePath>,
+    required_user_paths: Vec<(usize, AbsolutePath)>,
+}
+
+impl ResolvedProfileProtections {
+    pub(crate) fn paths(&self) -> &[AbsolutePath] {
+        &self.paths
+    }
+
+    pub(crate) fn user_entry_containing(&self, path: &Path) -> Option<usize> {
+        self.required_user_paths
+            .iter()
+            .find_map(|(position, protected)| {
+                path.starts_with(protected.as_path()).then_some(*position)
+            })
+    }
+
+    pub(crate) fn redact_conflict(&self, error: AppError) -> AppError {
+        let AppError::ProtectedPath(path) = error else {
+            return error;
+        };
+        match self.user_entry_containing(&path) {
+            Some(position) => AppError::UserProfilePath {
+                section: "deny_subtrees",
+                position,
+                reason: "overlaps a required launch path",
+            },
+            None => AppError::ProtectedPath(path),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -62,65 +107,262 @@ impl ResolvedHookSource {
 }
 
 impl SelectedProfile {
+    fn embedded(profile: ResolvedProfile, detected: bool) -> Self {
+        Self::Embedded { profile, detected }
+    }
+
+    fn user_file(profile: ResolvedUserProfile, source_paths: Vec<AbsolutePath>) -> Self {
+        Self::UserFile {
+            profile,
+            source_paths,
+        }
+    }
+
+    fn profile(&self) -> &ResolvedProfile {
+        match self {
+            Self::Embedded { profile, .. } => profile,
+            Self::UserFile { profile, .. } => profile.profile(),
+        }
+    }
+
+    fn user_profile(&self) -> Option<&ResolvedUserProfile> {
+        match self {
+            Self::Embedded { .. } => None,
+            Self::UserFile { profile, .. } => Some(profile),
+        }
+    }
+
     pub(crate) fn name(&self) -> &str {
-        self.resolved.name()
+        self.profile().name()
     }
 
     pub(crate) fn detected(&self) -> bool {
-        self.detected
+        matches!(self, Self::Embedded { detected: true, .. })
     }
 
-    /// Raw protected-path templates used to resolve the user's protected
-    /// locations before either setup or launch policy assembly.
-    pub(crate) fn protected_templates(&self) -> &[TemplatePath] {
-        self.resolved.protected_paths()
+    pub(crate) fn source_name(&self) -> &'static str {
+        match self {
+            Self::Embedded { .. } => "embedded",
+            Self::UserFile { .. } => "user_file",
+        }
     }
 
-    /// Adds this profile's typed filesystem intent after expanding its
-    /// product-owned path templates.
+    pub(crate) fn base_name(&self) -> Option<&str> {
+        self.user_profile().map(ResolvedUserProfile::base_name)
+    }
+
+    /// Rejects omission of any home-relative path in a user-file composition
+    /// when the CLI cannot establish a canonical home directory. Embedded
+    /// selections retain their existing compatibility behavior.
+    pub(crate) fn validate_user_paths(&self, paths: &ResolvedUserPaths) -> Result<(), AppError> {
+        if self
+            .user_profile()
+            .is_some_and(ResolvedUserProfile::requires_home)
+            && paths.home.as_deref().and_then(Path::to_str).is_none()
+        {
+            return Err(AppError::UserProfile(
+                "user profile contains a home-relative path, but HOME is unavailable or invalid"
+                    .to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Adds terminal denial of each path spelling used to load a user profile.
+    /// Embedded profiles have no runtime source file.
+    pub(crate) fn protect_source(&self, mut intent: CliPolicyIntent) -> CliPolicyIntent {
+        if let Self::UserFile { source_paths, .. } = self {
+            for path in source_paths {
+                intent = intent.deny_subtree(path.as_path());
+            }
+        }
+        intent
+    }
+
+    /// Returns only inherited protected-path templates for ambient user-path
+    /// discovery. Required user-file entries retain provenance and are
+    /// resolved separately by [`Self::protected_paths`].
+    pub(crate) fn inherited_protected_templates(&self) -> Cow<'_, [TemplatePath]> {
+        let Some(user_profile) = self.user_profile() else {
+            return Cow::Borrowed(self.profile().protected_paths());
+        };
+        let required = user_profile.required_deny_subtrees().collect::<Vec<_>>();
+        Cow::Owned(
+            self.profile()
+                .protected_paths()
+                .iter()
+                .filter(|template| !required.iter().any(|(_, required)| *required == *template))
+                .cloned()
+                .collect(),
+        )
+    }
+
+    /// Adds this profile's typed filesystem intent after expanding path templates.
     ///
-    /// Optional entries are filtered here because profile discovery belongs
-    /// to the CLI. Positive path canonicalization remains centralized in
-    /// `resolve_policy`.
+    /// Missing optional embedded entries are filtered here. User-authored
+    /// grants retain source positions and remain required. Positive path
+    /// canonicalization stays centralized in `resolve_policy`.
     pub(crate) fn contribute_grants(
         &self,
         mut intent: CliPolicyIntent,
         paths: &ResolvedUserPaths,
     ) -> Result<CliPolicyIntent, AppError> {
-        for template in self.resolved.grants() {
+        let required_grants = self
+            .user_profile()
+            .map(|profile| profile.required_grants().collect::<Vec<_>>())
+            .unwrap_or_default();
+        for template in self.profile().grants().iter().filter(|template| {
+            !required_grants
+                .iter()
+                .any(|(_, required)| required.same_capability(template))
+        }) {
             let Some(path) = expand(&template.path, paths) else {
                 continue;
             };
-            if template.if_exists && !path.exists() {
+            if template.if_exists && !optional_path_exists(&path)? {
                 continue;
             }
+            intent = intent.grant_file(path, template.access, template.scope);
+        }
+        for (position, template) in required_grants {
+            let path = expand(&template.path, paths).ok_or(AppError::UserProfileGrant {
+                position,
+                reason: "could not be expanded",
+            })?;
             intent =
-                intent.grant_with_execution_compatibility(path, template.access, template.scope);
+                intent.grant_user_profile_file(path, template.access, template.scope, position);
         }
         Ok(intent)
     }
 
-    pub(crate) fn protected_paths(&self, paths: &ResolvedUserPaths) -> Vec<AbsolutePath> {
-        expand_all(self.resolved.protected_paths(), paths)
+    /// Adds executable-mapping intent independently from ordinary file access.
+    pub(crate) fn contribute_executable_grants(
+        &self,
+        mut intent: CliPolicyIntent,
+        paths: &ResolvedUserPaths,
+    ) -> Result<CliPolicyIntent, AppError> {
+        let required_grants = self
+            .user_profile()
+            .map(|profile| profile.required_executable_grants().collect::<Vec<_>>())
+            .unwrap_or_default();
+        for template in self
+            .profile()
+            .executable_grants()
+            .iter()
+            .filter(|template| {
+                !required_grants
+                    .iter()
+                    .any(|(_, required)| required.same_capability(template))
+            })
+        {
+            let Some(path) = expand(&template.path, paths) else {
+                continue;
+            };
+            if template.if_exists && !optional_path_exists(&path)? {
+                continue;
+            }
+            intent = intent.allow_execute(path, template.scope);
+        }
+        for (position, template) in required_grants {
+            let path = expand(&template.path, paths).ok_or(AppError::UserProfilePath {
+                section: "executable_grants",
+                position,
+                reason: "could not be expanded",
+            })?;
+            intent = intent.allow_user_profile_execute(path, template.scope, position);
+        }
+        Ok(intent)
+    }
+
+    pub(crate) fn protected_paths(
+        &self,
+        paths: &ResolvedUserPaths,
+    ) -> Result<ResolvedProfileProtections, AppError> {
+        let required_paths = self
+            .user_profile()
+            .map(|profile| profile.required_deny_subtrees().collect::<Vec<_>>())
+            .unwrap_or_default();
+        let mut protected = expand_all(
+            &self
+                .profile()
+                .protected_paths()
+                .iter()
+                .filter(|template| {
+                    !required_paths
+                        .iter()
+                        .any(|(_, required)| *required == *template)
+                })
+                .cloned()
+                .collect::<Vec<_>>(),
+            paths,
+        );
+        let mut required_user_paths = Vec::new();
+        for (position, template) in required_paths {
+            let path = expand(template, paths).ok_or(AppError::UserProfilePath {
+                section: "deny_subtrees",
+                position,
+                reason: "could not be expanded",
+            })?;
+            let mut resolved =
+                protection_path_spellings([path]).map_err(|_| AppError::UserProfilePath {
+                    section: "deny_subtrees",
+                    position,
+                    reason: "could not be resolved safely",
+                })?;
+            required_user_paths.extend(resolved.iter().cloned().map(|path| (position, path)));
+            protected.append(&mut resolved);
+        }
+        protected.sort();
+        protected.dedup();
+        Ok(ResolvedProfileProtections {
+            paths: protected,
+            required_user_paths,
+        })
     }
 
     pub(crate) fn protected_write_paths(
         &self,
         paths: &ResolvedUserPaths,
     ) -> Result<Vec<sandy_core::WriteProtection>, AppError> {
-        write_protections(
-            self.resolved
+        let required_paths = self
+            .user_profile()
+            .map(|profile| profile.required_deny_write_exact().collect::<Vec<_>>())
+            .unwrap_or_default();
+        let mut protected = write_protections(
+            self.profile()
                 .protected_write_paths()
                 .iter()
+                .filter(|template| {
+                    !required_paths
+                        .iter()
+                        .any(|(_, required)| *required == *template)
+                })
                 .filter_map(|template| expand(template, paths)),
-        )
+        )?;
+        for (position, template) in required_paths {
+            let path = expand(template, paths).ok_or(AppError::UserProfilePath {
+                section: "deny_write_exact",
+                position,
+                reason: "could not be expanded",
+            })?;
+            let mut resolved =
+                write_protections([path]).map_err(|_| AppError::UserProfilePath {
+                    section: "deny_write_exact",
+                    position,
+                    reason: "could not be resolved safely",
+                })?;
+            protected.append(&mut resolved);
+        }
+        protected.sort();
+        protected.dedup();
+        Ok(protected)
     }
 
     pub(crate) fn hook_sources(
         &self,
         paths: &ResolvedUserPaths,
     ) -> Result<Vec<ResolvedHookSource>, AppError> {
-        self.resolved
+        self.profile()
             .hook_sources()
             .iter()
             .filter_map(|source| {
@@ -152,16 +394,11 @@ impl SelectedProfile {
                             || item.as_path().starts_with(&canonical)
                     })
                 {
-                    return Err(AppError::Profile(format!(
-                        "configured agent root {} is too broad or overlaps protected data",
-                        root.display()
-                    )));
+                    return Err(AppError::Profile(
+                        "configured agent root is too broad or overlaps protected data".to_owned(),
+                    ));
                 }
-                intent = intent.grant_with_execution_compatibility(
-                    root.clone(),
-                    AccessMode::ReadWrite,
-                    PathScope::Subtree,
-                );
+                intent = intent.grant_file(root.clone(), AccessMode::ReadWrite, PathScope::Subtree);
             }
 
             let hook_path = match (source.protocol, source.scope) {
@@ -259,10 +496,7 @@ pub(crate) fn select(
     target_name: &OsStr,
 ) -> Result<SelectedProfile, AppError> {
     if let Some(name) = requested {
-        return Ok(SelectedProfile {
-            resolved: resolve_by_name(name)?,
-            detected: false,
-        });
+        return Ok(SelectedProfile::embedded(resolve_by_name(name)?, false));
     }
     let detected_name = Path::new(target_name)
         .file_name()
@@ -276,10 +510,86 @@ pub(crate) fn select(
         Some(name) => (name, true),
         None => (GENERIC_PROFILE_NAME.to_owned(), false),
     };
-    Ok(SelectedProfile {
-        resolved: resolve_by_name(&name)?,
-        detected,
-    })
+    Ok(SelectedProfile::embedded(resolve_by_name(&name)?, detected))
+}
+
+/// Loads exactly one explicit user profile file and composes it with its
+/// selectable embedded base.
+pub(crate) fn load_user(path: &Path) -> Result<SelectedProfile, AppError> {
+    let (source, source_paths) = read_user_profile(path)?;
+    let document = UserProfileDocumentV1::parse(&source)
+        .map_err(|error| AppError::UserProfile(error.to_string()))?;
+    let resolved = registry()?
+        .resolve_user_profile(document)
+        .map_err(|error| AppError::UserProfile(error.to_string()))?;
+    Ok(SelectedProfile::user_file(resolved, source_paths))
+}
+
+/// Reads from the canonical path selected before opening while retaining
+/// the user's absolute lexical spelling for terminal source protection.
+fn read_user_profile(path: &Path) -> Result<(String, Vec<AbsolutePath>), AppError> {
+    let lexical_path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        env::current_dir()
+            .map_err(|error| AppError::io("read working directory for user profile", error))?
+            .join(path)
+    };
+    let lexical = absolute_if_utf8(&lexical_path).map_err(|_| {
+        AppError::UserProfile(
+            "user profile path must be absolute UTF-8 without parent traversal".to_owned(),
+        )
+    })?;
+
+    let canonical_path = fs::canonicalize(&lexical_path)
+        .map_err(|error| AppError::io("resolve user profile file", error))?;
+    // The pathname check rejects steady FIFOs and devices before `open` can
+    // block. The opened-handle check below narrows replacement races.
+    let metadata = fs::metadata(&canonical_path)
+        .map_err(|error| AppError::io("inspect user profile file", error))?;
+    if !metadata.is_file() {
+        return Err(AppError::UserProfile(
+            "user profile source must be a regular file".to_owned(),
+        ));
+    }
+    if metadata.len() > MAX_USER_PROFILE_SOURCE_BYTES as u64 {
+        return Err(AppError::UserProfile(
+            "user profile exceeds the source-size limit".to_owned(),
+        ));
+    }
+    let file = File::open(&canonical_path)
+        .map_err(|error| AppError::io("open user profile file", error))?;
+    let opened_metadata = file
+        .metadata()
+        .map_err(|error| AppError::io("inspect opened user profile file", error))?;
+    if !opened_metadata.is_file() {
+        return Err(AppError::UserProfile(
+            "user profile source must be a regular file".to_owned(),
+        ));
+    }
+    if opened_metadata.len() > MAX_USER_PROFILE_SOURCE_BYTES as u64 {
+        return Err(AppError::UserProfile(
+            "user profile exceeds the source-size limit".to_owned(),
+        ));
+    }
+    let mut source = Vec::new();
+    file.take((MAX_USER_PROFILE_SOURCE_BYTES as u64) + 1)
+        .read_to_end(&mut source)
+        .map_err(|error| AppError::io("read user profile file", error))?;
+    if source.len() > MAX_USER_PROFILE_SOURCE_BYTES {
+        return Err(AppError::UserProfile(
+            "user profile exceeds the source-size limit".to_owned(),
+        ));
+    }
+    let source = String::from_utf8(source)
+        .map_err(|_| AppError::UserProfile("source must be strict UTF-8 JSON".to_owned()))?;
+    let canonical = absolute_if_utf8(&canonical_path)
+        .map_err(|_| AppError::UserProfile("canonical path must be absolute UTF-8".to_owned()))?;
+    let mut source_paths = vec![lexical];
+    if canonical != source_paths[0] {
+        source_paths.push(canonical);
+    }
+    Ok((source, source_paths))
 }
 
 fn resolve_by_name(name: &str) -> Result<ResolvedProfile, AppError> {
@@ -306,6 +616,11 @@ fn expand(template: &TemplatePath, paths: &ResolvedUserPaths) -> Option<PathBuf>
     }
 }
 
+fn optional_path_exists(path: &Path) -> Result<bool, AppError> {
+    path.try_exists()
+        .map_err(|error| AppError::io("inspect optional profile path", error))
+}
+
 fn expand_all(templates: &[TemplatePath], paths: &ResolvedUserPaths) -> Vec<AbsolutePath> {
     templates
         .iter()
@@ -316,6 +631,8 @@ fn expand_all(templates: &[TemplatePath], paths: &ResolvedUserPaths) -> Vec<Abso
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::ffi::OsStringExt as _;
+
     use sandy_core::SandboxPolicy;
 
     use super::*;
@@ -325,6 +642,23 @@ mod tests {
             home: Some(PathBuf::from("/Users/example")),
             protected: Vec::new(),
         })
+    }
+
+    #[test]
+    fn optional_profile_paths_skip_only_confirmed_absence() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = tempfile::tempdir()?;
+        assert!(matches!(
+            optional_path_exists(&root.path().join("missing")),
+            Ok(false)
+        ));
+
+        let invalid = PathBuf::from(OsString::from_vec(b"/tmp/invalid\0path".to_vec()));
+        assert!(matches!(
+            optional_path_exists(&invalid),
+            Err(AppError::Io { .. })
+        ));
+        Ok(())
     }
 
     #[test]
@@ -504,15 +838,12 @@ mod tests {
                 .iter()
                 .filter_map(|source| resolve_hook_source(source, &paths, &|_| None).transpose())
                 .collect::<Result<Vec<_>, _>>()?;
-            let (_, protections) = SelectedProfile {
-                resolved: selected,
-                detected: false,
-            }
-            .contribute_hook_source_policy(
-                CliPolicyIntent::new(SandboxPolicy::new(sandy_core::NetworkPolicy::BlockAll)),
-                &sources,
-                &paths,
-            )?;
+            let (_, protections) = SelectedProfile::embedded(selected, false)
+                .contribute_hook_source_policy(
+                    CliPolicyIntent::new(SandboxPolicy::new(sandy_core::NetworkPolicy::BlockAll)),
+                    &sources,
+                    &paths,
+                )?;
             assert!(
                 protections
                     .iter()
@@ -541,10 +872,7 @@ mod tests {
             (key == "OPENCODE_CONFIG_DIR").then(|| config.clone().into_os_string())
         })?
         .ok_or("OpenCode source was not resolved")?;
-        let selected = SelectedProfile {
-            resolved,
-            detected: false,
-        };
+        let selected = SelectedProfile::embedded(resolved, false);
         let (intent, protections) = selected.contribute_hook_source_policy(
             CliPolicyIntent::new(SandboxPolicy::new(sandy_core::NetworkPolicy::BlockAll)),
             &[source],
@@ -559,9 +887,12 @@ mod tests {
                 && grant.access == AccessMode::ReadWrite
                 && grant.scope == PathScope::Subtree
         }));
-        assert!(policy.executables.iter().any(|grant| {
-            grant.path.as_path() == canonical && grant.scope == PathScope::Subtree
-        }));
+        assert!(
+            !policy
+                .executables
+                .iter()
+                .any(|grant| grant.path.as_path() == canonical)
+        );
         assert!(
             protections
                 .iter()
@@ -571,7 +902,7 @@ mod tests {
     }
 
     #[test]
-    fn profile_grants_share_one_resolved_file_and_execution_identity()
+    fn profile_file_grants_do_not_add_executable_authority()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
         let home = root.path().join("home");
@@ -581,10 +912,7 @@ mod tests {
             home: Some(home),
             protected: Vec::new(),
         };
-        let selected = SelectedProfile {
-            resolved: resolve_by_name("codex")?,
-            detected: false,
-        };
+        let selected = SelectedProfile::embedded(resolve_by_name("codex")?, false);
 
         let intent = selected.contribute_grants(
             CliPolicyIntent::new(SandboxPolicy::new(sandy_core::NetworkPolicy::BlockAll)),
@@ -601,11 +929,186 @@ mod tests {
                 && grant.scope == PathScope::Subtree
         }));
         assert!(
-            policy
+            !policy
                 .executables
                 .iter()
-                .any(|grant| grant.path.as_path() == codex && grant.scope == PathScope::Subtree)
+                .any(|grant| grant.path.as_path() == codex)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn user_profile_preserves_base_hooks_and_protections() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = tempfile::tempdir()?;
+        let source = root.path().join("session.json");
+        fs::write(
+            &source,
+            r#"{
+                "schema_version": 1,
+                "name": "session",
+                "extends": "codex"
+            }"#,
+        )?;
+
+        let selected = load_user(&source)?;
+        let embedded = resolve_by_name("codex")?;
+        assert_eq!(selected.name(), "session");
+        assert_eq!(selected.base_name(), Some("codex"));
+        assert_eq!(selected.source_name(), "user_file");
+        assert_eq!(selected.profile().hook_sources(), embedded.hook_sources());
+        assert_eq!(
+            selected.profile().protected_paths(),
+            embedded.protected_paths()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn user_profile_source_protects_lexical_and_canonical_paths()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let target = root.path().join("stored-profile.json");
+        let lexical = root.path().join("session.json");
+        let adjacent = root.path().join("adjacent.json");
+        fs::write(
+            &target,
+            r#"{
+                "schema_version": 1,
+                "name": "session",
+                "extends": "generic"
+            }"#,
+        )?;
+        fs::write(&adjacent, "{}")?;
+        std::os::unix::fs::symlink(&target, &lexical)?;
+
+        let selected = load_user(&lexical)?;
+        let intent = selected.protect_source(CliPolicyIntent::new(SandboxPolicy::new(
+            sandy_core::NetworkPolicy::BlockAll,
+        )));
+        let policy = crate::resolve::resolve_policy(intent, &[])?
+            .finish()?
+            .into_spec();
+        let target = fs::canonicalize(target)?;
+
+        assert!(
+            policy
+                .protected_paths
+                .iter()
+                .any(|path| path.as_path() == lexical)
+        );
+        assert!(
+            policy
+                .protected_paths
+                .iter()
+                .any(|path| path.as_path() == target)
+        );
+        assert!(
+            !policy
+                .protected_paths
+                .iter()
+                .any(|path| path.as_path() == adjacent)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn user_protected_alias_blocks_a_grant_to_its_canonical_target()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let home = root.path().join("home");
+        let target = root.path().join("protected-target");
+        let alias = root.path().join("protected-alias");
+        let source = root.path().join("session.json");
+        fs::create_dir(&home)?;
+        fs::create_dir(&target)?;
+        std::os::unix::fs::symlink(&target, &alias)?;
+        fs::write(
+            &source,
+            format!(
+                r#"{{
+                    "schema_version": 1,
+                    "name": "session",
+                    "extends": "generic",
+                    "grants": [{{
+                        "path": "{}",
+                        "access": "read",
+                        "scope": "subtree"
+                    }}],
+                    "deny_subtrees": ["{}"]
+                }}"#,
+                target.display(),
+                alias.display(),
+            ),
+        )?;
+
+        let selected = load_user(&source)?;
+        let paths = ResolvedUserPaths {
+            home: Some(home),
+            protected: Vec::new(),
+        };
+        let protected = selected.protected_paths(&paths)?;
+        let canonical = fs::canonicalize(&target)?;
+        assert!(protected.paths().iter().any(|path| path.as_path() == alias));
+        assert!(
+            protected
+                .paths()
+                .iter()
+                .any(|path| path.as_path() == canonical)
+        );
+
+        let intent = selected.contribute_grants(
+            CliPolicyIntent::new(SandboxPolicy::new(sandy_core::NetworkPolicy::BlockAll)),
+            &paths,
+        )?;
+        assert!(matches!(
+            crate::resolve::resolve_policy(intent, protected.paths()),
+            Err(AppError::UserProfileGrant {
+                position: 1,
+                reason: "overlaps protected data"
+            })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn user_home_templates_require_a_resolved_home() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let source = root.path().join("session.json");
+        fs::write(
+            &source,
+            r#"{
+                "schema_version": 1,
+                "name": "session",
+                "extends": "generic",
+                "grants": [{
+                    "path": "~/.required",
+                    "access": "read",
+                    "scope": "subtree"
+                }]
+            }"#,
+        )?;
+
+        let selected = load_user(&source)?;
+        let paths = ResolvedUserPaths {
+            home: None,
+            protected: Vec::new(),
+        };
+        assert!(matches!(
+            selected.validate_user_paths(&paths),
+            Err(AppError::UserProfile(_))
+        ));
+
+        let paths = ResolvedUserPaths {
+            home: Some(PathBuf::from(OsString::from_vec(
+                b"/tmp/non-utf8-\xff".to_vec(),
+            ))),
+            protected: Vec::new(),
+        };
+        assert!(matches!(
+            selected.validate_user_paths(&paths),
+            Err(AppError::UserProfile(_))
+        ));
         Ok(())
     }
 }

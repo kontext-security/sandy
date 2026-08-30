@@ -1,8 +1,8 @@
-//! Embedded agent-profile document model and deterministic inheritance.
+//! Typed profile documents and deterministic inheritance.
 //!
-//! Profiles are trusted package data, but they are still parsed and bounded fail-closed so a
-//! packaging defect cannot silently broaden a launch. This module performs lexical validation
-//! only. Home expansion, filesystem discovery, and canonicalization belong to the CLI resolver.
+//! Embedded profiles are trusted package data. User profiles are a deliberately narrower,
+//! additive document shape. Both are parsed and bounded fail-closed before the CLI performs home
+//! expansion, filesystem discovery, or canonicalization.
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
@@ -13,7 +13,11 @@ use thiserror::Error;
 use crate::{AccessMode, PathScope};
 
 /// Schema version accepted for embedded profile documents.
-pub const PROFILE_SCHEMA_V3: u32 = 3;
+pub const PROFILE_SCHEMA_V4: u32 = 4;
+/// Schema version accepted for user-authored profile documents.
+pub const USER_PROFILE_SCHEMA_V1: u32 = 1;
+/// Maximum UTF-8 source size accepted for one user-authored profile document.
+pub const MAX_USER_PROFILE_SOURCE_BYTES: usize = 64 * 1024;
 /// Fallback profile used when no known binary name is detected.
 pub const GENERIC_PROFILE_NAME: &str = "generic";
 
@@ -23,7 +27,253 @@ const MAX_PROFILE_NAME_BYTES: usize = 64;
 const MAX_TEMPLATE_BYTES: usize = 4 * 1024;
 const MAX_BINARY_NAME_BYTES: usize = 128;
 const MAX_RESOLVED_GRANTS: usize = 256;
+const MAX_RESOLVED_EXECUTABLES: usize = 256;
 const MAX_RESOLVED_PATHS: usize = 512;
+// A user denial can become separate lexical and canonical policy entries.
+// Keep room for inherited protections and both profile-source spellings.
+const MAX_USER_PROFILE_DENIALS: usize = 508;
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum UserAccessModeV1 {
+    Read,
+    ReadWrite,
+}
+
+impl From<UserAccessModeV1> for AccessMode {
+    fn from(mode: UserAccessModeV1) -> Self {
+        match mode {
+            UserAccessModeV1::Read => Self::Read,
+            UserAccessModeV1::ReadWrite => Self::ReadWrite,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum UserPathScopeV1 {
+    Exact,
+    Subtree,
+}
+
+impl From<UserPathScopeV1> for PathScope {
+    fn from(scope: UserPathScopeV1) -> Self {
+        match scope {
+            UserPathScopeV1::Exact => Self::Exact,
+            UserPathScopeV1::Subtree => Self::Subtree,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct UserProfileVersion {
+    schema_version: u32,
+}
+
+/// One required filesystem grant in a user-authored profile.
+///
+/// Unlike an embedded [`GrantTemplate`], this shape has no optional-existence behavior. The CLI
+/// must resolve every declared path or reject the launch.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct UserGrantTemplate {
+    path: TemplatePath,
+    access: UserAccessModeV1,
+    scope: UserPathScopeV1,
+}
+
+impl UserGrantTemplate {
+    /// Returns the absolute or home-relative path template.
+    #[must_use]
+    pub fn path(&self) -> &TemplatePath {
+        &self.path
+    }
+
+    /// Returns the requested read or read/write access.
+    #[must_use]
+    pub fn access(&self) -> AccessMode {
+        self.access.into()
+    }
+
+    /// Returns exact-node or recursive matching semantics.
+    #[must_use]
+    pub fn scope(&self) -> PathScope {
+        self.scope.into()
+    }
+}
+
+/// One required executable-mapping grant in a user-authored profile.
+///
+/// This grants no ordinary file access. The CLI must resolve every declared
+/// path or reject the launch.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct UserExecutableTemplate {
+    path: TemplatePath,
+    scope: UserPathScopeV1,
+}
+
+impl UserExecutableTemplate {
+    /// Returns the absolute or home-relative path template.
+    #[must_use]
+    pub fn path(&self) -> &TemplatePath {
+        &self.path
+    }
+
+    /// Returns exact-node or recursive matching semantics.
+    #[must_use]
+    pub fn scope(&self) -> PathScope {
+        self.scope.into()
+    }
+}
+
+/// Strict version-1 document for one user-authored session profile.
+///
+/// The document extends exactly one selectable embedded profile and may only add filesystem
+/// grants, executable-mapping grants, or terminal filesystem denials. It cannot declare
+/// detection, hook, network, command, or provider behavior.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UserProfileDocumentV1 {
+    schema_version: u32,
+    name: String,
+    extends: String,
+    #[serde(default)]
+    grants: Vec<UserGrantTemplate>,
+    #[serde(default)]
+    executable_grants: Vec<UserExecutableTemplate>,
+    #[serde(default)]
+    deny_subtrees: Vec<TemplatePath>,
+    #[serde(default)]
+    deny_write_exact: Vec<TemplatePath>,
+}
+
+impl UserProfileDocumentV1 {
+    /// Parses and lexically validates one bounded UTF-8 user profile source.
+    pub fn parse(source: &str) -> Result<Self, UserProfileError> {
+        if source.len() > MAX_USER_PROFILE_SOURCE_BYTES {
+            return Err(UserProfileError::TooLarge);
+        }
+        // Dispatch before applying V1 strictness so newer documents receive an
+        // actionable version error even when they add fields V1 does not know.
+        let version: UserProfileVersion =
+            serde_json::from_str(source).map_err(|error| UserProfileError::Parse {
+                line: error.line(),
+                column: error.column(),
+            })?;
+        if version.schema_version != USER_PROFILE_SCHEMA_V1 {
+            return Err(UserProfileError::UnsupportedSchema(version.schema_version));
+        }
+        let document: Self =
+            serde_json::from_str(source).map_err(|error| UserProfileError::Parse {
+                line: error.line(),
+                column: error.column(),
+            })?;
+        validate_name(&document.name).map_err(UserProfileError::Profile)?;
+        validate_name(&document.extends).map_err(UserProfileError::Profile)?;
+        document.check_bounds()?;
+        Ok(document)
+    }
+
+    /// Returns the session-visible profile name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the one embedded profile this document extends.
+    #[must_use]
+    pub fn base_name(&self) -> &str {
+        &self.extends
+    }
+
+    fn check_bounds(&self) -> Result<(), UserProfileError> {
+        if self.grants.len() > MAX_RESOLVED_GRANTS {
+            return Err(UserProfileError::TooManyGrants);
+        }
+        if self.executable_grants.len() > MAX_RESOLVED_EXECUTABLES {
+            return Err(UserProfileError::TooManyExecutables);
+        }
+        if self.deny_subtrees.len() > MAX_USER_PROFILE_DENIALS
+            || self.deny_write_exact.len() > MAX_USER_PROFILE_DENIALS
+        {
+            return Err(UserProfileError::TooManyPaths);
+        }
+        Ok(())
+    }
+}
+
+/// A user-authored profile resolved against its selectable embedded base.
+#[derive(Clone, Debug)]
+pub struct ResolvedUserProfile {
+    base_name: String,
+    requires_home: bool,
+    required_grants: Vec<(usize, GrantTemplate)>,
+    required_executable_grants: Vec<(usize, ExecutableTemplate)>,
+    required_deny_subtrees: Vec<(usize, TemplatePath)>,
+    required_deny_write_exact: Vec<(usize, TemplatePath)>,
+    profile: ResolvedProfile,
+}
+
+impl ResolvedUserProfile {
+    /// Returns the embedded base selected by the user document.
+    #[must_use]
+    pub fn base_name(&self) -> &str {
+        &self.base_name
+    }
+
+    /// Returns whether at least one required user-authored path needs `~/` expansion.
+    #[must_use]
+    pub fn requires_home(&self) -> bool {
+        self.requires_home
+    }
+
+    /// Returns user-authored grants with original array positions.
+    ///
+    /// These required grants must never be skipped when absent.
+    #[must_use]
+    pub fn required_grants(&self) -> impl ExactSizeIterator<Item = (usize, &GrantTemplate)> {
+        self.required_grants
+            .iter()
+            .map(|(position, grant)| (*position, grant))
+    }
+
+    /// Returns user-authored executable grants with original array positions.
+    ///
+    /// These required grants must never be skipped when absent.
+    #[must_use]
+    pub fn required_executable_grants(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (usize, &ExecutableTemplate)> {
+        self.required_executable_grants
+            .iter()
+            .map(|(position, grant)| (*position, grant))
+    }
+
+    /// Returns user-authored terminal subtree denials with original array positions.
+    #[must_use]
+    pub fn required_deny_subtrees(&self) -> impl ExactSizeIterator<Item = (usize, &TemplatePath)> {
+        self.required_deny_subtrees
+            .iter()
+            .map(|(position, path)| (*position, path))
+    }
+
+    /// Returns user-authored exact write denials with original array positions.
+    #[must_use]
+    pub fn required_deny_write_exact(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (usize, &TemplatePath)> {
+        self.required_deny_write_exact
+            .iter()
+            .map(|(position, path)| (*position, path))
+    }
+
+    /// Returns the complete additive profile without discarding user provenance.
+    #[must_use]
+    pub fn profile(&self) -> &ResolvedProfile {
+        &self.profile
+    }
+}
 
 /// A path template from a profile document. Either absolute (`/...`) or
 /// home-relative (`~/...`). Lexically validated here; `~` substitution and
@@ -110,6 +360,35 @@ pub struct GrantTemplate {
     pub scope: PathScope,
     /// Whether a missing path is skipped instead of making profile resolution fail.
     pub if_exists: bool,
+}
+
+impl GrantTemplate {
+    /// Returns whether two templates request the same capability, ignoring
+    /// whether a missing embedded path may be skipped.
+    #[must_use]
+    pub fn same_capability(&self, other: &Self) -> bool {
+        self.path == other.path && self.access == other.access && self.scope == other.scope
+    }
+}
+
+/// Executable-mapping grant declared by a profile before CLI-side path resolution.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExecutableTemplate {
+    /// Absolute or home-relative path template.
+    pub path: TemplatePath,
+    /// Exact-node or recursive matching semantics.
+    pub scope: PathScope,
+    /// Whether a missing path is skipped instead of making profile resolution fail.
+    pub if_exists: bool,
+}
+
+impl ExecutableTemplate {
+    /// Returns whether two templates request the same capability, ignoring
+    /// whether a missing embedded path may be skipped.
+    #[must_use]
+    pub fn same_capability(&self, other: &Self) -> bool {
+        self.path == other.path && self.scope == other.scope
+    }
 }
 
 /// Agent-owned hook configuration grammar understood by an integration resolver.
@@ -234,6 +513,25 @@ impl<'de> Deserialize<'de> for GrantTemplate {
     }
 }
 
+impl<'de> Deserialize<'de> for ExecutableTemplate {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Raw {
+            path: TemplatePath,
+            scope: PathScope,
+            #[serde(default)]
+            if_exists: Option<bool>,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+        Ok(Self {
+            path: raw.path,
+            scope: raw.scope,
+            if_exists: raw.if_exists.unwrap_or(true),
+        })
+    }
+}
+
 /// Binary-name detection rules declared by a profile.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -243,14 +541,14 @@ pub struct DetectSpec {
     pub binary_names: Vec<String>,
 }
 
-/// Strictly typed version-3 embedded profile document.
+/// Strictly typed version-4 embedded profile document.
 ///
 /// This is the deserialized document shape, before inheritance is resolved. Unknown fields are
 /// rejected to prevent misspelled security settings from being ignored.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ProfileDocumentV3 {
-    /// Profile schema version; must equal [`PROFILE_SCHEMA_V3`].
+pub struct ProfileDocumentV4 {
+    /// Profile schema version; must equal [`PROFILE_SCHEMA_V4`].
     pub schema_version: u32,
     /// Stable lowercase profile identifier and embedded source name.
     pub name: String,
@@ -267,6 +565,9 @@ pub struct ProfileDocumentV3 {
     /// Filesystem capabilities contributed by the profile.
     #[serde(default)]
     pub grants: Vec<GrantTemplate>,
+    /// Executable-mapping capabilities contributed by the profile.
+    #[serde(default)]
+    pub executable_grants: Vec<ExecutableTemplate>,
     /// Read-and-write protected subtrees contributed by the profile.
     #[serde(default)]
     pub protected_paths: Vec<TemplatePath>,
@@ -299,6 +600,7 @@ pub struct ResolvedProfile {
     name: String,
     detect: DetectSpec,
     grants: Vec<GrantTemplate>,
+    executable_grants: Vec<ExecutableTemplate>,
     protected_paths: Vec<TemplatePath>,
     protected_write_paths: Vec<TemplatePath>,
     hook_sources: Vec<HookSourceTemplate>,
@@ -321,6 +623,12 @@ impl ResolvedProfile {
     #[must_use]
     pub fn grants(&self) -> &[GrantTemplate] {
         &self.grants
+    }
+
+    /// Returns all inherited executable grants after exact-duplicate removal.
+    #[must_use]
+    pub fn executable_grants(&self) -> &[ExecutableTemplate] {
+        &self.executable_grants
     }
 
     /// Returns inherited read-and-write protected subtrees.
@@ -348,7 +656,7 @@ impl ResolvedProfile {
 /// rejects ambiguous detection claims before any target can be launched.
 #[derive(Debug)]
 pub struct ProfileRegistry {
-    documents: BTreeMap<String, ProfileDocumentV3>,
+    documents: BTreeMap<String, ProfileDocumentV4>,
     detection: BTreeMap<String, String>,
 }
 
@@ -363,7 +671,7 @@ impl ProfileRegistry {
             if source.len() > MAX_PROFILE_SOURCE_BYTES {
                 return Err(ProfileError::TooLarge((*source_name).to_owned()));
             }
-            let document: ProfileDocumentV3 = serde_json::from_str(source)
+            let document: ProfileDocumentV4 = serde_json::from_str(source)
                 .map_err(|error| ProfileError::Parse((*source_name).to_owned(), error))?;
             check_schema(source_name, &document)?;
             validate_name(&document.name)?;
@@ -446,7 +754,119 @@ impl ProfileRegistry {
         self.resolve(name)
     }
 
-    fn extend_chain(&self, name: &str) -> Result<Vec<&ProfileDocumentV3>, ProfileError> {
+    /// Resolves a narrow user-authored profile against one selectable embedded base.
+    ///
+    /// User policy is additive: inherited grants, protections, and hook sources remain present.
+    /// The resulting profile is still ambient-free and requires CLI-side path resolution.
+    pub fn resolve_user_profile(
+        &self,
+        document: UserProfileDocumentV1,
+    ) -> Result<ResolvedUserProfile, UserProfileError> {
+        if document.schema_version != USER_PROFILE_SCHEMA_V1 {
+            return Err(UserProfileError::UnsupportedSchema(document.schema_version));
+        }
+        document.check_bounds()?;
+        validate_name(&document.name).map_err(UserProfileError::Profile)?;
+        validate_name(&document.extends).map_err(UserProfileError::Profile)?;
+        if self.documents.contains_key(&document.name) {
+            return Err(UserProfileError::NameCollision(document.name));
+        }
+
+        let base_name = document.extends;
+        let base = self
+            .resolve_selectable(&base_name)
+            .map_err(|error| match error {
+                ProfileError::UnknownProfile(_) => UserProfileError::UnknownBase(base_name.clone()),
+                ProfileError::AbstractProfile(_) => {
+                    UserProfileError::AbstractBase(base_name.clone())
+                }
+                other => UserProfileError::Profile(other),
+            })?;
+
+        let required_grants = positioned_unique(
+            document
+                .grants
+                .into_iter()
+                .map(|grant| GrantTemplate {
+                    path: grant.path,
+                    access: grant.access.into(),
+                    scope: grant.scope.into(),
+                    if_exists: false,
+                })
+                .collect(),
+        );
+        let mut grants = base.grants;
+        for (_, grant) in &required_grants {
+            replace_or_push(&mut grants, grant.clone(), GrantTemplate::same_capability);
+        }
+
+        let required_executable_grants = positioned_unique(
+            document
+                .executable_grants
+                .into_iter()
+                .map(|grant| ExecutableTemplate {
+                    path: grant.path,
+                    scope: grant.scope.into(),
+                    if_exists: false,
+                })
+                .collect(),
+        );
+        let mut executable_grants = base.executable_grants;
+        for (_, grant) in &required_executable_grants {
+            replace_or_push(
+                &mut executable_grants,
+                grant.clone(),
+                ExecutableTemplate::same_capability,
+            );
+        }
+
+        let required_deny_subtrees = positioned_unique(document.deny_subtrees);
+        let required_deny_write_exact = positioned_unique(document.deny_write_exact);
+        let mut protected_paths = base.protected_paths;
+        for (_, path) in &required_deny_subtrees {
+            if !protected_paths.contains(path) {
+                protected_paths.push(path.clone());
+            }
+        }
+        let mut protected_write_paths = base.protected_write_paths;
+        for (_, path) in &required_deny_write_exact {
+            if !protected_write_paths.contains(path) {
+                protected_write_paths.push(path.clone());
+            }
+        }
+
+        let requires_home = required_grants
+            .iter()
+            .any(|(_, grant)| grant.path.as_str().starts_with("~/"))
+            || required_executable_grants
+                .iter()
+                .any(|(_, grant)| grant.path.as_str().starts_with("~/"))
+            || required_deny_subtrees
+                .iter()
+                .chain(&required_deny_write_exact)
+                .any(|(_, path)| path.as_str().starts_with("~/"));
+        let profile = MergedProfile {
+            detect: base.detect,
+            grants,
+            executable_grants,
+            protected_paths,
+            protected_write_paths,
+            hook_sources: base.hook_sources,
+        }
+        .finish(&document.name)
+        .map_err(UserProfileError::Profile)?;
+        Ok(ResolvedUserProfile {
+            base_name,
+            requires_home,
+            required_grants,
+            required_executable_grants,
+            required_deny_subtrees,
+            required_deny_write_exact,
+            profile,
+        })
+    }
+
+    fn extend_chain(&self, name: &str) -> Result<Vec<&ProfileDocumentV4>, ProfileError> {
         let mut chain = Vec::new();
         let mut visited = HashSet::new();
         let mut cursor = Some(name);
@@ -477,19 +897,21 @@ impl ProfileRegistry {
 struct MergedProfile {
     detect: DetectSpec,
     grants: Vec<GrantTemplate>,
+    executable_grants: Vec<ExecutableTemplate>,
     protected_paths: Vec<TemplatePath>,
     protected_write_paths: Vec<TemplatePath>,
     hook_sources: Vec<HookSourceTemplate>,
 }
 
 impl MergedProfile {
-    fn absorb(&mut self, document: &ProfileDocumentV3) {
+    fn absorb(&mut self, document: &ProfileDocumentV4) {
         for binary in &document.detect.binary_names {
             if !self.detect.binary_names.contains(binary) {
                 self.detect.binary_names.push(binary.clone());
             }
         }
         push_unique(&mut self.grants, &document.grants);
+        push_unique(&mut self.executable_grants, &document.executable_grants);
         push_unique(&mut self.protected_paths, &document.protected_paths);
         push_unique(
             &mut self.protected_write_paths,
@@ -503,6 +925,9 @@ impl MergedProfile {
         // while their resolved union is still large enough to stress later policy generation.
         if self.grants.len() > MAX_RESOLVED_GRANTS {
             return Err(ProfileError::TooManyGrants(name.to_owned()));
+        }
+        if self.executable_grants.len() > MAX_RESOLVED_EXECUTABLES {
+            return Err(ProfileError::TooManyExecutables(name.to_owned()));
         }
         for (field, paths) in [
             ("protected_paths", &self.protected_paths),
@@ -525,6 +950,7 @@ impl MergedProfile {
             name: name.to_owned(),
             detect: self.detect,
             grants: self.grants,
+            executable_grants: self.executable_grants,
             protected_paths: self.protected_paths,
             protected_write_paths: self.protected_write_paths,
             hook_sources: self.hook_sources,
@@ -540,8 +966,26 @@ fn push_unique<T: Clone + PartialEq>(target: &mut Vec<T>, values: &[T]) {
     }
 }
 
-fn check_schema(source_name: &str, document: &ProfileDocumentV3) -> Result<(), ProfileError> {
-    if document.schema_version != PROFILE_SCHEMA_V3 {
+fn replace_or_push<T>(target: &mut Vec<T>, value: T, same: impl Fn(&T, &T) -> bool) {
+    if let Some(existing) = target.iter_mut().find(|existing| same(existing, &value)) {
+        *existing = value;
+    } else {
+        target.push(value);
+    }
+}
+
+fn positioned_unique<T: PartialEq>(values: Vec<T>) -> Vec<(usize, T)> {
+    let mut positioned = Vec::new();
+    for (index, value) in values.into_iter().enumerate() {
+        if !positioned.iter().any(|(_, existing)| existing == &value) {
+            positioned.push((index + 1, value));
+        }
+    }
+    positioned
+}
+
+fn check_schema(source_name: &str, document: &ProfileDocumentV4) -> Result<(), ProfileError> {
+    if document.schema_version != PROFILE_SCHEMA_V4 {
         return Err(ProfileError::UnsupportedSchema {
             name: document.name.clone(),
             version: document.schema_version,
@@ -683,6 +1127,9 @@ pub enum ProfileError {
     /// Inheritance produced more filesystem grants than a launch may safely carry.
     #[error("resolved profile {0} has too many filesystem grants")]
     TooManyGrants(String),
+    /// Inheritance produced more executable grants than a launch may safely carry.
+    #[error("resolved profile {0} has too many executable grants")]
+    TooManyExecutables(String),
     /// Inheritance produced too many entries in a path-bearing field.
     #[error("resolved profile {profile} field {field} exceeds its bound")]
     TooManyPaths {
@@ -691,4 +1138,46 @@ pub enum ProfileError {
         /// Bounded field that overflowed.
         field: String,
     },
+}
+
+/// Failure to parse or deterministically resolve a user-authored profile.
+#[derive(Debug, Error)]
+pub enum UserProfileError {
+    /// The input exceeds [`MAX_USER_PROFILE_SOURCE_BYTES`].
+    #[error("user profile exceeds the source-size limit")]
+    TooLarge,
+    /// The input is malformed JSON or does not match the strict document shape.
+    #[error(
+        "user profile is malformed or does not match its schema at line {line}, column {column}"
+    )]
+    Parse {
+        /// One-based source line reported by the parser.
+        line: usize,
+        /// One-based source column reported by the parser.
+        column: usize,
+    },
+    /// The document declares a schema version this binary does not understand.
+    #[error("user profile declares unsupported schema version {0}")]
+    UnsupportedSchema(u32),
+    /// The document contains more required grants than the profile model permits.
+    #[error("user profile has too many filesystem grants")]
+    TooManyGrants,
+    /// The document contains more executable grants than the profile model permits.
+    #[error("user profile has too many executable grants")]
+    TooManyExecutables,
+    /// The document contains too many terminal path denials.
+    #[error("user profile has too many protected paths")]
+    TooManyPaths,
+    /// The user-visible name collides with an embedded profile name.
+    #[error("user profile name {0:?} collides with an embedded profile")]
+    NameCollision(String),
+    /// The requested embedded base does not exist.
+    #[error("user profile extends unknown embedded profile {0:?}")]
+    UnknownBase(String),
+    /// The requested embedded base is inheritance-only.
+    #[error("user profile extends inheritance-only profile {0:?}")]
+    AbstractBase(String),
+    /// Shared lexical or aggregate profile validation failed.
+    #[error("user profile is invalid: {0}")]
+    Profile(#[source] ProfileError),
 }

@@ -35,7 +35,8 @@ pub(crate) fn run(arguments: DoctorArgs) -> Result<i32, AppError> {
 
     let resolved = if arguments.kontext || arguments.numbat {
         let selected = profile::select(Some(&"claude".to_owned()), std::ffi::OsStr::new("claude"))?;
-        let paths = resolve_user_paths(selected.protected_templates())?;
+        let protected_templates = selected.inherited_protected_templates();
+        let paths = resolve_user_paths(&protected_templates)?;
         Some((selected, paths))
     } else {
         None

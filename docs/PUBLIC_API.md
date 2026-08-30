@@ -192,7 +192,7 @@ preserve these semantics rather than silently omit a requested capability.
 
 ## Intentionally private or absent
 
-- CLI profiles and runtime baselines
+- CLI profiles, explicit user profile-file loading, and runtime baselines
 - command launch, supervision, output capture, and terminal handling
 - helper and bootstrap protocols
 - environment mutation
@@ -200,3 +200,7 @@ preserve these semantics rather than silently omit a requested capability.
 - exact socket and endpoint exceptions
 - current-process support probing
 - C ABI and other language bindings
+
+The CLI's `--profile-file` document is not a serialization format for the Rust
+facade. It composes with CLI-owned built-in profiles and compatibility behavior;
+the library continues to accept only programmatic [`SandboxPolicy`] intent.

@@ -112,6 +112,18 @@ pub(crate) fn scoped_write_protections(
     paths: impl IntoIterator<Item = PathBuf>,
     scope: PathScope,
 ) -> Result<Vec<WriteProtection>, AppError> {
+    Ok(protection_path_spellings(paths)?
+        .into_iter()
+        .map(|path| WriteProtection { path, scope })
+        .collect())
+}
+
+/// Resolves terminal protection paths through both their lexical spelling and
+/// canonical target. A missing leaf remains protected through the canonical
+/// spelling of its nearest existing ancestor rather than being omitted.
+pub(crate) fn protection_path_spellings(
+    paths: impl IntoIterator<Item = PathBuf>,
+) -> Result<Vec<AbsolutePath>, AppError> {
     let mut protected = BTreeSet::new();
     for path in paths {
         if !path.is_absolute() || path == Path::new("/") {
@@ -120,16 +132,17 @@ pub(crate) fn scoped_write_protections(
         protected.insert(absolute_if_utf8(&path)?);
         protected.insert(absolute_if_utf8(&resolve_existing_ancestor(&path)?)?);
     }
-    Ok(protected
-        .into_iter()
-        .map(|path| WriteProtection { path, scope })
-        .collect())
+    Ok(protected.into_iter().collect())
 }
 
 fn resolve_existing_ancestor(path: &Path) -> Result<PathBuf, AppError> {
-    if fs::symlink_metadata(path).is_ok() {
-        return fs::canonicalize(path)
-            .map_err(|error| AppError::io("canonicalize write-protected path", error));
+    match fs::symlink_metadata(path) {
+        Ok(_) => {
+            return fs::canonicalize(path)
+                .map_err(|error| AppError::io("canonicalize write-protected path", error));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(AppError::io("inspect write-protected path", error)),
     }
 
     let mut cursor = path;
@@ -142,8 +155,12 @@ fn resolve_existing_ancestor(path: &Path) -> Result<PathBuf, AppError> {
         cursor = cursor
             .parent()
             .ok_or_else(|| AppError::MissingPath(path.to_path_buf()))?;
-        if fs::symlink_metadata(cursor).is_ok() {
-            break;
+        match fs::symlink_metadata(cursor) {
+            Ok(_) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(AppError::io("inspect write-protected path ancestor", error));
+            }
         }
     }
 
@@ -164,7 +181,7 @@ pub(crate) fn absolute_if_utf8(path: &Path) -> Result<AbsolutePath, AppError> {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::symlink;
+    use std::os::unix::{ffi::OsStringExt as _, fs::symlink};
 
     use super::*;
 
@@ -221,5 +238,14 @@ mod tests {
                 Err(AppError::InvalidWriteProtection(_))
             ));
         }
+    }
+
+    #[test]
+    fn non_missing_metadata_errors_are_not_treated_as_absent_paths() {
+        let path = PathBuf::from(OsString::from_vec(b"/tmp/invalid-\0-path".to_vec()));
+        assert!(matches!(
+            resolve_existing_ancestor(&path),
+            Err(AppError::Io { context, .. }) if context == "inspect write-protected path"
+        ));
     }
 }
