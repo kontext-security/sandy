@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.8](https://github.com/kontext-security/sandy/compare/v0.1.7...v0.1.8) (2026-08-30)
+
+
+### Bug Fixes
+
+* **release:** verify versions from Cargo metadata ([#37](https://github.com/kontext-security/sandy/issues/37)) ([ae31659](https://github.com/kontext-security/sandy/commit/ae316596b7c6f5584383d4efabaebf3079c059e6))
+
 ## [0.1.7](https://github.com/kontext-security/sandy/compare/v0.1.6...v0.1.7) (2026-08-30)
 
 
