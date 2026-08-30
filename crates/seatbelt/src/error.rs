@@ -11,6 +11,9 @@ pub enum SeatbeltError {
     /// A native C string or policy value contains an embedded NUL.
     #[error("Seatbelt policy contains a NUL byte")]
     Nul,
+    /// The validated policy contains a capability this backend cannot lower.
+    #[error("Seatbelt cannot enforce one requested typed capability")]
+    UnsupportedPolicy,
     /// The host rejected the generated profile before target execution.
     #[error("Seatbelt rejected the generated profile: {0}")]
     Apply(String),

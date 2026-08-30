@@ -5,7 +5,7 @@ use std::path::{Component, Path};
 use serde::{Deserialize, Deserializer, Serialize, de};
 use thiserror::Error;
 
-/// Absolute UTF-8 path with NUL and parent traversal rejected.
+/// Absolute UTF-8 path with unsafe policy characters and parent traversal rejected.
 ///
 /// This type proves lexical properties only. It deliberately does not access the filesystem and
 /// therefore does not prove existence, canonical form, file type, ownership, or freedom from
@@ -25,6 +25,9 @@ impl AbsolutePath {
         }
         if value.as_bytes().contains(&0) {
             return Err(PathValidationError::ContainsNul);
+        }
+        if value.chars().any(char::is_control) {
+            return Err(PathValidationError::ContainsControlCharacter);
         }
         if path
             .components()
@@ -90,6 +93,9 @@ pub enum PathValidationError {
     /// Native path use would be truncated at an embedded NUL.
     #[error("path contains a NUL byte")]
     ContainsNul,
+    /// The path cannot be represented safely in a native policy string.
+    #[error("path contains an unsupported control character")]
+    ContainsControlCharacter,
     /// Parent traversal would make component-based policy reasoning ambiguous.
     #[error("path contains parent traversal: {0}")]
     ParentTraversal(String),
@@ -114,6 +120,10 @@ mod tests {
         assert!(matches!(
             AbsolutePath::new("/tmp/../etc"),
             Err(PathValidationError::ParentTraversal(_))
+        ));
+        assert!(matches!(
+            AbsolutePath::new("/tmp/line\nbreak"),
+            Err(PathValidationError::ContainsControlCharacter)
         ));
     }
 

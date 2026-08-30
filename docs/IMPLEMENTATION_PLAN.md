@@ -34,10 +34,11 @@ Review gates:
 ## PR 2: add the current-process Rust API
 
 Add the supported `sandy-sandbox` package with a `sandy` library target. Its
-public surface consists of typed policy construction, `apply`, a small stable
-error classification, and no process-launch API. Resolve relative paths against one
-captured working directory, reject nonexistent or unsafe paths, validate the
-complete policy, compile it, and apply it to the current process.
+public surface consists of typed filesystem, executable, network, and optional
+subprocess policy construction, `apply`, a small stable error classification,
+and no process-launch API. Resolve relative paths against one captured working
+directory, reject nonexistent or unsafe paths, validate the complete policy,
+compile it, and apply it to the current process.
 
 The crate must not contain or invoke a helper executable. It must document that
 application is irreversible, should happen before creating threads or opening
@@ -46,7 +47,8 @@ termination before untrusted work.
 
 Review gates:
 
-- no implicit baseline in the library path;
+- no implicit filesystem, network, or foreground compatibility baseline in the
+  library path;
 - grants and terminal denies have positive and adjacent-negative tests;
 - descendants inherit restrictions in a sacrificial process test;
 - errors do not disclose caller paths or backend policy contents;

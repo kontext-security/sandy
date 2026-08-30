@@ -3,7 +3,8 @@
 use std::path::Path;
 
 use sandy_core::{
-    AbsolutePath, PathScope, PolicySpec, SandboxPolicy, WriteProtection, into_policy_parts,
+    AbsolutePath, ExecutableGrant, PathScope, PolicySpec, SandboxPolicy, WriteProtection,
+    into_policy_parts,
 };
 
 use crate::error::AppError;
@@ -33,6 +34,20 @@ pub(crate) fn resolve_policy(
         protected_paths.push(absolute_if_utf8(&path)?);
     }
 
+    let mut executables = Vec::with_capacity(parts.executables.len());
+    for unresolved in parts.executables {
+        let resolved = grant(
+            &unresolved.path,
+            sandy_core::AccessMode::Read,
+            unresolved.scope,
+            protected,
+        )?;
+        executables.push(ExecutableGrant {
+            path: resolved.path,
+            scope: resolved.scope,
+        });
+    }
+
     let mut write_protections = Vec::<WriteProtection>::new();
     for path in parts.write_denied_exact {
         write_protections.extend(scoped_write_protections([path], PathScope::Exact)?);
@@ -40,11 +55,14 @@ pub(crate) fn resolve_policy(
 
     let mut resolved = PolicySpec {
         files,
+        executables,
         protected_paths,
         write_protections,
         unix_sockets: Vec::new(),
         local_host_tcp: Vec::new(),
         file_metadata: parts.file_metadata,
+        allow_subprocesses: parts.allow_subprocesses,
+        runtime_compatibility: parts.runtime_compatibility,
         network: parts.network,
     };
     resolved.normalize();

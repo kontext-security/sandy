@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::AbsolutePath;
 
 /// Filesystem operations granted for a path.
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AccessMode {
@@ -24,6 +25,7 @@ pub enum AccessMode {
 }
 
 /// Whether a filesystem rule addresses one node or a complete hierarchy.
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PathScope {
@@ -40,6 +42,18 @@ pub struct FileGrant {
     pub path: AbsolutePath,
     /// Operations allowed at the path.
     pub access: AccessMode,
+    /// Exact-node or recursive matching semantics.
+    pub scope: PathScope,
+}
+
+/// Authority to map executable code from one exact path or subtree.
+///
+/// This remains independent from [`FileGrant`]: reading a file never silently
+/// makes it executable.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub struct ExecutableGrant {
+    /// Absolute path accepted by the enforcement backend.
+    pub path: AbsolutePath,
     /// Exact-node or recursive matching semantics.
     pub scope: PathScope,
 }
@@ -126,6 +140,7 @@ pub struct LocalHostTcpGrant {
 }
 
 /// Network policy for the complete sandboxed process tree.
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NetworkPolicy {
@@ -149,6 +164,21 @@ pub enum FileMetadataPolicy {
     Allow,
 }
 
+/// Product-owned foreground compatibility behavior outside subprocess policy.
+///
+/// This is an implementation handoff. The supported Rust facade always uses
+/// [`RuntimeCompatibility::Minimal`].
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeCompatibility {
+    /// Add no foreground command compatibility rules.
+    #[default]
+    Minimal,
+    /// Permit the CLI's foreground terminal behavior.
+    ForegroundCli,
+}
+
 /// Complete typed policy accepted by launch validation.
 ///
 /// Protected paths are explicit terminal denies. They remain separate from grants because the
@@ -158,6 +188,9 @@ pub enum FileMetadataPolicy {
 pub struct PolicySpec {
     /// Positive filesystem capabilities.
     pub files: Vec<FileGrant>,
+    /// Executable mappings, independent from ordinary file reads.
+    #[serde(default)]
+    pub executables: Vec<ExecutableGrant>,
     /// Subtrees from which both reads and writes are denied.
     pub protected_paths: Vec<AbsolutePath>,
     /// Readable paths that cannot be mutated, replaced, or removed.
@@ -173,6 +206,12 @@ pub struct PolicySpec {
     /// Filesystem metadata behavior, separate from content grants.
     #[serde(default)]
     pub file_metadata: FileMetadataPolicy,
+    /// Whether the policy permits ordinary descendant process startup.
+    #[serde(default)]
+    pub allow_subprocesses: bool,
+    /// Explicit product runtime behavior outside modeled path and network policy.
+    #[serde(default)]
+    pub runtime_compatibility: RuntimeCompatibility,
     /// Network access for the sandboxed process tree.
     pub network: NetworkPolicy,
 }
@@ -181,11 +220,14 @@ impl Default for PolicySpec {
     fn default() -> Self {
         Self {
             files: Vec::new(),
+            executables: Vec::new(),
             protected_paths: Vec::new(),
             write_protections: Vec::new(),
             unix_sockets: Vec::new(),
             local_host_tcp: Vec::new(),
             file_metadata: FileMetadataPolicy::Deny,
+            allow_subprocesses: false,
+            runtime_compatibility: RuntimeCompatibility::Minimal,
             network: NetworkPolicy::BlockAll,
         }
     }
@@ -217,6 +259,9 @@ impl PolicySpec {
                 scope,
             })
             .collect();
+
+        self.executables.sort();
+        self.executables.dedup();
 
         self.protected_paths.sort();
         self.protected_paths.dedup();
@@ -385,6 +430,16 @@ mod tests {
                     scope: PathScope::Exact,
                 },
             ],
+            executables: vec![
+                ExecutableGrant {
+                    path: root.clone(),
+                    scope: PathScope::Subtree,
+                },
+                ExecutableGrant {
+                    path: root.clone(),
+                    scope: PathScope::Subtree,
+                },
+            ],
             protected_paths: vec![settings.clone(), settings.clone()],
             write_protections: vec![
                 WriteProtection {
@@ -410,13 +465,20 @@ mod tests {
                     scope: PathScope::Exact,
                 },
                 FileGrant {
-                    path: root,
+                    path: root.clone(),
                     access: AccessMode::ReadWrite,
                     scope: PathScope::Subtree,
                 },
             ]
         );
         assert_eq!(policy.protected_paths, std::slice::from_ref(&settings));
+        assert_eq!(
+            policy.executables,
+            [ExecutableGrant {
+                path: root.clone(),
+                scope: PathScope::Subtree,
+            }]
+        );
         assert_eq!(
             policy.write_protections,
             [WriteProtection {

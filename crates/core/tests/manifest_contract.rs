@@ -1,10 +1,11 @@
 use std::ffi::OsStr;
 
 use sandy_core::{
-    AbsolutePath, AccessMode, CommandSpec, FileGrant, FileMetadataPolicy, LaunchManifestV2,
-    LocalHostTcpGrant, LocalHostTcpOperation, MANIFEST_SCHEMA_V2, NetworkPolicy, OsValue,
-    PathScope, PolicySpec, TcpPort, UnixSocketGrant, UnixSocketOperation, ValidatedLaunch,
-    ValidationError, WireError, WriteProtection, decode_launch, encode_launch,
+    AbsolutePath, AccessMode, CommandSpec, ExecutableGrant, FileGrant, FileMetadataPolicy,
+    LaunchManifestV2, LocalHostTcpGrant, LocalHostTcpOperation, MANIFEST_SCHEMA_V2, NetworkPolicy,
+    OsValue, PathScope, PolicySpec, RuntimeCompatibility, TcpPort, UnixSocketGrant,
+    UnixSocketOperation, ValidatedLaunch, ValidationError, WireError, WriteProtection,
+    decode_launch, encode_launch,
 };
 
 fn manifest() -> Result<LaunchManifestV2, Box<dyn std::error::Error>> {
@@ -94,6 +95,36 @@ fn allows_only_exact_read_access_to_the_filesystem_root() -> Result<(), Box<dyn 
 }
 
 #[test]
+fn validates_executable_grants_and_rejects_duplicates_and_root()
+-> Result<(), Box<dyn std::error::Error>> {
+    let executable = ExecutableGrant {
+        path: AbsolutePath::new("/tmp/project/tool")?,
+        scope: PathScope::Exact,
+    };
+    let mut valid = manifest()?;
+    valid.policy.executables.push(executable.clone());
+    assert!(ValidatedLaunch::try_from(valid).is_ok());
+
+    let mut duplicate = manifest()?;
+    duplicate.policy.executables = vec![executable.clone(), executable];
+    assert!(matches!(
+        ValidatedLaunch::try_from(duplicate),
+        Err(ValidationError::DuplicateExecutableGrant(_))
+    ));
+
+    let mut root = manifest()?;
+    root.policy.executables.push(ExecutableGrant {
+        path: AbsolutePath::new("/")?,
+        scope: PathScope::Subtree,
+    });
+    assert!(matches!(
+        ValidatedLaunch::try_from(root),
+        Err(ValidationError::RootExecutableGrant)
+    ));
+    Ok(())
+}
+
+#[test]
 fn rejects_a_protected_resource_below_an_unpinned_writable_ancestor()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut value = manifest()?;
@@ -159,9 +190,15 @@ fn manifest_v2_without_endpoint_grants_remains_fail_closed()
     let launch = decode_launch(encoded)?;
     assert!(launch.manifest().policy.unix_sockets.is_empty());
     assert!(launch.manifest().policy.local_host_tcp.is_empty());
+    assert!(launch.manifest().policy.executables.is_empty());
+    assert!(!launch.manifest().policy.allow_subprocesses);
     assert_eq!(
         launch.manifest().policy.file_metadata,
         FileMetadataPolicy::Deny
+    );
+    assert_eq!(
+        launch.manifest().policy.runtime_compatibility,
+        RuntimeCompatibility::Minimal
     );
     Ok(())
 }

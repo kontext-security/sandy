@@ -326,6 +326,8 @@ fn scopes_overlap(
             first_path.as_path().starts_with(second_path.as_path())
                 || second_path.as_path().starts_with(first_path.as_path())
         }
+        // A future scope cannot be assumed disjoint until this resolver models it.
+        _ => true,
     }
 }
 

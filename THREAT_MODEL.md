@@ -25,6 +25,16 @@ fresh bootstrap removes its manifest, applies Seatbelt, and only then executes
 the target. Any failure terminates without running the target. Descendants
 inherit the resulting restrictions.
 
+The Rust facade instead applies policy directly to its calling process. The
+embedding application is responsible for invoking `apply` before it creates
+threads or begins untrusted work. There is no helper executable in this path.
+Successful restrictions are inherited by future descendants.
+
+The facade's optional subprocess capability permits process creation,
+same-sandbox inspection and signals, and the platform runtime services needed
+to start ordinary descendants. On macOS this includes broad Mach lookup, which
+may reach same-user local services even when IP networking is blocked.
+
 Typed capabilities are the only input to policy compilation. Raw Seatbelt
 source is not accepted. Unsafe Rust is confined to the private native wrapper
 in `sandy-seatbelt`. The compiler adds no implicit filesystem or network
@@ -45,6 +55,12 @@ validation, including the metadata lookup needed to resolve system path aliases.
 - restriction inheritance by child processes.
 
 ## Out of scope and residual risks
+
+For the Rust facade, resources acquired before `apply` are already inside the
+calling process and cannot be revoked by filesystem pathname policy. This
+includes environment values, memory, file descriptors, sockets, and other
+native handles. Existing threads are outside the portable contract, so callers
+must apply before creating them.
 
 - kernel, Seatbelt, or hardware vulnerabilities;
 - VM-grade memory or kernel isolation;

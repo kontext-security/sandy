@@ -11,6 +11,7 @@ use thiserror::Error;
 use crate::{AccessMode, FileMetadataPolicy, NetworkPolicy, PathScope};
 
 const MAX_REQUESTED_GRANTS: usize = 1_024;
+const MAX_REQUESTED_EXECUTABLES: usize = 1_024;
 const MAX_REQUESTED_DENIES: usize = 1_024;
 
 /// Complete filesystem and network intent supplied to a Sandy enforcement boundary.
@@ -22,9 +23,12 @@ const MAX_REQUESTED_DENIES: usize = 1_024;
 pub struct SandboxPolicy {
     network: NetworkPolicy,
     grants: Vec<UnresolvedGrant>,
+    executables: Vec<UnresolvedExecutable>,
     denied_subtrees: Vec<PathBuf>,
     write_denied_exact: Vec<PathBuf>,
     file_metadata: FileMetadataPolicy,
+    allow_subprocesses: bool,
+    runtime_compatibility: crate::RuntimeCompatibility,
 }
 
 impl SandboxPolicy {
@@ -33,9 +37,12 @@ impl SandboxPolicy {
         Self {
             network,
             grants: Vec::new(),
+            executables: Vec::new(),
             denied_subtrees: Vec::new(),
             write_denied_exact: Vec::new(),
             file_metadata: FileMetadataPolicy::Deny,
+            allow_subprocesses: false,
+            runtime_compatibility: crate::RuntimeCompatibility::Minimal,
         }
     }
 
@@ -52,7 +59,31 @@ impl SandboxPolicy {
         self
     }
 
-    /// Denies reads and writes to a path and all descendants.
+    /// Allows native executable mapping from one exact path or subtree.
+    ///
+    /// With [`SandboxPolicy::allow_subprocesses`], this also permits launching
+    /// a matching executable. It does not grant ordinary file reads or writes;
+    /// add a separate [`SandboxPolicy::grant`] for data access.
+    pub fn allow_execute(mut self, path: impl Into<PathBuf>, scope: PathScope) -> Self {
+        self.executables.push(UnresolvedExecutable {
+            path: path.into(),
+            scope,
+        });
+        self
+    }
+
+    /// Allows ordinary descendant process creation and platform runtime services.
+    ///
+    /// Executable path mapping and launch authority remain scoped by
+    /// [`SandboxPolicy::allow_execute`]. On macOS, subprocess compatibility
+    /// includes broad Mach lookup and same-user local services; callers should
+    /// enable it only when they need descendants.
+    pub fn allow_subprocesses(mut self) -> Self {
+        self.allow_subprocesses = true;
+        self
+    }
+
+    /// Denies reads, writes, executable mapping, and launch to a subtree.
     ///
     /// This terminal restriction overrides overlapping grants independently of
     /// builder call order.
@@ -64,7 +95,9 @@ impl SandboxPolicy {
     /// Denies writes to exactly one path without granting read access.
     ///
     /// A separate grant is required when the restricted process must read the
-    /// entry.
+    /// entry. During preparation, Sandy also pins writable ancestors between
+    /// this entry and an enclosing recursive write grant so the entry cannot be
+    /// relocated through an ancestor rename. Adjacent entries remain writable.
     pub fn deny_write_exact(mut self, path: impl Into<PathBuf>) -> Self {
         self.write_denied_exact.push(path.into());
         self
@@ -85,6 +118,15 @@ pub struct UnresolvedGrant {
     pub scope: PathScope,
 }
 
+/// One unresolved executable-mapping intent.
+#[doc(hidden)]
+pub struct UnresolvedExecutable {
+    /// Caller-supplied path, potentially relative.
+    pub path: PathBuf,
+    /// Exact or recursive matching semantics.
+    pub scope: PathScope,
+}
+
 /// Decomposed policy intent consumed by trusted ambient-resolution owners.
 ///
 /// This is an implementation-crate handoff and is not re-exported by the
@@ -95,12 +137,18 @@ pub struct SandboxPolicyParts {
     pub network: NetworkPolicy,
     /// Positive filesystem intents.
     pub grants: Vec<UnresolvedGrant>,
+    /// Positive executable-mapping intents.
+    pub executables: Vec<UnresolvedExecutable>,
     /// Recursive read/write denies.
     pub denied_subtrees: Vec<PathBuf>,
     /// Exact write denies.
     pub write_denied_exact: Vec<PathBuf>,
     /// Explicit metadata behavior selected by an internal product boundary.
     pub file_metadata: FileMetadataPolicy,
+    /// Whether ordinary descendant process startup is enabled.
+    pub allow_subprocesses: bool,
+    /// Explicit compatibility behavior selected by an internal product boundary.
+    pub runtime_compatibility: crate::RuntimeCompatibility,
 }
 
 /// Enables the CLI's typed macOS metadata compatibility capability.
@@ -109,6 +157,16 @@ pub struct SandboxPolicyParts {
 #[doc(hidden)]
 pub fn allow_file_metadata(mut policy: SandboxPolicy) -> SandboxPolicy {
     policy.file_metadata = FileMetadataPolicy::Allow;
+    policy
+}
+
+/// Enables the CLI's foreground compatibility behavior.
+///
+/// This function is intentionally not re-exported by the supported facade.
+#[doc(hidden)]
+pub fn allow_foreground_cli_compatibility(mut policy: SandboxPolicy) -> SandboxPolicy {
+    policy.allow_subprocesses = true;
+    policy.runtime_compatibility = crate::RuntimeCompatibility::ForegroundCli;
     policy
 }
 
@@ -121,6 +179,9 @@ pub fn into_policy_parts(policy: SandboxPolicy) -> Result<SandboxPolicyParts, Po
     if policy.grants.len() > MAX_REQUESTED_GRANTS {
         return Err(PolicyIntentError::TooManyGrants);
     }
+    if policy.executables.len() > MAX_REQUESTED_EXECUTABLES {
+        return Err(PolicyIntentError::TooManyExecutables);
+    }
     if policy.denied_subtrees.len() > MAX_REQUESTED_DENIES
         || policy.write_denied_exact.len() > MAX_REQUESTED_DENIES
     {
@@ -129,9 +190,12 @@ pub fn into_policy_parts(policy: SandboxPolicy) -> Result<SandboxPolicyParts, Po
     Ok(SandboxPolicyParts {
         network: policy.network,
         grants: policy.grants,
+        executables: policy.executables,
         denied_subtrees: policy.denied_subtrees,
         write_denied_exact: policy.write_denied_exact,
         file_metadata: policy.file_metadata,
+        allow_subprocesses: policy.allow_subprocesses,
+        runtime_compatibility: policy.runtime_compatibility,
     })
 }
 
@@ -142,6 +206,9 @@ pub enum PolicyIntentError {
     /// The caller supplied more positive filesystem intents than Sandy accepts.
     #[error("policy contains too many filesystem grants")]
     TooManyGrants,
+    /// The caller supplied more executable mappings than Sandy accepts.
+    #[error("policy contains too many executable mappings")]
+    TooManyExecutables,
     /// The caller supplied more terminal filesystem denies than Sandy accepts.
     #[error("policy contains too many filesystem denies")]
     TooManyDenies,
@@ -156,13 +223,17 @@ mod tests {
     {
         let parts = into_policy_parts(
             SandboxPolicy::new(NetworkPolicy::BlockAll)
+                .allow_subprocesses()
                 .grant("relative", AccessMode::Read, PathScope::Exact)
+                .allow_execute("tool", PathScope::Exact)
                 .deny_subtree("private")
                 .deny_write_exact("settings.json"),
         )?;
 
         assert_eq!(parts.network, NetworkPolicy::BlockAll);
+        assert!(parts.allow_subprocesses);
         assert_eq!(parts.grants[0].path, PathBuf::from("relative"));
+        assert_eq!(parts.executables[0].path, PathBuf::from("tool"));
         assert_eq!(parts.denied_subtrees, [PathBuf::from("private")]);
         assert_eq!(parts.write_denied_exact, [PathBuf::from("settings.json")]);
         Ok(())
@@ -177,6 +248,15 @@ mod tests {
         assert!(matches!(
             into_policy_parts(policy),
             Err(PolicyIntentError::TooManyGrants)
+        ));
+
+        let mut policy = SandboxPolicy::new(NetworkPolicy::BlockAll);
+        for index in 0..=MAX_REQUESTED_EXECUTABLES {
+            policy = policy.allow_execute(format!("tool-{index}"), PathScope::Exact);
+        }
+        assert!(matches!(
+            into_policy_parts(policy),
+            Err(PolicyIntentError::TooManyExecutables)
         ));
     }
 }

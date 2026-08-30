@@ -30,9 +30,9 @@ mod validation;
 mod wire;
 
 pub use capability::{
-    AccessMode, FileGrant, FileMetadataPolicy, LocalHostTcpGrant, LocalHostTcpOperation,
-    NetworkPolicy, PathScope, PolicySpec, TcpPort, UnixSocketGrant, UnixSocketOperation,
-    WriteProtection,
+    AccessMode, ExecutableGrant, FileGrant, FileMetadataPolicy, LocalHostTcpGrant,
+    LocalHostTcpOperation, NetworkPolicy, PathScope, PolicySpec, RuntimeCompatibility, TcpPort,
+    UnixSocketGrant, UnixSocketOperation, WriteProtection,
 };
 pub use manifest::{
     CommandSpec, EnvironmentEntry, LaunchManifestV2, MANIFEST_SCHEMA_V2, OsValue, OsValueError,
@@ -44,8 +44,8 @@ pub use profile::{
     ResolvedProfile, TemplatePath,
 };
 pub use sandbox_policy::{
-    PolicyIntentError, SandboxPolicy, SandboxPolicyParts, UnresolvedGrant, allow_file_metadata,
-    into_policy_parts,
+    PolicyIntentError, SandboxPolicy, SandboxPolicyParts, UnresolvedExecutable, UnresolvedGrant,
+    allow_file_metadata, allow_foreground_cli_compatibility, into_policy_parts,
 };
 pub use validation::{ValidatedLaunch, ValidatedPolicy, ValidationError};
 pub use wire::{MAX_WIRE_BYTES, WireError, decode_launch, encode_launch};

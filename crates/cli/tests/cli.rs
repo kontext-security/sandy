@@ -123,7 +123,7 @@ fn dry_run_json_has_a_versioned_runtime_control_schema() -> Result<(), Box<dyn s
     assert!(output.status.success());
 
     let document: serde_json::Value = serde_json::from_slice(&output.stdout)?;
-    assert_eq!(document["dry_run_schema_version"], 3);
+    assert_eq!(document["dry_run_schema_version"], 4);
     assert!(document.get("schema_version").is_none());
 
     let keys = document
@@ -135,15 +135,18 @@ fn dry_run_json_has_a_versioned_runtime_control_schema() -> Result<(), Box<dyn s
     assert_eq!(
         keys,
         std::collections::BTreeSet::from([
+            "allow_subprocesses",
             "arguments",
             "command",
             "dry_run_schema_version",
+            "executable_grants",
             "file_grants",
             "file_metadata",
             "local_host_tcp_grants",
             "network",
             "profile",
             "runtime_controls",
+            "runtime_compatibility",
             "seatbelt_profile",
             "unix_socket_grants",
             "working_directory",
@@ -184,6 +187,13 @@ fn dry_run_json_has_a_versioned_runtime_control_schema() -> Result<(), Box<dyn s
         grant["path"] == "/dev/null" && grant["access"] == "read_write" && grant["scope"] == "exact"
     }));
     assert_eq!(document["file_metadata"], "allow");
+    assert_eq!(document["allow_subprocesses"], true);
+    assert_eq!(document["runtime_compatibility"], "foreground_cli");
+    assert!(
+        document["executable_grants"]
+            .as_array()
+            .is_some_and(|grants| !grants.is_empty())
+    );
     assert!(
         document["seatbelt_profile"]
             .as_str()

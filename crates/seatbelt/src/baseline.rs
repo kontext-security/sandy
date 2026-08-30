@@ -1,18 +1,17 @@
-//! Fixed macOS compatibility rules shared by every Sandy policy.
-//!
-//! These rules are part of the Seatbelt backend rather than user- or agent-selectable
-//! capabilities. They contain no caller-provided values; dynamic policy values continue to pass
-//! through the compiler's single escaping path.
+//! Fixed macOS backend rules and explicitly selected compatibility rules.
 
-/// Static SBPL operations required for ordinary foreground command execution.
-///
-/// The profile starts deny-first and permits process control only within the inherited sandbox.
-/// Broad Mach lookup is a documented compatibility tradeoff; the explicit security-service
-/// denials prevent common Keychain APIs from becoming credential deputies.
-pub(crate) const STATIC_RULES: &str = "\
+/// Deny-first profile header shared by every Sandy policy.
+pub(crate) const DENY_FIRST_RULES: &str = "\
 (version 1)\n\
-(deny default)\n\
-(allow process-exec*)\n\
+(deny default)\n";
+
+/// Runtime operations explicitly selected for ordinary subprocess support.
+///
+/// These rules permit creation and control only within the inherited sandbox;
+/// executable mapping remains a separate typed path capability. Broad Mach
+/// lookup is a documented compatibility tradeoff; the security-service denies
+/// prevent common Keychain APIs from becoming credential deputies.
+pub(crate) const SUBPROCESS_RULES: &str = "\
 (allow process-fork)\n\
 (allow process-info* (target self))\n\
 (allow process-info* (target same-sandbox))\n\
@@ -37,11 +36,9 @@ pub(crate) const STATIC_RULES: &str = "\
 (allow system-fsctl)\n\
 (allow system-info)\n";
 
-/// Terminal operations required to preserve native foreground terminal behavior.
+/// Compatibility operations explicitly selected by the foreground CLI.
 ///
-/// The device pattern remains narrow, and its adjacent-negative live test proves unrelated device
-/// ioctls stay denied. Issue #4 tracks replacing the pattern with an exact typed device.
-pub(crate) const FOREGROUND_TERMINAL_RULES: &str = "\
+pub(crate) const FOREGROUND_CLI_RULES: &str = "\
 (allow pseudo-tty)\n\
 (allow file-ioctl\n\
     (literal \"/dev/tty\")\n\

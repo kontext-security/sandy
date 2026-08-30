@@ -15,15 +15,16 @@ use crate::{
 const MAX_ARGUMENTS: usize = 4_096;
 const MAX_ENVIRONMENT_ENTRIES: usize = 4_096;
 const MAX_FILE_GRANTS: usize = 1_024;
+const MAX_EXECUTABLE_GRANTS: usize = 1_024;
 const MAX_UNIX_SOCKET_GRANTS: usize = 128;
 const MAX_LOCAL_HOST_TCP_GRANTS: usize = 128;
 const MAX_PROTECTED_PATHS: usize = 1_024;
 
-/// Policy that has passed the complete launch-validation transition.
+/// Policy that has passed the complete policy-validation transition.
 ///
 /// The tuple field is private so enforcement backends cannot construct this proof from an
-/// arbitrary [`PolicySpec`]. Validation happens at launch level because command, environment, and
-/// policy bounds jointly protect the bootstrap protocol.
+/// arbitrary [`PolicySpec`]. A launch validates this policy alongside its command and environment;
+/// an embedding boundary may validate it directly before current-process enforcement.
 #[derive(Clone, Debug)]
 pub struct ValidatedPolicy(PolicySpec);
 
@@ -136,8 +137,16 @@ fn validate_environment(environment: &[EnvironmentEntry]) -> Result<(), Validati
 }
 
 fn validate_policy(policy: &PolicySpec) -> Result<(), ValidationError> {
+    if policy.runtime_compatibility == crate::RuntimeCompatibility::ForegroundCli
+        && !policy.allow_subprocesses
+    {
+        return Err(ValidationError::ForegroundRequiresSubprocesses);
+    }
     if policy.files.len() > MAX_FILE_GRANTS {
         return Err(ValidationError::TooManyFileGrants);
+    }
+    if policy.executables.len() > MAX_EXECUTABLE_GRANTS {
+        return Err(ValidationError::TooManyExecutableGrants);
     }
     if policy.unix_sockets.len() > MAX_UNIX_SOCKET_GRANTS {
         return Err(ValidationError::TooManyUnixSocketGrants);
@@ -159,6 +168,9 @@ fn validate_policy(policy: &PolicySpec) -> Result<(), ValidationError> {
     }) {
         return Err(ValidationError::RootGrant);
     }
+    if policy.executables.iter().any(|grant| grant.path.is_root()) {
+        return Err(ValidationError::RootExecutableGrant);
+    }
     if policy.unix_sockets.iter().any(|grant| grant.path.is_root()) {
         return Err(ValidationError::RootUnixSocketGrant);
     }
@@ -178,6 +190,15 @@ fn validate_policy(policy: &PolicySpec) -> Result<(), ValidationError> {
         let identity = (grant.path.clone(), grant.access, grant.scope);
         if !seen.insert(identity) {
             return Err(ValidationError::DuplicateGrant(grant.path.clone()));
+        }
+    }
+    let mut seen_executables = BTreeSet::new();
+    for grant in &policy.executables {
+        let identity = (grant.path.clone(), grant.scope);
+        if !seen_executables.insert(identity) {
+            return Err(ValidationError::DuplicateExecutableGrant(
+                grant.path.clone(),
+            ));
         }
     }
     let mut seen_sockets = BTreeSet::new();
@@ -226,6 +247,9 @@ fn reject_duplicate_paths(paths: &[AbsolutePath]) -> Result<(), ValidationError>
 /// Failure to establish the launch invariants required by the bootstrap or compiler.
 #[derive(Debug, Error)]
 pub enum ValidationError {
+    /// Foreground CLI behavior is defined only for a subprocess-capable policy.
+    #[error("foreground compatibility requires subprocess support")]
+    ForegroundRequiresSubprocesses,
     /// The bootstrap does not understand the supplied manifest version.
     #[error("unsupported launch manifest schema version {0}")]
     UnsupportedSchema(u32),
@@ -253,6 +277,9 @@ pub enum ValidationError {
     /// The policy exceeds the bounded filesystem-grant count.
     #[error("launch contains too many file grants")]
     TooManyFileGrants,
+    /// The policy exceeds the bounded executable-mapping count.
+    #[error("launch contains too many executable grants")]
+    TooManyExecutableGrants,
     /// The policy exceeds the bounded exact Unix-socket grant count.
     #[error("launch contains too many Unix-socket grants")]
     TooManyUnixSocketGrants,
@@ -268,6 +295,9 @@ pub enum ValidationError {
     /// Sandy refuses a recursive or writable root capability.
     #[error("the filesystem root may only be granted exact read access")]
     RootGrant,
+    /// Sandy refuses executable mapping across the filesystem root.
+    #[error("the filesystem root cannot be granted executable mapping")]
+    RootExecutableGrant,
     /// Sandy refuses the filesystem root as an exact Unix-socket pathname.
     #[error("the filesystem root cannot be granted as a Unix socket")]
     RootUnixSocketGrant,
@@ -277,6 +307,9 @@ pub enum ValidationError {
     /// The policy contains an exact duplicate filesystem capability.
     #[error("duplicate filesystem grant for {0:?}")]
     DuplicateGrant(AbsolutePath),
+    /// The policy contains an exact duplicate executable-mapping capability.
+    #[error("duplicate executable grant for {0:?}")]
+    DuplicateExecutableGrant(AbsolutePath),
     /// The policy contains an exact duplicate Unix-socket capability.
     #[error("duplicate Unix-socket grant for {0:?}")]
     DuplicateUnixSocketGrant(AbsolutePath),

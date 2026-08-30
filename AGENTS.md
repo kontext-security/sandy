@@ -6,7 +6,8 @@ This file governs the entire repository.
 
 Sandy is a macOS-native process sandbox for AI coding agents.
 
-- Cargo workspace: `sandy-core`, `sandy-seatbelt`, and `sandy-cli`
+- Cargo workspace: `sandy-core`, `sandy-seatbelt`, `sandy-sandbox`, and
+  `sandy-cli`
 - Installed executable: `sandy`
 - Default mode: standalone sandboxing
 - Optional integrations: preserve verified existing Kontext hooks or
@@ -25,6 +26,11 @@ dry-run output, and optional self-serve Kontext and host-installed Numbat hook
 compatibility. It also includes an explicit foreground integration setup
 command for Kontext and Numbat. Setup is not part of sandbox launch.
 
+The `sandy-sandbox` package provides the supported `sandy` Rust library. It is
+a caller-policy-only, current-process primitive with no executable dependency.
+Its public model is platform-neutral; `0.1.x` has a macOS backend and returns
+`Unsupported` elsewhere.
+
 Agent presets are versioned, strictly typed profile documents embedded in the
 CLI at compile time. Profiles resolve through deterministic inheritance in
 `sandy-core` and may express only existing typed capabilities. Adding an agent
@@ -41,23 +47,28 @@ changes.
 
 ## Architecture
 
-Use a virtual workspace with three packages representing validation,
-native-code, and product boundaries.
+Use a virtual workspace with four packages representing validation,
+native-code, embedding, and product boundaries.
 
 ```text
 crates/core/               package sandy-core; validated security contract
 crates/seatbelt/           package sandy-seatbelt; macOS compiler and FFI
+crates/sandy/              package sandy-sandbox; supported Rust facade
 crates/cli/                package sandy-cli; sandy binary and product UX
 ```
 
-Do not add more crates until a distinct owner, dependency direction, and second
-consumer or security boundary exists. Runtime-control resolvers and test support
-remain modules inside `sandy-cli` in `v0.1.x`.
+Do not add more crates until another distinct owner, dependency direction, and
+second consumer or security boundary exists. Runtime-control resolvers and test
+support remain modules inside `sandy-cli` in `v0.1.x`.
 
 Keep dependencies flowing in one direction:
 
 ```text
 CLI
+  -> sandy-core
+  -> sandy-seatbelt -> sandy-core
+
+sandy facade
   -> sandy-core
   -> sandy-seatbelt -> sandy-core
 
@@ -93,6 +104,16 @@ help.
 The parent remains outside the sandbox, supervises only the launched session,
 cleans up session resources, and returns the target's exact exit status.
 
+The Rust facade has a different execution boundary: `sandy::apply(policy)`
+irreversibly restricts the calling process. It has no bootstrap or process
+supervisor. Callers must apply before creating threads or starting untrusted
+work and must terminate after an enforcement failure.
+
+The Rust facade disables subprocess creation unless the caller selects the
+typed subprocess capability and separately grants executable mappings. On
+macOS, subprocess compatibility includes broad Mach lookup and may reach
+same-user local services even when IP networking is blocked.
+
 ## Security invariants
 
 These rules are release-blocking:
@@ -105,6 +126,8 @@ These rules are release-blocking:
 - The CLI and profiles accept typed capabilities, never raw Seatbelt rules.
 - The renderer adds no implicit filesystem or network capabilities. Product
   compatibility baselines must be explicit typed policy input.
+- File reads never imply executable mapping. Executable paths and subprocess
+  compatibility are separate typed capabilities.
 - One centralized renderer validates and escapes every value used in policy.
 - Paths are absolute, canonicalized, bounded, and compared as `Path`
   components rather than string prefixes.
@@ -139,7 +162,7 @@ add a blanket permission solely to make a smoke test pass.
 
 ## Unsafe Rust boundary
 
-`sandy-core` and `sandy-cli` use `#![forbid(unsafe_code)]`.
+`sandy-core`, `sandy-sandbox`, and `sandy-cli` use `#![forbid(unsafe_code)]`.
 `sandy-seatbelt` uses:
 
 ```rust

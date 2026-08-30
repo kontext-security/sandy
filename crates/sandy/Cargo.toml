@@ -1,0 +1,35 @@
+[package]
+name = "sandy-sandbox"
+description = "Typed current-process sandboxing for Rust applications"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+publish = false
+
+[features]
+live-tests = []
+
+[lib]
+name = "sandy"
+
+[lints]
+workspace = true
+
+[dependencies]
+sandy-core.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+sandy-seatbelt.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[[test]]
+name = "live_macos"
+path = "tests/live_macos.rs"
+harness = false
+required-features = ["live-tests"]

@@ -6,8 +6,9 @@
 use std::fmt::Write as _;
 
 use sandy_core::{
-    AccessMode, FileGrant, FileMetadataPolicy, LocalHostTcpGrant, LocalHostTcpOperation,
-    NetworkPolicy, PathScope, UnixSocketGrant, UnixSocketOperation, ValidatedPolicy,
+    AccessMode, ExecutableGrant, FileGrant, FileMetadataPolicy, LocalHostTcpGrant,
+    LocalHostTcpOperation, NetworkPolicy, PathScope, RuntimeCompatibility, UnixSocketGrant,
+    UnixSocketOperation, ValidatedPolicy,
 };
 
 use crate::{SeatbeltError, baseline, escape::quoted};
@@ -39,8 +40,15 @@ impl CompiledProfile {
 /// This function performs no filesystem access and has no unrestricted fallback. Rendering errors
 /// are returned before the bootstrap attempts to apply the sandbox or execute the target.
 pub fn compile(policy: &ValidatedPolicy) -> Result<CompiledProfile, SeatbeltError> {
-    let mut source = String::from(baseline::STATIC_RULES);
-    source.push_str(baseline::FOREGROUND_TERMINAL_RULES);
+    let mut source = String::from(baseline::DENY_FIRST_RULES);
+    if policy.spec().allow_subprocesses {
+        source.push_str(baseline::SUBPROCESS_RULES);
+    }
+
+    match policy.spec().runtime_compatibility {
+        RuntimeCompatibility::Minimal => {}
+        RuntimeCompatibility::ForegroundCli => source.push_str(baseline::FOREGROUND_CLI_RULES),
+    }
 
     if policy.spec().file_metadata == FileMetadataPolicy::Allow {
         source.push_str("(allow file-read-metadata)\n");
@@ -48,6 +56,9 @@ pub fn compile(policy: &ValidatedPolicy) -> Result<CompiledProfile, SeatbeltErro
 
     for grant in &policy.spec().files {
         render_grant(&mut source, grant)?;
+    }
+    for grant in &policy.spec().executables {
+        render_executable_grant(&mut source, grant, policy.spec().allow_subprocesses)?;
     }
 
     match policy.spec().network {
@@ -66,6 +77,7 @@ pub fn compile(policy: &ValidatedPolicy) -> Result<CompiledProfile, SeatbeltErro
                 }
             }
         }
+        _ => return Err(SeatbeltError::UnsupportedPolicy),
     }
 
     // Terminal denies are emitted after positive grants. Renderer and live tests pin their ability
@@ -74,7 +86,7 @@ pub fn compile(policy: &ValidatedPolicy) -> Result<CompiledProfile, SeatbeltErro
         write_rule(
             &mut source,
             "deny",
-            "file-read* file-write*",
+            "file-read* file-read-data file-read-metadata file-write* file-map-executable process-exec*",
             PathScope::Subtree,
             path.as_str(),
         )?;
@@ -110,19 +122,10 @@ fn render_local_host_tcp_grant(
 }
 
 fn render_grant(source: &mut String, grant: &FileGrant) -> Result<(), SeatbeltError> {
-    // Mapping an executable is a distinct Seatbelt operation from reading its bytes. Restrict it
-    // to the same exact/subtree boundary instead of granting executable mapping globally.
     write_rule(
         source,
         "allow",
-        "file-map-executable",
-        grant.scope,
-        grant.path.as_str(),
-    )?;
-    write_rule(
-        source,
-        "allow",
-        "file-read*",
+        "file-read-data file-read-metadata",
         grant.scope,
         grant.path.as_str(),
     )?;
@@ -136,6 +139,25 @@ fn render_grant(source: &mut String, grant: &FileGrant) -> Result<(), SeatbeltEr
         )?;
     }
     Ok(())
+}
+
+fn render_executable_grant(
+    source: &mut String,
+    grant: &ExecutableGrant,
+    allow_subprocesses: bool,
+) -> Result<(), SeatbeltError> {
+    let operations = if allow_subprocesses {
+        "file-map-executable process-exec*"
+    } else {
+        "file-map-executable"
+    };
+    write_rule(
+        source,
+        "allow",
+        operations,
+        grant.scope,
+        grant.path.as_str(),
+    )
 }
 
 fn render_unix_socket_grant(
@@ -166,6 +188,7 @@ fn write_rule(
     let filter = match scope {
         PathScope::Exact => "literal",
         PathScope::Subtree => "subpath",
+        _ => return Err(SeatbeltError::UnsupportedPolicy),
     };
     let path = quoted(path)?;
     let _ = writeln!(output, "({decision} {operations} ({filter} {path}))");
@@ -177,9 +200,10 @@ mod tests {
     use std::ffi::OsStr;
 
     use sandy_core::{
-        AbsolutePath, AccessMode, CommandSpec, FileGrant, LaunchManifestV2, LocalHostTcpGrant,
-        LocalHostTcpOperation, MANIFEST_SCHEMA_V2, NetworkPolicy, OsValue, PathScope, PolicySpec,
-        TcpPort, UnixSocketGrant, UnixSocketOperation, ValidatedLaunch, WriteProtection,
+        AbsolutePath, AccessMode, CommandSpec, ExecutableGrant, FileGrant, LaunchManifestV2,
+        LocalHostTcpGrant, LocalHostTcpOperation, MANIFEST_SCHEMA_V2, NetworkPolicy, OsValue,
+        PathScope, PolicySpec, RuntimeCompatibility, TcpPort, UnixSocketGrant, UnixSocketOperation,
+        ValidatedLaunch, WriteProtection,
     };
 
     use super::*;
@@ -206,6 +230,7 @@ mod tests {
                     access: AccessMode::ReadWrite,
                     scope: PathScope::Subtree,
                 }],
+                executables: Vec::new(),
                 protected_paths: vec![AbsolutePath::new("/tmp/project/.secret")?],
                 write_protections: vec![
                     WriteProtection {
@@ -220,9 +245,20 @@ mod tests {
                 unix_sockets,
                 local_host_tcp: Vec::new(),
                 file_metadata: FileMetadataPolicy::Deny,
+                allow_subprocesses: false,
+                runtime_compatibility: RuntimeCompatibility::Minimal,
                 network,
             },
         };
+        Ok(ValidatedLaunch::try_from(manifest)?)
+    }
+
+    fn foreground_policy(
+        network: NetworkPolicy,
+    ) -> Result<ValidatedLaunch, Box<dyn std::error::Error>> {
+        let mut manifest = policy(network)?.into_manifest();
+        manifest.policy.allow_subprocesses = true;
+        manifest.policy.runtime_compatibility = RuntimeCompatibility::ForegroundCli;
         Ok(ValidatedLaunch::try_from(manifest)?)
     }
 
@@ -250,8 +286,12 @@ mod tests {
         assert!(
             profile
                 .source()
-                .contains(r#"(deny file-read* file-write* (subpath "/tmp/project/.secret"))"#)
+                .contains(r#"(allow file-read-data file-read-metadata (subpath "/tmp/project"))"#)
         );
+        assert!(!profile.source().contains("(allow file-read*"));
+        assert!(profile.source().contains(
+                    r#"(deny file-read* file-read-data file-read-metadata file-write* file-map-executable process-exec* (subpath "/tmp/project/.secret"))"#
+        ));
         assert!(
             profile
                 .source()
@@ -263,6 +303,46 @@ mod tests {
                 .contains(r#"(deny file-write* (subpath "/tmp/project/operator-rules"))"#)
         );
         assert!(!profile.source().contains("(allow network*)"));
+        assert!(!profile.source().contains("(allow file-map-executable"));
+        Ok(())
+    }
+
+    #[test]
+    fn executable_mapping_requires_a_typed_grant() -> Result<(), Box<dyn std::error::Error>> {
+        let mut manifest = policy(NetworkPolicy::BlockAll)?.into_manifest();
+        manifest.policy.executables.push(ExecutableGrant {
+            path: AbsolutePath::new("/tmp/project/tool")?,
+            scope: PathScope::Exact,
+        });
+        let launch = ValidatedLaunch::try_from(manifest)?;
+        let source = compile(launch.policy())?;
+        assert!(
+            source
+                .source()
+                .contains(r#"(allow file-map-executable (literal "/tmp/project/tool"))"#)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_subtree_deny_overrides_a_broader_executable_grant()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut manifest = policy(NetworkPolicy::BlockAll)?.into_manifest();
+        manifest.policy.executables.push(ExecutableGrant {
+            path: AbsolutePath::new("/tmp/project")?,
+            scope: PathScope::Subtree,
+        });
+        let launch = ValidatedLaunch::try_from(manifest)?;
+        let source = compile(launch.policy())?;
+
+        assert!(
+            source
+                .source()
+                .contains(r#"(allow file-map-executable (subpath "/tmp/project"))"#)
+        );
+        assert!(source.source().contains(
+            r#"(deny file-read* file-read-data file-read-metadata file-write* file-map-executable process-exec* (subpath "/tmp/project/.secret"))"#
+        ));
         Ok(())
     }
 
@@ -280,10 +360,49 @@ mod tests {
     #[test]
     fn does_not_add_implicit_filesystem_runtime_grants() -> Result<(), Box<dyn std::error::Error>> {
         let source = compile(policy(NetworkPolicy::BlockAll)?.policy())?;
-        assert!(!source.source().contains("file-read-metadata"));
+        assert!(
+            !source
+                .source()
+                .lines()
+                .any(|line| line == "(allow file-read-metadata)")
+        );
         assert!(!source.source().contains(r#"(subpath "/System")"#));
         assert!(!source.source().contains(r#"(literal "/dev/null")"#));
         assert!(!source.source().contains(r#"(literal "/")"#));
+        assert!(!source.source().contains("(allow mach-lookup)"));
+        assert!(!source.source().contains("(allow pseudo-tty)"));
+        assert!(!source.source().contains("(allow process-fork)"));
+        Ok(())
+    }
+
+    #[test]
+    fn subprocess_rules_require_explicit_policy() -> Result<(), Box<dyn std::error::Error>> {
+        let mut manifest = policy(NetworkPolicy::BlockAll)?.into_manifest();
+        manifest.policy.allow_subprocesses = true;
+        let launch = ValidatedLaunch::try_from(manifest)?;
+        let source = compile(launch.policy())?;
+        assert!(source.source().contains(baseline::SUBPROCESS_RULES));
+        assert!(!source.source().contains("(allow process-exec*)"));
+        assert!(!source.source().contains("(allow pseudo-tty)"));
+        Ok(())
+    }
+
+    #[test]
+    fn subprocess_execution_is_scoped_to_executable_grants()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut manifest = policy(NetworkPolicy::BlockAll)?.into_manifest();
+        manifest.policy.allow_subprocesses = true;
+        manifest.policy.executables.push(ExecutableGrant {
+            path: AbsolutePath::new("/tmp/project/tool")?,
+            scope: PathScope::Exact,
+        });
+        let launch = ValidatedLaunch::try_from(manifest)?;
+        let source = compile(launch.policy())?;
+
+        assert!(source.source().contains(
+            r#"(allow file-map-executable process-exec* (literal "/tmp/project/tool"))"#
+        ));
+        assert!(!source.source().contains("(allow process-exec*)"));
         Ok(())
     }
 
@@ -304,7 +423,7 @@ mod tests {
     #[test]
     fn terminally_denies_current_and_legacy_keychain_services()
     -> Result<(), Box<dyn std::error::Error>> {
-        let profile = compile(policy(NetworkPolicy::AllowAll)?.policy())?;
+        let profile = compile(foreground_policy(NetworkPolicy::AllowAll)?.policy())?;
         for service in [
             "com.apple.SecurityServer",
             "com.apple.securityd",
@@ -413,12 +532,8 @@ mod tests {
     #[test]
     fn scopes_foreground_terminal_ioctls_to_tty_devices() -> Result<(), Box<dyn std::error::Error>>
     {
-        let source = compile(policy(NetworkPolicy::BlockAll)?.policy())?;
-        assert!(
-            source
-                .source()
-                .contains(baseline::FOREGROUND_TERMINAL_RULES)
-        );
+        let source = compile(foreground_policy(NetworkPolicy::BlockAll)?.policy())?;
+        assert!(source.source().contains(baseline::FOREGROUND_CLI_RULES));
         assert!(!source.source().contains("(allow file-ioctl)"));
         assert!(!source.source().contains("file-ioctl (subpath \"/dev\")"));
         Ok(())

@@ -6,13 +6,13 @@ use std::{
 };
 
 use sandy_core::{
-    AccessMode, CommandSpec, FileGrant, LaunchManifestV2, MANIFEST_SCHEMA_V2, NetworkPolicy,
-    OsValue, PathScope, SandboxPolicy, ValidatedLaunch, encode_launch,
+    AccessMode, CommandSpec, ExecutableGrant, FileGrant, LaunchManifestV2, MANIFEST_SCHEMA_V2,
+    NetworkPolicy, OsValue, PathScope, SandboxPolicy, ValidatedLaunch, encode_launch,
 };
 use serde_json::json;
 use tempfile::Builder;
 
-const DRY_RUN_SCHEMA_VERSION: u32 = 3;
+const DRY_RUN_SCHEMA_VERSION: u32 = 4;
 
 use crate::{
     cli::RunArgs,
@@ -158,6 +158,16 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
     }
     let mut policy = resolve_policy(intent, &paths.user.protected)?;
     runtime_controls.apply_to(&mut policy)?;
+    policy.executables.extend(
+        policy
+            .files
+            .iter()
+            .filter(|grant| !grant.path.is_root())
+            .map(|grant| ExecutableGrant {
+                path: grant.path.clone(),
+                scope: grant.scope,
+            }),
+    );
     policy.normalize();
 
     let manifest = LaunchManifestV2 {
@@ -197,8 +207,11 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
                 "detected": selected.detected(),
             },
             "network": validated.manifest().policy.network,
+            "allow_subprocesses": validated.manifest().policy.allow_subprocesses,
             "file_metadata": validated.manifest().policy.file_metadata,
+            "runtime_compatibility": validated.manifest().policy.runtime_compatibility,
             "file_grants": validated.manifest().policy.files,
+            "executable_grants": validated.manifest().policy.executables,
             "unix_socket_grants": validated.manifest().policy.unix_sockets,
             "local_host_tcp_grants": validated.manifest().policy.local_host_tcp,
             "runtime_controls": runtime_controls
