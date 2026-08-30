@@ -74,6 +74,18 @@ sandy::apply(policy)?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
+Applications may instead load the same typed policy from strict, versioned
+JSON:
+
+```rust,no_run
+use sandy::SandboxPolicy;
+
+let source = std::fs::read("sandbox.json")?;
+let policy = SandboxPolicy::from_json(&source)?;
+sandy::apply(policy)?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
 Reading a path does not make it executable. Chain `allow_execute(path, scope)`
 for programs, libraries, or generated code. Launching one also requires the
 policy to select `allow_subprocesses()`.

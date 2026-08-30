@@ -30,6 +30,13 @@ embedding application is responsible for invoking `apply` before it creates
 threads or begins untrusted work. There is no helper executable in this path.
 Successful restrictions are inherited by future descendants.
 
+Facade JSON is untrusted input for strict, bounded parsing and trusted security
+configuration after the embedding application selects it. Parsing performs no
+filesystem access and produces the same typed `SandboxPolicy` as the Rust
+builder. The format has no discovery, inheritance, includes, interpolation, or
+implicit authority. The embedding application owns loading and protecting the
+source bytes; Sandy retains neither their contents nor their source path.
+
 The facade's optional subprocess capability permits process creation,
 same-sandbox inspection and signals, and the platform runtime services needed
 to start ordinary descendants. On macOS this includes broad Mach lookup, which

@@ -1,7 +1,7 @@
 # Rust sandbox primitive implementation plan
 
 This plan introduces an embeddable current-process sandbox while preserving the
-existing `sandy` command. The work is intentionally split into three reviewable
+existing `sandy` command. The work is intentionally split into four reviewable
 pull requests.
 
 ## Product boundary
@@ -16,6 +16,9 @@ pull requests.
 - Both entry points lower the same `SandboxPolicy` intent through validation and
   the native backend. The renderer never adds hidden filesystem or network
   capabilities.
+- Facade callers may build `SandboxPolicy` in Rust or parse the same policy
+  vocabulary from strict, bounded, versioned JSON. Parsing is side-effect-free
+  and introduces no second policy model.
 - The CLI may load one explicit narrow user profile file. Deterministic schema
   validation and additive base composition of independent filesystem,
   executable, and terminal-deny capabilities live in `sandy-core`; bounded
@@ -77,6 +80,24 @@ Review gates:
 - release tags and workspace versions remain coordinated;
 - the existing CLI archive and package-manager update remain unchanged after
   crate publication succeeds.
+
+## PR 4: accept facade JSON policies
+
+Add `SandboxPolicy::from_json` as the single serialized construction path. Keep
+the document wire types private, reject unknown fields and unsupported schema
+versions, bound source bytes and capability counts, and return the same
+`SandboxPolicy` produced by the Rust builder. File and executable authority
+remain separate.
+
+Review gates:
+
+- parsing performs no filesystem access;
+- no discovery, inheritance, includes, interpolation, or implicit grants;
+- malformed diagnostics do not disclose policy values;
+- the supported facade re-exports only the parser error, not document wire
+  types; and
+- builder and JSON policies use the same ambient resolution, validation,
+  compilation, and enforcement path.
 
 ## Stable normalization rules
 

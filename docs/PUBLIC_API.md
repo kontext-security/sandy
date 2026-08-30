@@ -44,6 +44,61 @@ sandy::apply(policy)?;
 The caller owns process architecture and all policy. Sandy owns path resolution,
 validation, native compilation, and the irreversible enforcement transition.
 
+## JSON policy documents
+
+Applications that keep policy outside their Rust source can construct the same
+`SandboxPolicy` from JSON:
+
+```rust,no_run
+use sandy::SandboxPolicy;
+
+let source = std::fs::read("sandbox.json")?;
+let policy = SandboxPolicy::from_json(&source)?;
+sandy::apply(policy)?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+The complete version 1 shape is:
+
+```json
+{
+  "schema_version": 1,
+  "network": "block_all",
+  "allow_subprocesses": false,
+  "grants": [
+    {
+      "path": "workspace",
+      "access": "read_write",
+      "scope": "subtree"
+    }
+  ],
+  "executable_grants": [
+    {
+      "path": "workspace/tool",
+      "scope": "exact"
+    }
+  ],
+  "deny_subtrees": ["workspace/credentials"],
+  "deny_write_exact": ["workspace/settings.json"]
+}
+```
+
+`schema_version` and `network` are required. The remaining fields default to
+empty capability sets or `false`. Documents are limited to 64 KiB, unknown
+fields and unsupported versions are rejected, and parse errors do not contain
+policy values. Parsing performs no filesystem access. Relative paths retain
+their meaning until `apply` resolves them against one working-directory
+snapshot and requires them to exist.
+
+There is no interpolation, home-directory expansion, inheritance, include,
+profile selection, or implicit executable authority. A caller that needs
+runtime values may add them with the normal builder after parsing. Sandy does
+not retain the source bytes or know which file they came from, so the embedding
+application owns loading and protecting that source.
+
+JSON path values are Unicode strings. Callers that need non-Unicode operating
+system paths must use the Rust builder.
+
 ## Complete 0.1 surface
 
 ```rust,ignore
@@ -60,6 +115,10 @@ pub struct SandboxPolicy {
 }
 
 impl SandboxPolicy {
+    /// Parses a strict, bounded, versioned JSON policy document without
+    /// consulting the filesystem.
+    pub fn from_json(source: &[u8]) -> Result<Self, PolicyDocumentError>;
+
     /// Creates an empty filesystem policy with explicit network behavior.
     pub fn new(network: NetworkPolicy) -> Self;
 
@@ -94,6 +153,18 @@ impl SandboxPolicy {
     /// Preparation also pins writable ancestors against relocation; adjacent
     /// entries remain writable.
     pub fn deny_write_exact(self, path: impl Into<PathBuf>) -> Self;
+}
+
+#[non_exhaustive]
+pub enum PolicyDocumentError {
+    /// The source exceeds 64 KiB.
+    TooLarge,
+    /// The JSON syntax or document shape is invalid.
+    Parse { line: usize, column: usize },
+    /// The schema version is not supported by this release.
+    UnsupportedVersion(u32),
+    /// At least one capability section exceeds its entry limit.
+    TooManyCapabilities,
 }
 
 #[non_exhaustive]
@@ -201,6 +272,6 @@ preserve these semantics rather than silently omit a requested capability.
 - current-process support probing
 - C ABI and other language bindings
 
-The CLI's `--profile-file` document is not a serialization format for the Rust
-facade. It composes with CLI-owned built-in profiles and compatibility behavior;
-the library continues to accept only programmatic [`SandboxPolicy`] intent.
+The CLI's `--profile-file` document is separate from the facade JSON shape. It
+composes with CLI-owned profiles and compatibility behavior, while
+`SandboxPolicy::from_json` describes only caller-owned current-process policy.
