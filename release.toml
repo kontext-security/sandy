@@ -1,0 +1,5 @@
+# Release Please owns version changes, commits, and tags.
+allow-branch = ["main", "HEAD"]
+shared-version = true
+# The workflow verifies every package before exposing the registry token.
+verify = false

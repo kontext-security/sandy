@@ -1,3 +1,4 @@
 /target/
+/tests/package-consumer/target/
 .DS_Store
 *.profraw

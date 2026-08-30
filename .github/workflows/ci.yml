@@ -37,3 +37,18 @@ jobs:
         run: make formula-check
       - name: Test Seatbelt enforcement
         run: make test-live
+
+  linux-facade:
+    name: Linux facade compile
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.91.1 --profile minimal
+      - name: Check facade and run external consumer
+        run: |
+          cargo check -p sandy-sandbox --all-targets --all-features --locked
+          cargo run --manifest-path tests/package-consumer/Cargo.toml --locked

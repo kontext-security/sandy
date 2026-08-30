@@ -1,0 +1,10 @@
+[package]
+name = "sandy-package-consumer"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+sandy = { package = "sandy-sandbox", path = "../../crates/sandy", version = "=0.1.6" } # x-release-please-version

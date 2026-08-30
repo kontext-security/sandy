@@ -12,19 +12,12 @@
       "version-file": ".release-please-version",
       "extra-files": [
         {
-          "type": "toml",
-          "path": "Cargo.toml",
-          "jsonpath": "$.workspace.package.version"
+          "type": "generic",
+          "path": "Cargo.toml"
         },
         {
-          "type": "toml",
-          "path": "Cargo.toml",
-          "jsonpath": "$.workspace.dependencies['sandy-core'].version"
-        },
-        {
-          "type": "toml",
-          "path": "Cargo.toml",
-          "jsonpath": "$.workspace.dependencies['sandy-seatbelt'].version"
+          "type": "generic",
+          "path": "tests/package-consumer/Cargo.toml"
         },
         {
           "type": "toml",
@@ -40,6 +33,26 @@
           "type": "toml",
           "path": "Cargo.lock",
           "jsonpath": "$.package[?(@.name.value == 'sandy-seatbelt')].version"
+        },
+        {
+          "type": "toml",
+          "path": "Cargo.lock",
+          "jsonpath": "$.package[?(@.name.value == 'sandy-sandbox')].version"
+        },
+        {
+          "type": "toml",
+          "path": "tests/package-consumer/Cargo.lock",
+          "jsonpath": "$.package[?(@.name.value == 'sandy-core')].version"
+        },
+        {
+          "type": "toml",
+          "path": "tests/package-consumer/Cargo.lock",
+          "jsonpath": "$.package[?(@.name.value == 'sandy-seatbelt')].version"
+        },
+        {
+          "type": "toml",
+          "path": "tests/package-consumer/Cargo.lock",
+          "jsonpath": "$.package[?(@.name.value == 'sandy-sandbox')].version"
         }
       ]
     }
