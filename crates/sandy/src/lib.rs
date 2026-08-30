@@ -28,6 +28,26 @@
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! A strict JSON document can construct the same [`SandboxPolicy`]:
+//!
+//! ```no_run
+//! use sandy::SandboxPolicy;
+//!
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let source = br#"{
+//!     "schema_version": 1,
+//!     "network": "block_all",
+//!     "grants": [
+//!         {"path": "workspace", "access": "read_write", "scope": "subtree"}
+//!     ]
+//! }"#;
+//! let policy = SandboxPolicy::from_json(source)?;
+//!
+//! sandy::apply(policy)?;
+//! # Ok(())
+//! # }
+//! ```
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -37,7 +57,7 @@ mod error;
 mod resolve;
 
 pub use error::{ErrorKind, SandboxError};
-pub use sandy_core::{AccessMode, NetworkPolicy, PathScope, SandboxPolicy};
+pub use sandy_core::{AccessMode, NetworkPolicy, PathScope, PolicyDocumentError, SandboxPolicy};
 
 /// Irreversibly restricts the current process and future descendants.
 ///

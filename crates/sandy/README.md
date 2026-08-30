@@ -25,6 +25,20 @@ sandy::apply(policy)?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
+The same typed policy can be loaded from strict, versioned JSON:
+
+```rust,no_run
+use sandy::SandboxPolicy;
+
+let source = std::fs::read("sandbox.json")?;
+let policy = SandboxPolicy::from_json(&source)?;
+sandy::apply(policy)?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+JSON parsing performs no filesystem access. Paths are resolved and required to
+exist only when `apply` prepares the policy.
+
 Application is irreversible. Call `apply` before creating threads, opening
 sensitive resources, or starting untrusted work. The initial enforcement
 backend is macOS; unsupported platforms return `ErrorKind::Unsupported`.

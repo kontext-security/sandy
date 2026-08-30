@@ -182,11 +182,20 @@ mod macos {
         let root = required_path(ROOT)?;
         let executable = fs::canonicalize(required_path(EXECUTABLE)?)?;
         let readable = fs::canonicalize(root.join("adjacent-executable"))?;
-        let policy = SandboxPolicy::new(NetworkPolicy::BlockAll)
-            .allow_subprocesses()
-            .grant(&readable, AccessMode::Read, PathScope::Exact);
+        env::set_current_dir(&root)?;
+        let policy = SandboxPolicy::from_json(
+            br#"{
+                "schema_version": 1,
+                "network": "block_all",
+                "allow_subprocesses": true,
+                "grants": [
+                    {"path": "adjacent-executable", "access": "read", "scope": "exact"}
+                ]
+            }"#,
+        )?;
         sandy::apply(add_macos_runtime(policy, &executable, false))?;
 
+        fs::read(&readable)?;
         assert_command_denied(
             Command::new(&readable).env(MODE, "success").status(),
             "readable executable without mapping",
@@ -213,10 +222,20 @@ mod macos {
         let executable = fs::canonicalize(required_path(EXECUTABLE)?)?;
         let allowed = fs::canonicalize(root.join("allowed-executable"))?;
         let adjacent = fs::canonicalize(root.join("adjacent-executable"))?;
-        let policy = SandboxPolicy::new(NetworkPolicy::BlockAll)
-            .allow_subprocesses()
-            .grant(&root, AccessMode::Read, PathScope::Subtree)
-            .allow_execute(&allowed, PathScope::Exact);
+        env::set_current_dir(&root)?;
+        let policy = SandboxPolicy::from_json(
+            br#"{
+                "schema_version": 1,
+                "network": "block_all",
+                "allow_subprocesses": true,
+                "grants": [
+                    {"path": ".", "access": "read", "scope": "subtree"}
+                ],
+                "executable_grants": [
+                    {"path": "allowed-executable", "scope": "exact"}
+                ]
+            }"#,
+        )?;
         sandy::apply(add_macos_runtime(policy, &executable, false))?;
 
         let allowed_status = Command::new(&allowed).env(MODE, "success").status()?;

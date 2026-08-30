@@ -14,6 +14,9 @@ fn policy_for(workspace: &Path) -> SandboxPolicy {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let workspace = std::env::current_dir()?;
     let policy = policy_for(&workspace);
+    let _document_policy = SandboxPolicy::from_json(
+        br#"{"schema_version":1,"network":"block_all"}"#,
+    )?;
 
     #[cfg(not(target_os = "macos"))]
     {

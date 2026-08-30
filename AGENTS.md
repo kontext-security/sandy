@@ -88,8 +88,10 @@ optional integrations
 `sandy-core` performs deterministic validation but no ambient filesystem
 discovery. `sandy-seatbelt` receives only validated policy and does not see
 argv, environment, agent preset names, Clap, or service configuration. The CLI
-does not render policy. `SandboxPolicy` is the shared, side-effect-free intent
-builder; the owning product boundary resolves its paths before validation.
+does not render policy. `SandboxPolicy` is the shared, side-effect-free intent;
+callers may construct it with the Rust builder or its strict, bounded,
+versioned JSON parser. Both paths converge before the owning product boundary
+resolves paths and validates the policy.
 
 The enforcement backend adds no implicit filesystem or network capabilities.
 The CLI owns an explicit typed macOS runtime baseline and composes it through
@@ -135,6 +137,8 @@ These rules are release-blocking:
 - Sandy never falls back to unrestricted execution.
 - Restrictions are inherited by every target descendant.
 - The CLI and profiles accept typed capabilities, never raw Seatbelt rules.
+- Facade JSON accepts only the public typed policy vocabulary. It has no
+  discovery, inheritance, includes, interpolation, profiles, or raw rules.
 - User-authored profiles are additive and cannot remove an embedded base's
   grants, protections, or hook behavior. Missing required user paths fail the
   launch rather than being skipped.
