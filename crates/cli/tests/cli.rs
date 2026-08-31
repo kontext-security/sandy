@@ -1161,12 +1161,14 @@ fn user_profile_rejects_unknown_abstract_and_colliding_embedded_names()
 fn user_profiles_are_never_discovered_implicitly() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let home = directory.path().join("home");
+    let project = directory.path().join("project");
     fs::create_dir(&home)?;
-    fs::write(directory.path().join("sandy-profile.json"), "not JSON")?;
+    fs::create_dir(&project)?;
+    fs::write(project.join("sandy-profile.json"), "not JSON")?;
 
     let mut command = Command::cargo_bin("sandy")?;
     command
-        .current_dir(directory.path())
+        .current_dir(project)
         .env("HOME", home)
         .args(["run", "--dry-run", "--", "/bin/echo"])
         .assert()
