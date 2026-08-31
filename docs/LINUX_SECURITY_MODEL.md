@@ -182,10 +182,11 @@ remain native. Linux does not support the CLI's local-host-only TCP exception
 or exact external Unix-socket grants in the initial CLI.
 
 Write-protected entries must exist so the backend can pin and overmount them.
-Built-in agent profiles are rejected by the initial Linux CLI. A user profile
-based on `generic` remains supported when its policy is representable; absent
-required files or a confidential deny nested inside a writable tree fail before
-the bootstrap executes the target.
+The CLI resolves embedded profiles through the shared typed policy model, but
+does not perform macOS runtime-control discovery on Linux. Built-in and user
+profiles are accepted only when the complete resolved policy is representable;
+absent required files or a confidential deny nested inside a writable tree fail
+before the bootstrap executes the target.
 
 The release workflow verifies the packaged x86-64 and arm64 binaries with
 `doctor` and a real sandboxed launch on Ubuntu 24.04. The x86-64 artifact is

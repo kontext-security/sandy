@@ -219,23 +219,28 @@ fn dry_run_json_has_a_versioned_runtime_control_schema() -> Result<(), Box<dyn s
     let controls = document["runtime_controls"]
         .as_array()
         .ok_or("runtime_controls must be an array")?;
-    assert_eq!(controls.len(), 2);
-    for control in controls {
-        let control_keys = control
-            .as_object()
-            .ok_or("runtime control must be a JSON object")?
-            .keys()
-            .map(String::as_str)
-            .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(
-            control_keys,
-            std::collections::BTreeSet::from(["enabled", "service", "version"])
-        );
-        assert_eq!(control["enabled"], false);
-        assert!(control["version"].is_null());
+    #[cfg(target_os = "macos")]
+    {
+        assert_eq!(controls.len(), 2);
+        for control in controls {
+            let control_keys = control
+                .as_object()
+                .ok_or("runtime control must be a JSON object")?
+                .keys()
+                .map(String::as_str)
+                .collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(
+                control_keys,
+                std::collections::BTreeSet::from(["enabled", "service", "version"])
+            );
+            assert_eq!(control["enabled"], false);
+            assert!(control["version"].is_null());
+        }
+        assert_eq!(controls[0]["service"], "Kontext");
+        assert_eq!(controls[1]["service"], "Numbat");
     }
-    assert_eq!(controls[0]["service"], "Kontext");
-    assert_eq!(controls[1]["service"], "Numbat");
+    #[cfg(target_os = "linux")]
+    assert!(controls.is_empty());
 
     let grants = document["file_grants"]
         .as_array()
@@ -302,7 +307,7 @@ fn dry_run_json_has_a_versioned_runtime_control_schema() -> Result<(), Box<dyn s
     #[cfg(target_os = "linux")]
     {
         assert_eq!(document["native_policy"]["backend"], "linux");
-        assert_eq!(document["native_policy"]["landlock_abi"], 5);
+        assert_eq!(document["native_policy"]["landlock_abi"], 6);
         assert!(document["native_policy"].get("details").is_none());
     }
     Ok(())
@@ -315,10 +320,16 @@ fn cli_file_and_executable_grants_are_independent() -> Result<(), Box<dyn std::e
     let readable = directory.path().join("readable");
     let writable = directory.path().join("writable");
     let executable = directory.path().join("executable");
+    let readable_file = directory.path().join("readable.txt");
+    let writable_file = directory.path().join("writable.txt");
+    let executable_file = directory.path().join("executable-file");
     fs::create_dir(&home)?;
     fs::create_dir(&readable)?;
     fs::create_dir(&writable)?;
     fs::create_dir(&executable)?;
+    fs::write(&readable_file, "readable")?;
+    fs::write(&writable_file, "writable")?;
+    fs::write(&executable_file, "executable")?;
 
     let mut command = Command::cargo_bin("sandy")?;
     let output = command
@@ -332,6 +343,12 @@ fn cli_file_and_executable_grants_are_independent() -> Result<(), Box<dyn std::e
             writable.to_str().ok_or("test path must be UTF-8")?,
             "--execute",
             executable.to_str().ok_or("test path must be UTF-8")?,
+            "--read",
+            readable_file.to_str().ok_or("test path must be UTF-8")?,
+            "--read-write",
+            writable_file.to_str().ok_or("test path must be UTF-8")?,
+            "--execute",
+            executable_file.to_str().ok_or("test path must be UTF-8")?,
             "--",
             "/bin/echo",
         ])
@@ -365,6 +382,26 @@ fn cli_file_and_executable_grants_are_independent() -> Result<(), Box<dyn std::e
             .any(|grant| { grant["path"] == executable && grant["scope"] == "subtree" })
     );
     assert!(!files.iter().any(|grant| grant["path"] == executable));
+    for (path, access) in [
+        (fs::canonicalize(readable_file)?, "read"),
+        (fs::canonicalize(writable_file)?, "read_write"),
+    ] {
+        let path = path.to_str().ok_or("canonical test path must be UTF-8")?;
+        assert!(files.iter().any(|grant| {
+            grant["path"] == path && grant["access"] == access && grant["scope"] == "exact"
+        }));
+        assert!(!executables.iter().any(|grant| grant["path"] == path));
+    }
+    let executable_file = fs::canonicalize(executable_file)?;
+    let executable_file = executable_file
+        .to_str()
+        .ok_or("canonical test path must be UTF-8")?;
+    assert!(
+        executables
+            .iter()
+            .any(|grant| { grant["path"] == executable_file && grant["scope"] == "exact" })
+    );
+    assert!(!files.iter().any(|grant| grant["path"] == executable_file));
     Ok(())
 }
 

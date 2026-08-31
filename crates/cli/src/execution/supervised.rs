@@ -1,5 +1,5 @@
 use std::{
-    fs::OpenOptions,
+    fs::{self, OpenOptions},
     io::Write as _,
     os::unix::{fs::OpenOptionsExt as _, process::ExitStatusExt as _},
     process::{Command, Stdio},
@@ -17,13 +17,16 @@ const DRY_RUN_SCHEMA_VERSION: u32 = 6;
 use crate::{
     cli::RunArgs,
     error::AppError,
-    integration::{IntegrationMode, RuntimeControls, kontext, numbat},
+    integration::RuntimeControls,
     profile,
     resolve::{
         default_ca_bundle, grant, resolve_command, resolve_paths, resolve_policy, runtime,
         sanitized_environment,
     },
 };
+
+#[cfg(target_os = "macos")]
+use crate::integration::{IntegrationMode, kontext, numbat};
 
 pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
     if !cfg!(any(target_os = "linux", target_os = "macos")) {
@@ -46,13 +49,6 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
         Some(path) => profile::load_user(path)?,
         None => profile::select(arguments.profile.as_ref(), &command.requested_name)?,
     };
-    #[cfg(target_os = "linux")]
-    if !selected.supports_linux_cli() {
-        return Err(AppError::Launch(
-            "this agent profile is not yet representable by the Linux backend; use --profile generic or a user profile based on generic"
-                .to_owned(),
-        ));
-    }
     if selected.detected() {
         eprintln!(
             "sandy: applying detected agent profile '{}' (override with --profile)",
@@ -122,37 +118,46 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
     intent = selected.contribute_grants(intent, &paths.user)?;
     intent = selected.contribute_executable_grants(intent, &paths.user)?;
     for path in &arguments.read {
-        intent = intent.grant_file(path, AccessMode::Read, PathScope::Subtree);
+        intent = intent.grant_file(path, AccessMode::Read, grant_scope(path)?);
     }
     for path in &arguments.read_write {
-        intent = intent.grant_file(path, AccessMode::ReadWrite, PathScope::Subtree);
+        intent = intent.grant_file(path, AccessMode::ReadWrite, grant_scope(path)?);
     }
     for path in &arguments.execute {
-        intent = intent.allow_execute(path, PathScope::Subtree);
+        intent = intent.allow_execute(path, grant_scope(path)?);
     }
 
-    let kontext_mode = if arguments.kontext {
-        IntegrationMode::Required
-    } else {
-        IntegrationMode::Detect
+    #[cfg(target_os = "macos")]
+    let (mut intent, hook_source_protections, runtime_controls) = {
+        let kontext_mode = if arguments.kontext {
+            IntegrationMode::Required
+        } else {
+            IntegrationMode::Detect
+        };
+        let numbat_mode = if arguments.numbat {
+            IntegrationMode::Required
+        } else {
+            IntegrationMode::Detect
+        };
+        let hook_sources = selected.hook_sources(&paths.user)?;
+        let (next_intent, hook_source_protections) =
+            selected.contribute_hook_source_policy(intent, &hook_sources, &paths.user)?;
+        let mut controls = vec![
+            kontext::resolve(&hook_sources, kontext_mode, &paths.user)?,
+            numbat::resolve(&hook_sources, numbat_mode, &paths.user)?,
+        ];
+        if let Some(port) = arguments.numbat_collector {
+            controls.push(numbat::collector(port)?);
+        }
+        (
+            next_intent,
+            hook_source_protections,
+            RuntimeControls::new(controls),
+        )
     };
-    let numbat_mode = if arguments.numbat {
-        IntegrationMode::Required
-    } else {
-        IntegrationMode::Detect
-    };
-    let hook_sources = selected.hook_sources(&paths.user)?;
-    let (next_intent, hook_source_protections) =
-        selected.contribute_hook_source_policy(intent, &hook_sources, &paths.user)?;
-    intent = next_intent;
-    let mut controls = vec![
-        kontext::resolve(&hook_sources, kontext_mode, &paths.user)?,
-        numbat::resolve(&hook_sources, numbat_mode, &paths.user)?,
-    ];
-    if let Some(port) = arguments.numbat_collector {
-        controls.push(numbat::collector(port)?);
-    }
-    let runtime_controls = RuntimeControls::new(controls);
+    #[cfg(not(target_os = "macos"))]
+    let (mut intent, hook_source_protections, runtime_controls) =
+        (intent, Vec::new(), RuntimeControls::default());
     for control in runtime_controls.iter() {
         if let Some(reason) = control.unavailable_reason() {
             eprintln!(
@@ -214,10 +219,6 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
     let native_policy = {
         let plan = sandy_linux::plan(validated.policy())?;
         let landlock_abi = plan.required_landlock_abi();
-        if !arguments.dry_run {
-            let prepared = sandy_linux::prepare(plan, &validated.manifest().working_directory)?;
-            drop(prepared);
-        }
         json!({
             "backend": "linux",
             "landlock_abi": landlock_abi,
@@ -294,4 +295,14 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
         return Ok(code);
     }
     Ok(status.signal().map_or(1, |signal| 128 + signal))
+}
+
+fn grant_scope(path: &std::path::Path) -> Result<PathScope, AppError> {
+    let metadata =
+        fs::metadata(path).map_err(|error| AppError::io("inspect command-line grant", error))?;
+    Ok(if metadata.is_dir() {
+        PathScope::Subtree
+    } else {
+        PathScope::Exact
+    })
 }

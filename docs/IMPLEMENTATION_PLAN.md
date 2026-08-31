@@ -38,10 +38,11 @@ apply()               irreversible native transition
 
 The backend uses a private user and mount namespace, an optional network
 namespace for `BlockAll`, a descriptor-built private root, complete capability
-removal, and final seccomp filters. The fixed filesystem baseline requires
-Landlock ABI 5; exact pathname-socket authority requires ABI 9. Namespace
-support is exercised in a sacrificial child before enforcement. Unsupported
-host facilities and policy shapes fail without a weaker fallback.
+removal, and final seccomp filters. The fixed security baseline requires
+Landlock ABI 6 and always scopes signals to the sandbox domain. Exact external
+Unix-socket grants remain unsupported. Namespace support is exercised in a
+sacrificial child before enforcement. Unsupported host facilities and policy
+shapes fail without a weaker fallback.
 
 ### PR 2 — Current-process Linux facade
 

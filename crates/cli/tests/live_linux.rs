@@ -3,17 +3,16 @@ mod linux {
 
     use std::{
         fs,
+        io::Read as _,
         net::{TcpListener, TcpStream, UdpSocket},
         os::{
             linux::net::SocketAddrExt as _,
-            unix::{
-                fs::PermissionsExt as _,
-                net::{SocketAddr, UnixListener, UnixStream},
-            },
+            unix::net::{SocketAddr, UnixListener, UnixStream},
         },
         path::Path,
-        process::Command,
-        time::Duration,
+        process::{Child, Command, ExitStatus, Output, Stdio},
+        thread,
+        time::{Duration, Instant},
     };
 
     const BLOCK_NET_CHILD: &str = "SANDY_CLI_BLOCK_NET_CHILD";
@@ -30,13 +29,15 @@ mod linux {
         blocked_network_reaches_the_bootstrap_policy()?;
         node_runtime_uses_only_the_explicit_baseline()?;
         generic_user_profile_runs_without_exposing_its_source()?;
-        unsupported_agent_profile_prevents_target_execution()?;
+        built_in_agent_profiles_enforce_state_boundaries()?;
         inherited_terminal_remains_native()?;
         Ok(())
     }
 
     fn doctor_succeeds_on_supported_host() -> Result<(), Box<dyn std::error::Error>> {
-        let output = Command::new(SANDY).arg("doctor").output()?;
+        let mut command = Command::new(SANDY);
+        command.arg("doctor");
+        let output = output_with_timeout(&mut command)?;
         if !output.status.success()
             || !String::from_utf8_lossy(&output.stdout).contains("Linux enforcement: available")
         {
@@ -57,15 +58,16 @@ mod linux {
         let abstract_address = SocketAddr::from_abstract_name(abstract_name.as_bytes())?;
         let _abstract_listener = UnixListener::bind_addr(&abstract_address)?;
 
-        let status = Command::new(SANDY)
+        let mut command = Command::new(SANDY);
+        command
             .env("HOME", &home)
             .env(BLOCK_NET_CHILD, "1")
             .env(BLOCK_NET_SOCKET, &socket)
             .env(BLOCK_NET_ABSTRACT, &abstract_name)
             .current_dir(&project)
             .args(["run", "--profile", "generic", "--block-net", "--"])
-            .arg(std::env::current_exe()?)
-            .status()?;
+            .arg(std::env::current_exe()?);
+        let status = status_with_timeout(&mut command)?;
         if !status.success() {
             return Err("CLI block-net policy did not reach the target".into());
         }
@@ -103,7 +105,8 @@ mod linux {
             .find(|path| Path::new(path).exists())
             .ok_or("host has no known adjacent /run entry for the negative test")?;
 
-        let status = Command::new(SANDY)
+        let mut command = Command::new(SANDY);
+        command
             .env("HOME", &home)
             .env("SANDY_LIVE_SENTINEL", "preserved")
             .current_dir(&project)
@@ -132,8 +135,8 @@ mod linux {
                 "sandy-live",
             ])
             .arg(&outside)
-            .arg(hidden_run_entry)
-            .status()?;
+            .arg(hidden_run_entry);
+        let status = status_with_timeout(&mut command)?;
         if !status.success() {
             return Err(format!("Linux CLI project smoke exited with {status}").into());
         }
@@ -146,39 +149,78 @@ mod linux {
         Ok(())
     }
 
-    fn unsupported_agent_profile_prevents_target_execution()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let root = tempfile::tempdir()?;
-        let home = root.path().join("home");
-        let project = root.path().join("project");
-        fs::create_dir_all(home.join(".codex"))?;
-        fs::create_dir(&project)?;
-        let marker = project.join("target-ran");
-        let agent = project.join("codex");
-        fs::write(
-            &agent,
-            format!("#!/bin/sh\nprintf ran > '{}'\n", marker.display()),
-        )?;
-        let mut permissions = fs::metadata(&agent)?.permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&agent, permissions)?;
+    fn built_in_agent_profiles_enforce_state_boundaries() -> Result<(), Box<dyn std::error::Error>>
+    {
+        for profile in ["claude", "codex", "opencode"] {
+            let root = tempfile::tempdir()?;
+            let home = root.path().join("home");
+            let project = root.path().join("project");
+            fs::create_dir(&home)?;
+            fs::create_dir(&project)?;
 
-        let status = Command::new(SANDY)
-            .env("HOME", &home)
-            .current_dir(&project)
-            .args(["run", "--"])
-            .arg(&agent)
-            .status()?;
-        if status.success() || marker.exists() {
-            return Err("unsupported Linux agent profile executed the target".into());
+            let (protected, mutable) = match profile {
+                "claude" => {
+                    fs::create_dir(home.join(".claude"))?;
+                    fs::write(home.join(".claude/settings.json"), "protected")?;
+                    fs::write(home.join(".claude.json"), "protected")?;
+                    (
+                        home.join(".claude/settings.json"),
+                        home.join(".claude/state.txt"),
+                    )
+                }
+                "codex" => {
+                    fs::create_dir(home.join(".codex"))?;
+                    fs::write(home.join(".codex/hooks.json"), "protected")?;
+                    fs::write(home.join(".codex/config.toml"), "protected")?;
+                    (
+                        home.join(".codex/config.toml"),
+                        home.join(".codex/state.txt"),
+                    )
+                }
+                "opencode" => {
+                    fs::create_dir_all(home.join(".config/opencode"))?;
+                    fs::create_dir_all(home.join(".local/share/opencode"))?;
+                    fs::write(home.join(".config/opencode/opencode.json"), "protected")?;
+                    fs::write(home.join(".config/opencode/opencode.jsonc"), "protected")?;
+                    (
+                        home.join(".config/opencode/opencode.json"),
+                        home.join(".local/share/opencode/state.txt"),
+                    )
+                }
+                _ => return Err("unexpected built-in profile fixture".into()),
+            };
+
+            let mut command = Command::new(SANDY);
+            command
+                .env("HOME", &home)
+                .current_dir(&project)
+                .args([
+                    "run",
+                    "--profile",
+                    profile,
+                    "--",
+                    "/bin/sh",
+                    "-c",
+                    "if printf changed > \"$1\"; then exit 91; fi; printf state > \"$2\"",
+                    "sandy-live",
+                ])
+                .arg(&protected)
+                .arg(&mutable);
+            let status = status_with_timeout(&mut command)?;
+            if !status.success()
+                || fs::read_to_string(&protected)? != "protected"
+                || fs::read_to_string(&mutable)? != "state"
+            {
+                return Err(format!("Linux {profile} profile boundary failed").into());
+            }
         }
         Ok(())
     }
 
     fn node_runtime_uses_only_the_explicit_baseline() -> Result<(), Box<dyn std::error::Error>> {
-        let lookup = Command::new("/bin/sh")
-            .args(["-c", "command -v node || true"])
-            .output()?;
+        let mut lookup = Command::new("/bin/sh");
+        lookup.args(["-c", "command -v node || true"]);
+        let lookup = output_with_timeout(&mut lookup)?;
         let node = String::from_utf8(lookup.stdout)?;
         let node = node.trim();
         if node.is_empty() {
@@ -207,11 +249,17 @@ if (fs.existsSync('/usr/bin/getent')) {
 }
 childProcess.execFileSync('/bin/sh', ['-c', 'printf node > node-runtime.txt']);
 "#;
-        let status = Command::new(SANDY)
-            .env("HOME", &home)
-            .current_dir(&project)
-            .args(["run", "--profile", "generic", "--", node, "-e", script])
-            .status()?;
+        let mut command = Command::new(SANDY);
+        command.env("HOME", &home).current_dir(&project).args([
+            "run",
+            "--profile",
+            "generic",
+            "--",
+            node,
+            "-e",
+            script,
+        ]);
+        let status = status_with_timeout(&mut command)?;
         if !status.success() || fs::read_to_string(project.join("node-runtime.txt"))? != "node" {
             return Err("Node did not run inside the explicit Linux CLI baseline".into());
         }
@@ -231,7 +279,8 @@ childProcess.execFileSync('/bin/sh', ['-c', 'printf node > node-runtime.txt']);
             r#"{"schema_version":1,"name":"linux-session","extends":"generic"}"#,
         )?;
 
-        let status = Command::new(SANDY)
+        let mut command = Command::new(SANDY);
+        command
             .env("HOME", &home)
             .current_dir(&project)
             .args(["run", "--profile-file"])
@@ -243,8 +292,8 @@ childProcess.execFileSync('/bin/sh', ['-c', 'printf node > node-runtime.txt']);
                 "if test -e \"$1\"; then exit 91; fi; printf user > user-profile.txt",
                 "sandy-live",
             ])
-            .arg(&profile)
-            .status()?;
+            .arg(&profile);
+        let status = status_with_timeout(&mut command)?;
         if !status.success() || fs::read_to_string(project.join("user-profile.txt"))? != "user" {
             return Err("generic-based Linux user profile failed".into());
         }
@@ -261,13 +310,14 @@ childProcess.execFileSync('/bin/sh', ['-c', 'printf node > node-runtime.txt']);
         let command = format!(
             "{SANDY} run --profile generic -- /bin/sh -c 'test -t 0 && exec 3<>/dev/tty && test -t 3'"
         );
-        let status = Command::new("/usr/bin/script")
+        let mut terminal = Command::new("/usr/bin/script");
+        terminal
             .env("HOME", &home)
             .current_dir(&project)
             .args(["--quiet", "--return", "--command"])
             .arg(command)
-            .arg(&transcript)
-            .status()?;
+            .arg(&transcript);
+        let status = status_with_timeout(&mut terminal)?;
         if !status.success() {
             return Err("inherited Linux terminal behavior was not preserved".into());
         }
@@ -280,15 +330,72 @@ childProcess.execFileSync('/bin/sh', ['-c', 'printf node > node-runtime.txt']);
         script: &str,
         expected: i32,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let status = Command::new(SANDY)
-            .env("HOME", home)
-            .current_dir(project)
-            .args(["run", "--profile", "generic", "--", "/bin/sh", "-c", script])
-            .status()?;
+        let mut command = Command::new(SANDY);
+        command.env("HOME", home).current_dir(project).args([
+            "run",
+            "--profile",
+            "generic",
+            "--",
+            "/bin/sh",
+            "-c",
+            script,
+        ]);
+        let status = status_with_timeout(&mut command)?;
         if status.code() != Some(expected) {
             return Err(format!("expected exit {expected}, got {status:?}").into());
         }
         Ok(())
+    }
+
+    fn status_with_timeout(
+        command: &mut Command,
+    ) -> Result<ExitStatus, Box<dyn std::error::Error>> {
+        let mut child = command.spawn()?;
+        wait_child_with_timeout(&mut child)
+    }
+
+    fn output_with_timeout(command: &mut Command) -> Result<Output, Box<dyn std::error::Error>> {
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut child = command.spawn()?;
+        let mut stdout = child.stdout.take().ok_or("missing child stdout")?;
+        let mut stderr = child.stderr.take().ok_or("missing child stderr")?;
+        let stdout_reader = thread::spawn(move || {
+            let mut bytes = Vec::new();
+            stdout.read_to_end(&mut bytes).map(|_| bytes)
+        });
+        let stderr_reader = thread::spawn(move || {
+            let mut bytes = Vec::new();
+            stderr.read_to_end(&mut bytes).map(|_| bytes)
+        });
+        let status = wait_child_with_timeout(&mut child)?;
+        let stdout = stdout_reader
+            .join()
+            .map_err(|_| "stdout reader panicked")??;
+        let stderr = stderr_reader
+            .join()
+            .map_err(|_| "stderr reader panicked")??;
+        Ok(Output {
+            status,
+            stdout,
+            stderr,
+        })
+    }
+
+    fn wait_child_with_timeout(
+        child: &mut Child,
+    ) -> Result<ExitStatus, Box<dyn std::error::Error>> {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            if let Some(status) = child.try_wait()? {
+                return Ok(status);
+            }
+            if Instant::now() >= deadline {
+                child.kill()?;
+                let _ = child.wait();
+                return Err("live Linux CLI fixture exceeded its hard timeout".into());
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
     }
 }
 

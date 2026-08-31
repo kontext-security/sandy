@@ -112,14 +112,13 @@ sandy run -- codex --sandbox danger-full-access
 sandy run -- opencode
 ```
 
-The initial Linux CLI accepts the generic profile and user profile files based
-on it. Use `--profile generic` explicitly for an agent. Built-in agent profiles
-are rejected before launch because their mutable state trees contain nested
-protected control files whose metadata-denial semantics are not yet exactly
-representable by the Linux backend.
+Starting with 0.2, the Linux CLI accepts the same built-in profiles when their
+resolved paths exist and the native backend can represent the complete typed
+policy. Runtime-control discovery and setup remain macOS-only. Unsupported
+user-policy combinations fail before launch rather than weakening the policy.
 
 ```bash
-sandy run --profile generic -- claude
+sandy run -- claude
 ```
 
 Codex's internal sandbox cannot be nested reliably inside Sandy. The
@@ -303,7 +302,7 @@ On macOS, known-agent profiles may grant access to agent state directories for
 compatibility.
 
 The `sandy` CLI and Rust current-process library support macOS and Linux.
-Linux requires Landlock ABI 5, user and mount namespaces, the modern mount API,
+Linux requires Landlock ABI 6, user and mount namespaces, the modern mount API,
 and a host security policy that permits the calling executable to configure
 those namespaces. Some distributions restrict unprivileged user namespaces by
 default; `sandy doctor` detects this and Sandy never falls back to weaker
