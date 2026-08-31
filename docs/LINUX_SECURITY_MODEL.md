@@ -146,10 +146,10 @@ remain absent.
 
 When the internal foreground-CLI compatibility capability is present, the
 backend recreates a bounded set of host runtime symlinks (`/bin`, `/sbin`,
-loader directories, resolver and timezone data, public CA paths, and standard
-descriptor aliases) only when their resolved targets are already visible
-through explicit grants. This adds no underlying file authority; it preserves
-the runtime spelling selected by the host distribution.
+loader directories, resolver and timezone data, and public CA paths) only when
+their canonical targets are already visible through explicit grants. This adds
+no underlying file authority; it preserves the runtime spelling selected by
+the host distribution.
 
 The requested working directory must be visible through an explicit grant.
 Sandy rejects the policy before enforcement rather than silently changing the
@@ -161,8 +161,8 @@ The Linux CLI baseline explicitly grants the system program and library trees,
 public certificate and timezone data, selected resolver and account files, and
 the small public proc-file set documented in the dry-run policy. Read access and
 executable mapping remain separate. It also names `/dev/null`, `/dev/zero`,
-`/dev/random`, `/dev/urandom`, `/dev/tty`, and `/proc/self/fd`; adjacent devices
-and process entries are not exposed. A bounded set of host runtime symlinks is
+`/dev/random`, `/dev/urandom`, and `/dev/tty`; adjacent devices and process
+entries are not exposed. A bounded set of host runtime symlinks is
 recreated only when its resolved target already has matching authority.
 
 Host `/sys`, `/run`, the procfs process tree, and broad `/dev` access are absent.

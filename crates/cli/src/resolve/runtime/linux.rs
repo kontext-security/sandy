@@ -50,13 +50,10 @@ const READ_ONLY_DATA_FILES: &[&str] = &[
     "/proc/sys/kernel/osrelease",
 ];
 
-const PROC_SELF_FD: &str = "/proc/self/fd";
-
 /// Adds only the ordinary Linux loader and public runtime data selected by the
-/// CLI product. Only named runtime devices and the current process's descriptor
-/// directory are exposed; the rest of `/dev` and the host process tree remain
-/// absent. Inherited standard streams and their controlling terminal remain
-/// caller-held capabilities.
+/// CLI product. Only named runtime devices are exposed; the rest of `/dev` and
+/// the host process tree remain absent. Inherited standard streams and their
+/// controlling terminal remain caller-held capabilities.
 pub(crate) fn intent(network: NetworkPolicy) -> CliPolicyIntent {
     add_matching(network, |path| Path::new(path).exists())
 }
@@ -89,9 +86,6 @@ fn add_matching(network: NetworkPolicy, mut include: impl FnMut(&str) -> bool) -
             intent = intent.grant_file(path, AccessMode::ReadWrite, PathScope::Exact);
         }
     }
-    if include(PROC_SELF_FD) {
-        intent = intent.grant_file(PROC_SELF_FD, AccessMode::Read, PathScope::Subtree);
-    }
     intent
 }
 
@@ -104,7 +98,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn baseline_is_explicit_and_contains_only_named_devices_and_proc_self_fds()
+    fn baseline_is_explicit_and_contains_only_named_devices()
     -> Result<(), Box<dyn std::error::Error>> {
         let policy = resolve_policy(add_matching(NetworkPolicy::BlockAll, |_| true), &[])?
             .finish()?
@@ -133,11 +127,8 @@ mod tests {
                 && grant.access == AccessMode::ReadWrite
                 && grant.scope == PathScope::Exact
         }));
-        assert!(policy.files.iter().any(|grant| {
-            grant.path.as_str().starts_with("/proc/")
-                && grant.path.as_str().ends_with("/fd")
-                && grant.access == AccessMode::Read
-                && grant.scope == PathScope::Subtree
+        assert!(policy.files.iter().all(|grant| {
+            !grant.path.as_str().starts_with("/proc/") || grant.scope == PathScope::Exact
         }));
         assert!(policy.files.iter().any(|grant| {
             grant.path.as_str() == "/usr/bin"

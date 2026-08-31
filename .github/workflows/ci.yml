@@ -73,6 +73,8 @@ jobs:
       - name: Test workspace
         run: cargo test --workspace --locked
       - name: Test Linux enforcement
+        env:
+          SANDY_REQUIRE_NODE: "1"
         run: make test-live-linux
       - name: Test packaged facade consumer
         run: |

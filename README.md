@@ -301,8 +301,8 @@ enforcement.
 
 The initial Linux private filesystem intentionally omits the host process tree,
 `/sys`, `/run`, and broad `/dev` access. The CLI names only its required runtime
-devices, public proc files, and `/proc/self/fd`; adjacent devices and process
-entries remain absent. Policies that require nested confidential denies,
+devices and public proc files; adjacent devices and process entries remain
+absent. Policies that require nested confidential denies,
 absent write-protected files, or local-host-only TCP are rejected before target
 execution. See
 [the Linux security model](docs/LINUX_SECURITY_MODEL.md) for the exact support
