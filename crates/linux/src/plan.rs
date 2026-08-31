@@ -1,0 +1,142 @@
+use sandy_core::{
+    FileMetadataPolicy, NetworkPolicy, PathScope, RuntimeCompatibility, ValidatedPolicy,
+};
+
+use crate::{LinuxError, LinuxErrorKind};
+
+/// Deterministic Linux lowering of a validated platform-neutral policy.
+///
+/// This type owns no file descriptors and performs no ambient discovery. It
+/// exists so representability decisions can be reviewed and tested separately
+/// from path pinning and irreversible enforcement.
+pub struct LinuxPolicyPlan {
+    pub(crate) policy: ValidatedPolicy,
+}
+
+impl LinuxPolicyPlan {
+    /// Returns whether a private network namespace is required.
+    #[must_use]
+    pub fn blocks_network(&self) -> bool {
+        self.policy.spec().network == NetworkPolicy::BlockAll
+    }
+
+    /// Returns whether ordinary descendant process creation is authorized.
+    #[must_use]
+    pub fn allows_subprocesses(&self) -> bool {
+        self.policy.spec().allow_subprocesses
+    }
+}
+
+/// Lowers a validated policy into deterministic Linux semantics.
+///
+/// Unsupported combinations are rejected here whenever their incompatibility
+/// is independent of the ambient filesystem. File-type-dependent checks occur
+/// during [`crate::prepare`].
+pub fn plan(policy: &ValidatedPolicy) -> Result<LinuxPolicyPlan, LinuxError> {
+    let spec = policy.spec();
+
+    if spec.file_metadata != FileMetadataPolicy::Deny {
+        return Err(unsupported("filesystem metadata policy"));
+    }
+    if !spec.local_host_tcp.is_empty() {
+        return Err(unsupported("local-host TCP policy"));
+    }
+    if spec.runtime_compatibility != RuntimeCompatibility::Minimal
+        && spec.runtime_compatibility != RuntimeCompatibility::ForegroundCli
+    {
+        return Err(unsupported("runtime compatibility policy"));
+    }
+
+    // A private filesystem view hides non-granted paths completely. A deny
+    // nested inside a visible subtree, however, would leave at least a mount
+    // placeholder observable. Reject it until an implementation can prove the
+    // same metadata-denial semantics as a fully absent path.
+    for protected in &spec.protected_paths {
+        let overlaps_visible_subtree = spec.files.iter().any(|grant| {
+            grant.scope == PathScope::Subtree
+                && protected.as_path().starts_with(grant.path.as_path())
+        }) || spec.executables.iter().any(|grant| {
+            grant.scope == PathScope::Subtree
+                && protected.as_path().starts_with(grant.path.as_path())
+        });
+        if overlaps_visible_subtree {
+            return Err(unsupported("nested confidential path"));
+        }
+    }
+
+    Ok(LinuxPolicyPlan {
+        policy: policy.clone(),
+    })
+}
+
+fn unsupported(phase: &'static str) -> LinuxError {
+    LinuxError::new(LinuxErrorKind::Unsupported, phase)
+}
+
+#[cfg(test)]
+mod tests {
+    use sandy_core::{
+        AbsolutePath, AccessMode, FileGrant, NetworkPolicy, PathScope, PolicySpec, ValidatedPolicy,
+    };
+
+    use super::*;
+
+    fn path(value: &str) -> Result<AbsolutePath, Box<dyn std::error::Error>> {
+        Ok(AbsolutePath::new(value.to_owned())?)
+    }
+
+    #[test]
+    fn accepts_monotonic_allowlists() -> Result<(), Box<dyn std::error::Error>> {
+        let policy = ValidatedPolicy::try_from(PolicySpec {
+            files: vec![FileGrant {
+                path: path("/workspace")?,
+                access: AccessMode::ReadWrite,
+                scope: PathScope::Subtree,
+            }],
+            network: NetworkPolicy::BlockAll,
+            ..PolicySpec::default()
+        })?;
+
+        let plan = plan(&policy)?;
+        assert!(plan.blocks_network());
+        assert!(!plan.allows_subprocesses());
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_confidential_child_of_visible_subtree() -> Result<(), Box<dyn std::error::Error>> {
+        let policy = ValidatedPolicy::try_from(PolicySpec {
+            files: vec![FileGrant {
+                path: path("/workspace")?,
+                access: AccessMode::Read,
+                scope: PathScope::Subtree,
+            }],
+            protected_paths: vec![path("/workspace/.secret")?],
+            network: NetworkPolicy::BlockAll,
+            ..PolicySpec::default()
+        })?;
+
+        let error = plan(&policy).err().ok_or("policy unexpectedly supported")?;
+        assert_eq!(error.kind(), LinuxErrorKind::Unsupported);
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_local_host_tcp_without_broadening_it() -> Result<(), Box<dyn std::error::Error>> {
+        use sandy_core::{LocalHostTcpGrant, LocalHostTcpOperation, TcpPort};
+
+        let port = TcpPort::new(443).ok_or("invalid test port")?;
+        let policy = ValidatedPolicy::try_from(PolicySpec {
+            local_host_tcp: vec![LocalHostTcpGrant {
+                port,
+                operation: LocalHostTcpOperation::Connect,
+            }],
+            network: NetworkPolicy::BlockAll,
+            ..PolicySpec::default()
+        })?;
+
+        let error = plan(&policy).err().ok_or("policy unexpectedly supported")?;
+        assert_eq!(error.kind(), LinuxErrorKind::Unsupported);
+        Ok(())
+    }
+}

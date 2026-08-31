@@ -40,8 +40,8 @@ jobs:
       - name: Test Seatbelt enforcement
         run: make test-live
 
-  linux-facade:
-    name: Linux facade compile
+  linux-substrate:
+    name: Linux enforcement substrate
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -49,8 +49,12 @@ jobs:
         with:
           persist-credentials: false
       - name: Install Rust toolchain
-        run: rustup toolchain install 1.91.1 --profile minimal
-      - name: Check facade and run external consumer
+        run: rustup toolchain install 1.91.1 --profile minimal --component clippy
+      - name: Lint Linux backend
+        run: cargo clippy -p sandy-linux --all-targets --all-features --locked -- -D warnings
+      - name: Test Linux backend
+        run: make test-live-linux
+      - name: Preserve unsupported facade contract
         run: |
           cargo check -p sandy-sandbox --all-targets --all-features --locked
           cargo run --manifest-path tests/package-consumer/Cargo.toml --locked
