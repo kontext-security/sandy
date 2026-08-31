@@ -156,27 +156,34 @@ mod linux {
     }
 
     fn host_noexec_is_never_weakened() -> Result<(), Box<dyn std::error::Error>> {
-        let root = tempfile::Builder::new()
-            .prefix("sandy-noexec-")
-            .tempdir_in("/dev/shm")?;
-        let executable = root.path().join("tool");
-        fs::copy("/bin/true", &executable)?;
+        let root = tempfile::tempdir()?;
+        let executable = std::path::Path::new("/proc/version");
+        if !executable.is_file() {
+            return Err("host procfs has no regular version file".into());
+        }
         let workspace = absolute(root.path())?;
         let policy = ValidatedPolicy::try_from(PolicySpec {
-            files: vec![FileGrant {
-                path: workspace.clone(),
-                access: AccessMode::Read,
-                scope: PathScope::Subtree,
-            }],
+            files: vec![
+                FileGrant {
+                    path: workspace.clone(),
+                    access: AccessMode::Read,
+                    scope: PathScope::Subtree,
+                },
+                FileGrant {
+                    path: absolute(executable)?,
+                    access: AccessMode::Read,
+                    scope: PathScope::Exact,
+                },
+            ],
             executables: vec![ExecutableGrant {
-                path: absolute(&executable)?,
+                path: absolute(executable)?,
                 scope: PathScope::Exact,
             }],
             ..PolicySpec::default()
         })?;
         let error = sandy_linux::prepare(sandy_linux::plan(&policy)?, &workspace)
             .err()
-            .ok_or("host noexec restriction was unexpectedly cleared")?;
+            .ok_or("executable grant on a host noexec mount was unexpectedly accepted")?;
         if error.kind() != sandy_linux::LinuxErrorKind::Unsupported {
             return Err("host noexec restriction returned the wrong error class".into());
         }
