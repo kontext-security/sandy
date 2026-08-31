@@ -30,7 +30,11 @@ use crate::{
 
 const SERVICE: &str = "Kontext";
 const MAX_DOCTOR_OUTPUT_BYTES: u64 = 64 * 1024;
-const DOCTOR_OUTPUT_KIB: u64 = MAX_DOCTOR_OUTPUT_BYTES / 1024;
+#[cfg(target_os = "macos")]
+const DOCTOR_OUTPUT_BLOCK_BYTES: u64 = 1024;
+#[cfg(not(target_os = "macos"))]
+const DOCTOR_OUTPUT_BLOCK_BYTES: u64 = 512;
+const DOCTOR_OUTPUT_BLOCKS: u64 = MAX_DOCTOR_OUTPUT_BYTES / DOCTOR_OUTPUT_BLOCK_BYTES;
 const DOCTOR_TIMEOUT: Duration = Duration::from_secs(5);
 const DOCTOR_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
@@ -304,12 +308,12 @@ fn doctor_with_timeout(
     let child_output = output
         .try_clone()
         .map_err(|source| AppError::io("prepare kontext doctor output", source))?;
-    // macOS `/bin/sh` expresses `ulimit -f` in KiB. Set both limits and abort
-    // the launcher if either operation fails. The fixed script never
-    // interpolates provider-controlled data; the resolved executable is passed
-    // as an opaque positional argument.
+    // macOS `/bin/sh` expresses `ulimit -f` in KiB while Linux shells use
+    // 512-byte blocks. Set both limits and abort the launcher if either
+    // operation fails. The fixed script never interpolates provider-controlled
+    // data; the resolved executable is passed as an opaque positional argument.
     let limit_script = format!(
-        "ulimit -S -f {DOCTOR_OUTPUT_KIB} && ulimit -H -f {DOCTOR_OUTPUT_KIB} && exec \"$1\" doctor --json"
+        "ulimit -S -f {DOCTOR_OUTPUT_BLOCKS} && ulimit -H -f {DOCTOR_OUTPUT_BLOCKS} && exec \"$1\" doctor --json"
     );
     let mut child = Command::new("/bin/sh")
         .args(["-c", &limit_script, "sandy-kontext-doctor"])

@@ -100,9 +100,12 @@ mod tests {
     #[test]
     fn baseline_is_explicit_and_contains_only_named_devices()
     -> Result<(), Box<dyn std::error::Error>> {
-        let policy = resolve_policy(add_matching(NetworkPolicy::BlockAll, |_| true), &[])?
-            .finish()?
-            .into_spec();
+        let policy = resolve_policy(
+            add_matching(NetworkPolicy::BlockAll, |path| Path::new(path).exists()),
+            &[],
+        )?
+        .finish()?
+        .into_spec();
 
         assert_eq!(policy.file_metadata, FileMetadataPolicy::Deny);
         assert!(policy.allow_subprocesses);
@@ -150,7 +153,9 @@ mod tests {
     fn data_paths_never_gain_executable_authority() -> Result<(), Box<dyn std::error::Error>> {
         let policy = resolve_policy(
             add_matching(NetworkPolicy::BlockAll, |path| {
-                READ_ONLY_DATA_SUBTREES.contains(&path) || READ_ONLY_DATA_FILES.contains(&path)
+                Path::new(path).exists()
+                    && (READ_ONLY_DATA_SUBTREES.contains(&path)
+                        || READ_ONLY_DATA_FILES.contains(&path))
             }),
             &[],
         )?
