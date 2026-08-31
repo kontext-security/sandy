@@ -1,19 +1,30 @@
 #[cfg(target_os = "linux")]
 mod linux {
-    use std::{env, fs, net::TcpStream, process::Command, time::Duration};
+    use std::{
+        env, fs,
+        net::TcpStream,
+        os::unix::net::{UnixListener, UnixStream},
+        process::Command,
+        time::Duration,
+    };
 
     use sandy_core::{
-        AbsolutePath, AccessMode, FileGrant, NetworkPolicy, PathScope, PolicySpec, ValidatedPolicy,
-        WriteProtection,
+        AbsolutePath, AccessMode, FileGrant, NetworkPolicy, PathScope, PolicySpec, UnixSocketGrant,
+        UnixSocketOperation, ValidatedPolicy, WriteProtection,
     };
 
     const CHILD_MODE: &str = "SANDY_LINUX_LIVE_CHILD";
+    const ALLOW_SOCKET_CHILD: &str = "SANDY_LINUX_ALLOW_SOCKET_CHILD";
+    const SOCKET_PATH: &str = "SANDY_LINUX_LIVE_SOCKET";
     const EXPECT_UNSUPPORTED: &str = "SANDY_LINUX_EXPECT_UNSUPPORTED";
     const WORKSPACE: &str = "SANDY_LINUX_LIVE_WORKSPACE";
 
     pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         if env::var_os(CHILD_MODE).is_some() {
             return child_checks();
+        }
+        if env::var_os(ALLOW_SOCKET_CHILD).is_some() {
+            return allow_socket_child();
         }
         if env::var_os(EXPECT_UNSUPPORTED).is_some() {
             return restricted_host_is_rejected_before_enforcement();
@@ -35,7 +46,54 @@ mod linux {
         if !status.success() {
             return Err("sacrificial sandbox child failed".into());
         }
+        allow_all_preserves_pathname_socket_connections(root.path(), &workspace)?;
         Ok(())
+    }
+
+    fn allow_all_preserves_pathname_socket_connections(
+        root: &std::path::Path,
+        workspace: &std::path::Path,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let socket = root.join("service.sock");
+        let _listener = UnixListener::bind(&socket)?;
+        let status = Command::new(env::current_exe()?)
+            .env(ALLOW_SOCKET_CHILD, "1")
+            .env(WORKSPACE, workspace)
+            .env(SOCKET_PATH, &socket)
+            .status()?;
+        if !status.success() {
+            return Err("allow-all pathname socket child failed".into());
+        }
+        Ok(())
+    }
+
+    fn allow_socket_child() -> Result<(), Box<dyn std::error::Error>> {
+        let workspace = absolute_from_environment(WORKSPACE)?;
+        let socket = absolute_from_environment(SOCKET_PATH)?;
+        let policy = ValidatedPolicy::try_from(PolicySpec {
+            files: vec![FileGrant {
+                path: workspace.clone(),
+                access: AccessMode::ReadWrite,
+                scope: PathScope::Subtree,
+            }],
+            unix_sockets: vec![UnixSocketGrant {
+                path: socket.clone(),
+                operation: UnixSocketOperation::Connect,
+            }],
+            network: NetworkPolicy::AllowAll,
+            ..PolicySpec::default()
+        })?;
+        let prepared = sandy_linux::prepare(sandy_linux::plan(&policy)?, &workspace)?;
+        sandy_linux::apply(prepared)?;
+        UnixStream::connect(socket.as_path())?;
+        Ok(())
+    }
+
+    fn absolute_from_environment(name: &str) -> Result<AbsolutePath, Box<dyn std::error::Error>> {
+        let path = fs::canonicalize(env::var_os(name).ok_or("missing test path")?)?;
+        Ok(AbsolutePath::new(
+            path.to_str().ok_or("test path is not UTF-8")?.to_owned(),
+        )?)
     }
 
     fn restricted_host_is_rejected_before_enforcement() -> Result<(), Box<dyn std::error::Error>> {

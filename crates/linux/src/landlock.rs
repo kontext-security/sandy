@@ -19,7 +19,10 @@ pub(crate) fn prepare(
     policy: &PolicySpec,
     pinned: &BTreeMap<sandy_core::AbsolutePath, PinnedPath>,
 ) -> Result<PreparedLandlock, LinuxError> {
-    let handled = AccessFs::from_all(ABI::V8) | AccessFs::ResolveUnix;
+    let mut handled = AccessFs::from_all(ABI::V8);
+    if policy.network == NetworkPolicy::BlockAll {
+        handled |= AccessFs::ResolveUnix;
+    }
     let builder = Ruleset::default()
         .handle_access(handled)
         .map_err(|_| unsupported("Landlock ABI"))?;
@@ -59,15 +62,17 @@ pub(crate) fn prepare(
             .file;
         ruleset = add_rule(ruleset, file, AccessFs::Execute.into())?;
     }
-    for grant in &policy.unix_sockets {
-        if denied(&grant.path, &policy.protected_paths) {
-            continue;
+    if policy.network == NetworkPolicy::BlockAll {
+        for grant in &policy.unix_sockets {
+            if denied(&grant.path, &policy.protected_paths) {
+                continue;
+            }
+            let file = &pinned
+                .get(&grant.path)
+                .ok_or_else(|| preparation("Landlock socket lookup"))?
+                .file;
+            ruleset = add_rule(ruleset, file, AccessFs::ResolveUnix.into())?;
         }
-        let file = &pinned
-            .get(&grant.path)
-            .ok_or_else(|| preparation("Landlock socket lookup"))?
-            .file;
-        ruleset = add_rule(ruleset, file, AccessFs::ResolveUnix.into())?;
     }
 
     // The shape checks in preparation ensure all directory rules are subtree
