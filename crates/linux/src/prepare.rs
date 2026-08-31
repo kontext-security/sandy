@@ -2,9 +2,10 @@ use std::{
     collections::BTreeMap,
     fs::{File, OpenOptions},
     os::unix::fs::{FileTypeExt, OpenOptionsExt},
+    path::PathBuf,
 };
 
-use sandy_core::{AbsolutePath, AccessMode, PathScope};
+use sandy_core::{AbsolutePath, AccessMode, PathScope, RuntimeCompatibility};
 
 use crate::{LinuxError, LinuxErrorKind, LinuxPolicyPlan, landlock, namespace, seccomp};
 
@@ -38,7 +39,13 @@ pub(crate) struct MountPreparation {
     pub(crate) pinned: BTreeMap<AbsolutePath, PinnedPath>,
     pub(crate) mounts: Vec<MountRequirement>,
     pub(crate) protections: Vec<ProtectionRequirement>,
+    pub(crate) aliases: Vec<RuntimeAlias>,
     pub(crate) working_directory: AbsolutePath,
+}
+
+pub(crate) struct RuntimeAlias {
+    pub(crate) path: AbsolutePath,
+    pub(crate) target: PathBuf,
 }
 
 /// Fully prepared Linux sandbox whose remaining operations are irreversible.
@@ -220,13 +227,61 @@ fn prepare_mounts(
         return Err(unsupported("working directory visibility"));
     }
     let working_directory = working_directory.clone();
+    let aliases = prepare_runtime_aliases(spec.runtime_compatibility, &effective)?;
 
     Ok(MountPreparation {
         pinned,
         mounts: effective,
         protections,
+        aliases,
         working_directory,
     })
+}
+
+fn prepare_runtime_aliases(
+    compatibility: RuntimeCompatibility,
+    mounts: &[MountRequirement],
+) -> Result<Vec<RuntimeAlias>, LinuxError> {
+    if compatibility != RuntimeCompatibility::ForegroundCli {
+        return Ok(Vec::new());
+    }
+
+    let mut aliases = Vec::new();
+    for requested in [
+        "/bin",
+        "/sbin",
+        "/lib",
+        "/lib64",
+        "/etc/localtime",
+        "/etc/ssl/cert.pem",
+    ] {
+        let metadata = match std::fs::symlink_metadata(requested) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return Err(preparation("runtime alias inspection")),
+        };
+        if !metadata.file_type().is_symlink() {
+            continue;
+        }
+        let canonical = std::fs::canonicalize(requested)
+            .map_err(|_| preparation("runtime alias resolution"))?;
+        let canonical = AbsolutePath::new(
+            canonical
+                .to_str()
+                .ok_or_else(|| preparation("runtime alias representation"))?
+                .to_owned(),
+        )
+        .map_err(|_| preparation("runtime alias representation"))?;
+        let path = AbsolutePath::new(requested.to_owned())
+            .map_err(|_| preparation("runtime alias representation"))?;
+        if visible(&path, mounts.iter()) || !visible(&canonical, mounts.iter()) {
+            continue;
+        }
+        let target =
+            std::fs::read_link(requested).map_err(|_| preparation("runtime alias resolution"))?;
+        aliases.push(RuntimeAlias { path, target });
+    }
+    Ok(aliases)
 }
 
 fn pin(path: &AbsolutePath) -> Result<PinnedPath, LinuxError> {

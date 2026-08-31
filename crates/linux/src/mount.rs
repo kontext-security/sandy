@@ -68,6 +68,15 @@ pub(crate) fn construct_and_enter(preparation: &MountPreparation) -> Result<(), 
             source.kind == PinnedKind::Device,
         )?;
     }
+    for alias in &preparation.aliases {
+        let path = target_path(&alias.path);
+        let parent = path
+            .parent()
+            .ok_or_else(|| enforcement("runtime alias creation"))?;
+        fs::create_dir_all(parent).map_err(|_| enforcement("runtime alias creation"))?;
+        std::os::unix::fs::symlink(&alias.target, &path)
+            .map_err(|_| enforcement("runtime alias creation"))?;
+    }
 
     std::env::set_current_dir(STAGING_ROOT).map_err(|_| enforcement("root entry"))?;
     ffi::pivot_root(c".", c".old_root").map_err(|_| enforcement("root entry"))?;

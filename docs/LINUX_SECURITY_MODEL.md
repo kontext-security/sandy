@@ -101,6 +101,13 @@ The private root deliberately omits procfs. Product compatibility grants and
 any future selective procfs design belong to the CLI boundary and require live
 positive and negative tests before shipping.
 
+When the internal foreground-CLI compatibility capability is present, the
+backend recreates a bounded set of host runtime symlinks (`/bin`, `/sbin`,
+loader directories, timezone data, and the public CA-bundle path) only when
+their canonical targets are already visible through explicit grants. This adds
+no underlying file authority; it preserves the runtime spelling selected by
+the host distribution.
+
 The requested working directory must be visible through an explicit grant.
 Sandy rejects the policy before enforcement rather than silently changing the
 working directory to the private root.
