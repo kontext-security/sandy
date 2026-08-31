@@ -117,7 +117,7 @@ jobs:
       - name: Build release binary
         run: cargo build --release --locked --target "${{ matrix.target }}" -p sandy-cli
       - name: Verify native Linux binary
-        if: ${{ matrix.asset_os == 'linux' }}
+        if: ${{ matrix.target == 'aarch64-unknown-linux-gnu' }}
         env:
           TARGET: ${{ matrix.target }}
         run: |
@@ -155,8 +155,38 @@ jobs:
           asset="sandy_${version}_${ASSET_OS}_${ARCH}.tar.gz"
           gh release upload "$TAG_NAME" "dist/$asset" "dist/${asset}.sha256" --repo "$GITHUB_REPOSITORY" --clobber
 
-  publish-crates:
+  verify-linux-x86:
     needs: [prepare, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Download the packaged x86-64 Linux artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ inputs.tag_name }}
+        run: |
+          version="${TAG_NAME#v}"
+          asset="sandy_${version}_linux_amd64.tar.gz"
+          mkdir dist
+          gh release download "$TAG_NAME" --repo "$GITHUB_REPOSITORY" --pattern "$asset" --dir dist
+          gh release download "$TAG_NAME" --repo "$GITHUB_REPOSITORY" --pattern "${asset}.sha256" --dir dist
+          expected="$(tr -d '[:space:]' < "dist/${asset}.sha256")"
+          actual="$(sha256sum "dist/$asset" | awk '{print $1}')"
+          test "$actual" = "$expected"
+          tar -C dist -xzf "dist/$asset"
+      - name: Verify the packaged binary on the supported host
+        env:
+          TAG_NAME: ${{ inputs.tag_name }}
+        run: |
+          if sysctl -n kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          version="${TAG_NAME#v}"
+          "dist/sandy_${version}_linux_amd64/sandy" doctor
+
+  publish-crates:
+    needs: [prepare, build, verify-linux-x86]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

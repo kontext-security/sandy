@@ -40,6 +40,13 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
         Some(path) => profile::load_user(path)?,
         None => profile::select(arguments.profile.as_ref(), &command.requested_name)?,
     };
+    #[cfg(target_os = "linux")]
+    if !selected.supports_linux_cli() {
+        return Err(AppError::Launch(
+            "this agent profile is not yet representable by the Linux backend; use --profile generic or a user profile based on generic"
+                .to_owned(),
+        ));
+    }
     if selected.detected() {
         eprintln!(
             "sandy: applying detected agent profile '{}' (override with --profile)",
@@ -166,6 +173,12 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
         .map_err(|error| profile_protected_paths.redact_conflict(error))?;
     let draft = runtime_controls.contribute(draft)?;
     let policy = draft.finish()?.into_spec();
+    #[cfg(target_os = "linux")]
+    if !policy.unix_sockets.is_empty() {
+        return Err(AppError::Launch(
+            "exact external Unix-socket grants are not enabled for the Linux CLI".to_owned(),
+        ));
+    }
 
     let manifest = LaunchManifestV2 {
         schema_version: MANIFEST_SCHEMA_V2,
@@ -194,11 +207,12 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
     #[cfg(target_os = "linux")]
     let native_policy = {
         let plan = sandy_linux::plan(validated.policy())?;
+        let landlock_abi = plan.required_landlock_abi();
         let prepared = sandy_linux::prepare(plan, &validated.manifest().working_directory)?;
         drop(prepared);
         json!({
             "backend": "linux",
-            "landlock_abi": sandy_linux::REQUIRED_LANDLOCK_ABI,
+            "landlock_abi": landlock_abi,
         })
     };
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]

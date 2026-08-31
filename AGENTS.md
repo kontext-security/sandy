@@ -19,11 +19,13 @@ Sandy is a native process sandbox for AI coding agents.
 Sandy is a process sandbox, not a container or VM. Describe its guarantees
 narrowly.
 
-The version `0.1.x` CLI supports macOS and Linux, one foreground `run` mode,
-Claude Code, Codex, OpenCode, and generic profiles, explicit filesystem and
-executable grants, network allow/block, dry-run output, and optional
-self-serve integrations. Exact local-host TCP exceptions and integration setup
-remain macOS-only. Setup is not part of sandbox launch.
+The version `0.1.x` CLI supports macOS and Linux and one foreground `run` mode.
+macOS supports Claude Code, Codex, OpenCode, and generic profiles. Linux
+initially supports the generic profile and user profiles based on it; built-in
+agent profiles require filesystem semantics that are not yet representable.
+Both platforms support explicit filesystem and executable grants, network
+allow/block, and dry-run output. Exact local-host TCP exceptions and integration
+setup remain macOS-only. Setup is not part of sandbox launch.
 
 The `sandy-sandbox` package provides the supported `sandy` Rust library. It is
 a caller-policy-only, current-process primitive with no executable dependency.

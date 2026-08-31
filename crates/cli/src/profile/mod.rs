@@ -151,6 +151,18 @@ impl SelectedProfile {
         self.user_profile().map(ResolvedUserProfile::base_name)
     }
 
+    /// Reports whether the selected profile stays within the initial Linux
+    /// CLI contract. Built-in agent profiles require mutable state trees with
+    /// nested confidential control files, which Linux deliberately rejects
+    /// until those metadata-denial semantics can be enforced exactly.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn supports_linux_cli(&self) -> bool {
+        match self {
+            Self::Embedded { .. } => self.name() == GENERIC_PROFILE_NAME,
+            Self::UserFile { profile, .. } => profile.base_name() == GENERIC_PROFILE_NAME,
+        }
+    }
+
     /// Rejects omission of any home-relative path in a user-file composition
     /// when the CLI cannot establish a canonical home directory. Embedded
     /// selections retain their existing compatibility behavior.
@@ -714,6 +726,19 @@ mod tests {
     #[test]
     fn generic_profile_carries_no_extra_grants() -> Result<(), Box<dyn std::error::Error>> {
         assert!(resolve_by_name(GENERIC_PROFILE_NAME)?.grants().is_empty());
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn initial_linux_cli_accepts_only_the_generic_embedded_profile()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for name in ["claude", "codex", "opencode"] {
+            let selected = SelectedProfile::embedded(resolve_by_name(name)?, false);
+            assert!(!selected.supports_linux_cli());
+        }
+        let generic = SelectedProfile::embedded(resolve_by_name(GENERIC_PROFILE_NAME)?, false);
+        assert!(generic.supports_linux_cli());
         Ok(())
     }
 

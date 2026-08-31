@@ -126,8 +126,9 @@ weakened:
   subtree could retain write authority;
 - exact grants on directories, because native directory rules are hierarchical;
 - subtree grants on non-directories;
-- exact read/write file grants, because content mutation and parent-directory
-  replacement cannot both be represented without broadening authority;
+- exact read/write regular-file grants, because content mutation and
+  parent-directory replacement cannot both be represented without broadening
+  authority; explicitly named device files are supported;
 - exact directory write protections, because pinning a mount point prevents
   replacement but not every metadata mutation;
 - pathname Unix-socket exceptions;
@@ -145,10 +146,10 @@ remain absent.
 
 When the internal foreground-CLI compatibility capability is present, the
 backend recreates a bounded set of host runtime symlinks (`/bin`, `/sbin`,
-loader directories, timezone data, and the public CA-bundle path) only when
-their canonical targets are already visible through explicit grants. This adds
-no underlying file authority; it preserves the runtime spelling selected by
-the host distribution.
+loader directories, resolver and timezone data, public CA paths, and standard
+descriptor aliases) only when their resolved targets are already visible
+through explicit grants. This adds no underlying file authority; it preserves
+the runtime spelling selected by the host distribution.
 
 The requested working directory must be visible through an explicit grant.
 Sandy rejects the policy before enforcement rather than silently changing the
@@ -159,18 +160,21 @@ working directory to the private root.
 The Linux CLI baseline explicitly grants the system program and library trees,
 public certificate and timezone data, selected resolver and account files, and
 the small public proc-file set documented in the dry-run policy. Read access and
-executable mapping remain separate. A bounded set of host runtime symlinks is
-recreated only when its canonical target already has matching authority.
+executable mapping remain separate. It also names `/dev/null`, `/dev/zero`,
+`/dev/random`, `/dev/urandom`, `/dev/tty`, and `/proc/self/fd`; adjacent devices
+and process entries are not exposed. A bounded set of host runtime symlinks is
+recreated only when its resolved target already has matching authority.
 
-Host `/sys`, `/run`, the procfs process tree, and new `/dev` opens are absent.
+Host `/sys`, `/run`, the procfs process tree, and broad `/dev` access are absent.
 Standard input, output, error, and an existing controlling terminal remain
-native because they were opened before enforcement. Linux does not support the
-CLI's local-host-only TCP exception.
+native. Linux does not support the CLI's local-host-only TCP exception or exact
+external Unix-socket grants in the initial CLI.
 
 Write-protected entries must exist so the backend can pin and overmount them.
-If an agent profile names an absent control file, or a user profile requests a
-confidential deny nested inside the writable project tree, preparation fails
-before the bootstrap executes the target.
+Built-in agent profiles are rejected by the initial Linux CLI. A user profile
+based on `generic` remains supported when its policy is representable; absent
+required files or a confidential deny nested inside a writable tree fail before
+the bootstrap executes the target.
 
 ## Unsafe boundary
 

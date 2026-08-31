@@ -16,7 +16,7 @@ access to your computer. The sandbox also applies to every command and tool the
 agent starts.
 
 ```bash
-sandy run -- claude
+sandy run --profile generic -- claude
 ```
 
 The goal is simple: running an agent through Sandy should feel like running it
@@ -104,13 +104,19 @@ filesystem grant.
 
 ## Run
 
-Sandy recognizes Claude Code, Codex, and OpenCode:
+On macOS, Sandy recognizes Claude Code, Codex, and OpenCode:
 
 ```bash
 sandy run -- claude
 sandy run -- codex --sandbox danger-full-access
 sandy run -- opencode
 ```
+
+The initial Linux CLI accepts the generic profile and user profile files based
+on it. Use `--profile generic` explicitly for an agent. Built-in agent profiles
+are rejected before launch because their mutable state trees contain nested
+protected control files whose metadata-denial semantics are not yet exactly
+representable by the Linux backend.
 
 Codex's internal sandbox cannot be nested reliably inside Sandy. The
 `danger-full-access` setting makes Sandy the single sandbox and does not disable
@@ -283,21 +289,22 @@ Sandy is a process sandbox, not a container or VM. It reduces what a process can
 access but does not provide a separate kernel, user account, or memory boundary.
 
 Network access is allowed by default and can be blocked with `--block-net`.
-Known-agent profiles may grant access to agent state directories for
+On macOS, known-agent profiles may grant access to agent state directories for
 compatibility.
 
 The `sandy` CLI and Rust current-process library support macOS and Linux.
-Linux requires Landlock ABI 9, user and mount namespaces, the modern mount API,
+Linux requires Landlock ABI 5, user and mount namespaces, the modern mount API,
 and a host security policy that permits the calling executable to configure
 those namespaces. Some distributions restrict unprivileged user namespaces by
 default; `sandy doctor` detects this and Sandy never falls back to weaker
 enforcement.
 
-The initial Linux private filesystem intentionally omits host `/proc`, `/sys`,
-`/run`, and new `/dev` opens. Inherited standard streams and controlling
-terminal descriptors continue to work. Policies that require nested
-confidential denies, absent write-protected files, or local-host-only TCP are
-rejected before target execution. See
+The initial Linux private filesystem intentionally omits the host process tree,
+`/sys`, `/run`, and broad `/dev` access. The CLI names only its required runtime
+devices, public proc files, and `/proc/self/fd`; adjacent devices and process
+entries remain absent. Policies that require nested confidential denies,
+absent write-protected files, or local-host-only TCP are rejected before target
+execution. See
 [the Linux security model](docs/LINUX_SECURITY_MODEL.md) for the exact support
 contract.
 

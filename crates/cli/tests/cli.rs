@@ -1,4 +1,7 @@
-use std::{fs, os::unix::fs::PermissionsExt as _, sync::mpsc, thread, time::Duration};
+use std::{fs, sync::mpsc, thread, time::Duration};
+
+#[cfg(target_os = "macos")]
+use std::os::unix::fs::PermissionsExt as _;
 
 use assert_cmd::Command;
 use predicates::prelude::*;
@@ -147,13 +150,19 @@ fn integration_setup_is_explicitly_unsupported_on_linux() -> Result<(), Box<dyn 
 
 #[test]
 fn dry_run_does_not_require_kontext() -> Result<(), Box<dyn std::error::Error>> {
+    let expected_command = fs::canonicalize("/bin/echo")?;
+    let expected_command = expected_command
+        .to_str()
+        .ok_or("canonical command path must be UTF-8")?;
     let mut command = Command::cargo_bin("sandy")?;
     command
         .args(["run", "--dry-run", "--", "/bin/echo", "hello"])
         .assert()
         .success()
         .stdout(predicate::str::contains(r#""enabled": false"#))
-        .stdout(predicate::str::contains(r#""command": "/bin/echo""#));
+        .stdout(predicate::str::contains(format!(
+            r#""command": "{expected_command}""#
+        )));
     Ok(())
 }
 
@@ -225,8 +234,12 @@ fn dry_run_json_has_a_versioned_runtime_control_schema() -> Result<(), Box<dyn s
     assert!(grants.iter().any(|grant| {
         grant["path"] == "/" && grant["access"] == "read" && grant["scope"] == "exact"
     }));
+    let runtime_bin = fs::canonicalize("/bin")?;
+    let runtime_bin = runtime_bin
+        .to_str()
+        .ok_or("canonical runtime path must be UTF-8")?;
     assert!(grants.iter().any(|grant| {
-        grant["path"] == "/bin" && grant["access"] == "read" && grant["scope"] == "subtree"
+        grant["path"] == runtime_bin && grant["access"] == "read" && grant["scope"] == "subtree"
     }));
     #[cfg(target_os = "macos")]
     {
@@ -239,7 +252,11 @@ fn dry_run_json_has_a_versioned_runtime_control_schema() -> Result<(), Box<dyn s
     }
     #[cfg(target_os = "linux")]
     {
-        assert!(!grants.iter().any(|grant| grant["path"] == "/dev/null"));
+        assert!(grants.iter().any(|grant| {
+            grant["path"] == "/dev/null"
+                && grant["access"] == "read_write"
+                && grant["scope"] == "exact"
+        }));
         assert_eq!(document["file_metadata"], "deny");
     }
     assert_eq!(document["allow_subprocesses"], true);
@@ -275,7 +292,7 @@ fn dry_run_json_has_a_versioned_runtime_control_schema() -> Result<(), Box<dyn s
     #[cfg(target_os = "linux")]
     {
         assert_eq!(document["native_policy"]["backend"], "linux");
-        assert_eq!(document["native_policy"]["landlock_abi"], 9);
+        assert_eq!(document["native_policy"]["landlock_abi"], 5);
         assert!(document["native_policy"].get("details").is_none());
     }
     Ok(())
@@ -1205,6 +1222,7 @@ fn inheritance_only_profile_cannot_be_selected() -> Result<(), Box<dyn std::erro
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn detected_agent_profile_is_announced() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let home = directory.path().join("home");
@@ -1226,6 +1244,7 @@ fn detected_agent_profile_is_announced() -> Result<(), Box<dyn std::error::Error
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn detected_kontext_failure_does_not_make_codex_depend_on_kontext()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
@@ -1273,6 +1292,7 @@ fn detected_kontext_failure_does_not_make_codex_depend_on_kontext()
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn malformed_detected_hook_configuration_still_fails_closed()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
@@ -1294,6 +1314,7 @@ fn malformed_detected_hook_configuration_still_fails_closed()
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn required_numbat_hooks_must_be_installed() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let home = directory.path().join("home");
@@ -1320,6 +1341,7 @@ fn required_numbat_hooks_must_be_installed() -> Result<(), Box<dyn std::error::E
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn configured_numbat_hooks_contribute_only_when_present() -> Result<(), Box<dyn std::error::Error>>
 {
     let directory = tempfile::tempdir()?;
@@ -1362,6 +1384,7 @@ fn configured_numbat_hooks_contribute_only_when_present() -> Result<(), Box<dyn 
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn unsupported_numbat_delivery_is_optional_unless_required()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;

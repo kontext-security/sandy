@@ -56,12 +56,14 @@ sacrificial child, and compiles native rules before enforcement. Application
 enters private namespaces and a private filesystem view, then applies Landlock,
 removes capabilities, and installs seccomp. A preparation failure leaves the
 process unchanged. An enforcement failure may leave it partially restricted,
-so continuing is unsupported. The private view omits host procfs, `/sys`,
-`/run`, new `/dev` opens, and the former host root. Existing descriptors remain
-capabilities. Unsupported hosts and policy combinations fail rather than
-receiving approximate enforcement. Landlock signal scoping prevents the
-restricted process from signaling processes outside its sandbox domain while
-preserving signals among its descendants.
+so continuing is unsupported. The private view omits the host process tree,
+`/sys`, `/run`, broad `/dev` access, and the former host root. The CLI grants
+only named runtime devices, public proc files, and the current process's
+descriptor directory. Existing descriptors remain capabilities. Unsupported
+hosts and policy combinations fail rather than receiving approximate
+enforcement. Landlock signal scoping prevents the restricted process from
+signaling processes outside its sandbox domain while preserving signals among
+its descendants.
 
 An explicitly selected user profile file is parsed through a narrower schema
 than embedded profiles. It can only add required filesystem grants, executable
