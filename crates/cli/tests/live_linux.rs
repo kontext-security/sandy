@@ -25,12 +25,23 @@ mod linux {
         if std::env::var_os(BLOCK_NET_CHILD).is_some() {
             return block_net_child();
         }
+        doctor_succeeds_on_supported_host()?;
         project_access_and_exit_behavior()?;
         blocked_network_reaches_the_bootstrap_policy()?;
         node_runtime_uses_only_the_explicit_baseline()?;
         generic_user_profile_runs_without_exposing_its_source()?;
         unsupported_agent_profile_prevents_target_execution()?;
         inherited_terminal_remains_native()?;
+        Ok(())
+    }
+
+    fn doctor_succeeds_on_supported_host() -> Result<(), Box<dyn std::error::Error>> {
+        let output = Command::new(SANDY).arg("doctor").output()?;
+        if !output.status.success()
+            || !String::from_utf8_lossy(&output.stdout).contains("Linux enforcement: available")
+        {
+            return Err("doctor did not validate the supported Linux host".into());
+        }
         Ok(())
     }
 
@@ -105,10 +116,14 @@ mod linux {
                 if test -r "$1"; then exit 93; fi
                 printf discarded > /dev/null || exit 94
                 test -r /dev/urandom || exit 95
-                if test -e /dev/full; then exit 96; fi
-                if test -e /proc/1/status; then exit 97; fi
-                if test -e /sys; then exit 98; fi
-                if test -e /run; then exit 99; fi
+                test -r /dev/random || exit 96
+                head -c 1 /dev/zero > /dev/null || exit 97
+                head -c 1 /dev/urandom > /dev/null || exit 98
+                if test -e /dev/full; then exit 99; fi
+                if test -e /dev/ptmx; then exit 100; fi
+                if test -e /proc/1/status; then exit 101; fi
+                if test -e /sys; then exit 102; fi
+                if test -e /run; then exit 103; fi
             "#,
                 "sandy-live",
             ])
@@ -235,7 +250,9 @@ childProcess.execFileSync('/bin/sh', ['-c', 'printf node > node-runtime.txt']);
         let transcript = root.path().join("typescript");
         fs::create_dir(&home)?;
         fs::create_dir(&project)?;
-        let command = format!("{SANDY} run --profile generic -- /usr/bin/test -t 0");
+        let command = format!(
+            "{SANDY} run --profile generic -- /bin/sh -c 'test -t 0 && exec 3<>/dev/tty && test -t 3'"
+        );
         let status = Command::new("/usr/bin/script")
             .env("HOME", &home)
             .current_dir(&project)

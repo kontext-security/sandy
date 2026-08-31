@@ -30,6 +30,12 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
         return Err(AppError::UnsupportedPlatform);
     }
     #[cfg(target_os = "linux")]
+    if arguments.kontext || arguments.numbat {
+        return Err(AppError::Launch(
+            "runtime-control integrations are not supported by the Linux CLI".to_owned(),
+        ));
+    }
+    #[cfg(target_os = "linux")]
     if arguments.numbat_collector.is_some() {
         return Err(AppError::Launch(
             "local-host TCP exceptions are not supported by the Linux backend".to_owned(),
@@ -208,8 +214,10 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
     let native_policy = {
         let plan = sandy_linux::plan(validated.policy())?;
         let landlock_abi = plan.required_landlock_abi();
-        let prepared = sandy_linux::prepare(plan, &validated.manifest().working_directory)?;
-        drop(prepared);
+        if !arguments.dry_run {
+            let prepared = sandy_linux::prepare(plan, &validated.manifest().working_directory)?;
+            drop(prepared);
+        }
         json!({
             "backend": "linux",
             "landlock_abi": landlock_abi,

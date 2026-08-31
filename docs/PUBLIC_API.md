@@ -17,10 +17,11 @@ entry point.
 ```rust,no_run
 use sandy::{AccessMode, NetworkPolicy, PathScope, SandboxPolicy};
 
-let workspace = std::env::current_dir()?;
-let cache = workspace.join(".cache");
-let credentials = workspace.join("credentials");
-let settings = workspace.join("settings.json");
+let root = std::env::current_dir()?;
+let workspace = root.join("workspace");
+let cache = root.join("cache");
+let credentials = root.join("credentials");
+let settings = root.join("settings.json");
 
 // Every policy path must already exist when apply is called.
 
@@ -96,8 +97,9 @@ runtime values may add them with the normal builder after parsing. Sandy does
 not retain the source bytes or know which file they came from, so the embedding
 application owns loading and protecting that source.
 
-JSON path values are Unicode strings. Callers that need non-Unicode operating
-system paths must use the Rust builder.
+JSON path values are Unicode strings. The Rust builder accepts `PathBuf`, but
+the current native resolution contract also requires every resolved path to be
+representable as UTF-8. Non-Unicode paths are rejected as invalid policy.
 
 ## Complete public surface
 
@@ -274,6 +276,12 @@ caller must terminate immediately. The current working directory must be
 covered by an explicit filesystem grant because the private view contains only
 granted paths. The Linux backend replaces the inherited session keyring with an
 anonymous ring and denies key-management syscalls as fixed native semantics.
+
+Linux rejects exact read/write grants for regular files because it cannot
+preserve both content mutation and parent replacement semantics. Exact device
+grants are supported, but they confer the native operations permitted by that
+device, including applicable ioctls; callers should name only devices they
+intend untrusted code to operate.
 
 ## Intentionally private or absent
 

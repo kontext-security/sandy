@@ -15,6 +15,12 @@ pub(crate) fn run(arguments: DoctorArgs) -> Result<i32, AppError> {
     if !cfg!(any(target_os = "linux", target_os = "macos")) {
         return Err(AppError::UnsupportedPlatform);
     }
+    #[cfg(target_os = "linux")]
+    if arguments.kontext || arguments.numbat {
+        return Err(AppError::Launch(
+            "runtime-control integrations are not supported by the Linux CLI".to_owned(),
+        ));
+    }
 
     let executable =
         env::current_exe().map_err(|error| AppError::io("resolve Sandy executable", error))?;

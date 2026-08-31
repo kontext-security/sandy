@@ -155,6 +155,10 @@ The requested working directory must be visible through an explicit grant.
 Sandy rejects the policy before enforcement rather than silently changing the
 working directory to the private root.
 
+CLI dry-run stops after deterministic policy lowering and therefore works on a
+host that cannot enter the required namespaces. `sandy doctor` and launch-time
+preparation remain the authoritative checks for kernel and host-policy support.
+
 ## CLI compatibility boundary
 
 The Linux CLI baseline explicitly grants the system program and library trees,
@@ -164,6 +168,12 @@ executable mapping remain separate. It also names `/dev/null`, `/dev/zero`,
 `/dev/random`, `/dev/urandom`, and `/dev/tty`; adjacent devices and process
 entries are not exposed. A bounded set of host runtime symlinks is
 recreated only when its resolved target already has matching authority.
+
+An exact device grant is device authority, not ordinary file authority. In
+particular, the CLI's writable `/dev/tty` grant lets interactive programs reopen
+their controlling terminal and use the terminal operations permitted by that
+device. The live suite proves the named devices work while adjacent devices
+such as `/dev/full` and `/dev/ptmx` remain absent.
 
 Host `/sys`, `/run`, the procfs process tree, and broad `/dev` access are absent.
 Standard input, output, error, and an existing controlling terminal remain
@@ -175,6 +185,11 @@ Built-in agent profiles are rejected by the initial Linux CLI. A user profile
 based on `generic` remains supported when its policy is representable; absent
 required files or a confidential deny nested inside a writable tree fail before
 the bootstrap executes the target.
+
+The release workflow verifies the packaged x86-64 and arm64 binaries with
+`doctor` and a real sandboxed launch on Ubuntu 24.04. The x86-64 artifact is
+built on Ubuntu 22.04; that build choice lowers its glibc floor but does not
+claim compatibility with every Linux distribution.
 
 ## Unsafe boundary
 

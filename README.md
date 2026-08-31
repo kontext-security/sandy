@@ -16,7 +16,7 @@ access to your computer. The sandbox also applies to every command and tool the
 agent starts.
 
 ```bash
-sandy run --profile generic -- claude
+sandy run -- claude
 ```
 
 The goal is simple: running an agent through Sandy should feel like running it
@@ -118,6 +118,10 @@ are rejected before launch because their mutable state trees contain nested
 protected control files whose metadata-denial semantics are not yet exactly
 representable by the Linux backend.
 
+```bash
+sandy run --profile generic -- claude
+```
+
 Codex's internal sandbox cannot be nested reliably inside Sandy. The
 `danger-full-access` setting makes Sandy the single sandbox and does not disable
 Codex's approval flow.
@@ -167,7 +171,9 @@ user-file selections also report their built-in `base` without placing the
 source path or document contents in profile metadata.
 The resolved policy includes the CLI's explicit runtime baseline and reports
 its filesystem metadata, executable, subprocess, and foreground compatibility
-behavior.
+behavior. On Linux, dry-run performs deterministic policy lowering but does not
+enter namespaces or probe the host; `sandy doctor` and an actual launch are the
+authoritative support checks.
 Optional host integrations are reported in the canonical `runtime_controls`
 array, with one object per resolved runtime control containing `service`,
 `enabled`, and nullable `version` fields.
@@ -193,7 +199,7 @@ permissions and cannot contain raw sandbox rules.
 For one explicit session policy, load a user-authored profile file:
 
 ```bash
-sandy run --profile-file ./project-sandbox.json -- codex --sandbox danger-full-access
+sandy run --profile-file "$HOME/.config/sandy/project-sandbox.json" -- claude
 ```
 
 The strict JSON document extends one selectable built-in profile and may add
@@ -201,7 +207,9 @@ typed filesystem grants, executable grants, and terminal filesystem denials.
 Filesystem and executable authority are independent and must be requested
 separately. Sandy does not discover profile files automatically. See [User
 profile files](docs/PROFILE_FORMAT.md) for the complete format and security
-semantics.
+semantics. On Linux, keep the profile document outside every granted visible
+subtree so Sandy can make the source absent rather than approximating a nested
+confidential deny.
 
 ## How it works
 
@@ -224,6 +232,8 @@ Those functions can be provided by separate tools. Sandy can preserve supported
 hooks and local services without making them part of its sandboxing core.
 
 Current optional integrations can be required explicitly:
+
+These CLI integrations are currently available on macOS only.
 
 ```bash
 sandy integrations setup kontext --agent claude
@@ -298,6 +308,10 @@ and a host security policy that permits the calling executable to configure
 those namespaces. Some distributions restrict unprivileged user namespaces by
 default; `sandy doctor` detects this and Sandy never falls back to weaker
 enforcement.
+
+Release archives are exercised end to end on Ubuntu 24.04 for x86-64 and
+arm64. The x86-64 archive is built on Ubuntu 22.04 to avoid requiring a newer
+glibc than the verified runtime host.
 
 The initial Linux private filesystem intentionally omits the host process tree,
 `/sys`, `/run`, and broad `/dev` access. The CLI names only its required runtime

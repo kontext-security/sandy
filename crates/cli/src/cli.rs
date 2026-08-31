@@ -100,8 +100,8 @@ pub(crate) struct RunArgs {
     #[arg(long, value_name = "PATH")]
     pub(crate) execute: Vec<PathBuf>,
 
-    /// Block IP networking and ungranted Unix-socket connections. An active
-    /// Kontext integration retains its exact verified socket connection.
+    /// Block IP networking and ungranted Unix-socket connections. On macOS, an
+    /// active Kontext integration retains its exact verified socket connection.
     #[arg(long)]
     pub(crate) block_net: bool,
 
@@ -109,11 +109,11 @@ pub(crate) struct RunArgs {
     #[arg(long)]
     pub(crate) dry_run: bool,
 
-    /// Require an existing healthy Kontext installation.
+    /// Require an existing healthy Kontext installation. macOS only.
     #[arg(long)]
     pub(crate) kontext: bool,
 
-    /// Require an existing supported Numbat hook installation.
+    /// Require an existing supported Numbat hook installation. macOS only.
     #[arg(long)]
     pub(crate) numbat: bool,
 
@@ -136,11 +136,11 @@ pub(crate) struct RunArgs {
 
 #[derive(Debug, Args)]
 pub(crate) struct DoctorArgs {
-    /// Also require and validate an existing Kontext installation.
+    /// Also require and validate an existing Kontext installation. macOS only.
     #[arg(long)]
     pub(crate) kontext: bool,
 
-    /// Also require and validate an existing Numbat hook installation.
+    /// Also require and validate an existing Numbat hook installation. macOS only.
     #[arg(long)]
     pub(crate) numbat: bool,
 }

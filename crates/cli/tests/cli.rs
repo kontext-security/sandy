@@ -21,19 +21,6 @@ fn help_exposes_only_public_commands() -> Result<(), Box<dyn std::error::Error>>
 }
 
 #[test]
-#[cfg(target_os = "linux")]
-fn doctor_exercises_the_linux_backend_in_a_sacrificial_process()
--> Result<(), Box<dyn std::error::Error>> {
-    let mut command = Command::cargo_bin("sandy")?;
-    command
-        .arg("doctor")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Linux enforcement: available"));
-    Ok(())
-}
-
-#[test]
 fn run_help_documents_explicit_user_profile_files() -> Result<(), Box<dyn std::error::Error>> {
     let mut command = Command::cargo_bin("sandy")?;
     command
@@ -42,7 +29,30 @@ fn run_help_documents_explicit_user_profile_files() -> Result<(), Box<dyn std::e
         .success()
         .stdout(predicate::str::contains("--profile-file <PATH>"))
         .stdout(predicate::str::contains("--execute <PATH>"))
-        .stdout(predicate::str::contains("built-in profile"));
+        .stdout(predicate::str::contains("built-in profile"))
+        .stdout(predicate::str::contains("macOS only"));
+    Ok(())
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn linux_rejects_explicit_runtime_control_flags_before_launch()
+-> Result<(), Box<dyn std::error::Error>> {
+    for arguments in [
+        &["run", "--kontext", "--", "/bin/echo"][..],
+        &["run", "--numbat", "--", "/bin/echo"][..],
+        &["doctor", "--kontext"][..],
+        &["doctor", "--numbat"][..],
+    ] {
+        let mut command = Command::cargo_bin("sandy")?;
+        command
+            .args(arguments)
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains(
+                "runtime-control integrations are not supported by the Linux CLI",
+            ));
+    }
     Ok(())
 }
 

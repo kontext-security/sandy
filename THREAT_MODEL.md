@@ -104,6 +104,8 @@ must apply before creating them.
 - data already present in inherited standard streams or explicitly opened file
   descriptors;
 - terminal-control ioctls on inherited TTY and PTY descriptors;
+- native operations, including applicable ioctls, on explicitly granted device
+  files, and signal delivery to same-user processes the sandbox can identify;
 - all confused-deputy behavior through allowed Mach/XPC services;
 - outbound data disclosure while network is enabled;
 - mutation between path canonicalization and later use;
