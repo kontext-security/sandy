@@ -1183,3 +1183,60 @@ fn codex_control_files_are_readable_but_cannot_be_replaced_or_modified()
     assert_eq!(fs::read_to_string(codex.join("session-state"))?, "mutable");
     Ok(())
 }
+
+#[test]
+#[ignore = "irreversibly applies Seatbelt; run on a host, not inside another sandbox"]
+fn codex_shared_skills_are_read_only_without_exposing_adjacent_agent_state()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let home = root.path().join("home");
+    let project = root.path().join("project");
+    let skills = home.join(".agents/skills");
+    let private = home.join(".agents/private");
+    fs::create_dir_all(home.join(".codex"))?;
+    fs::create_dir_all(&skills)?;
+    fs::create_dir_all(&private)?;
+    fs::create_dir(&project)?;
+
+    let skill = skills.join("example.md");
+    let tool = skills.join("tool");
+    let secret = private.join("secret.txt");
+    fs::write(&skill, "shared skill")?;
+    fs::write(&tool, "#!/bin/sh\nexit 0\n")?;
+    fs::set_permissions(&tool, fs::Permissions::from_mode(0o700))?;
+    fs::write(&secret, "adjacent secret")?;
+
+    let mut readable = Command::cargo_bin("sandy")?;
+    readable
+        .env("HOME", &home)
+        .current_dir(&project)
+        .args([
+            "run",
+            "--profile",
+            "codex",
+            "--",
+            "/bin/cat",
+            skill.to_str().ok_or("skill path must be UTF-8")?,
+        ])
+        .assert()
+        .success()
+        .stdout("shared skill");
+
+    for script in [
+        "printf changed > \"$HOME/.agents/skills/example.md\"",
+        "\"$HOME/.agents/skills/tool\"",
+        "/bin/cat \"$HOME/.agents/private/secret.txt\"",
+    ] {
+        let mut denied = Command::cargo_bin("sandy")?;
+        denied
+            .env("HOME", &home)
+            .current_dir(&project)
+            .args(["run", "--profile", "codex", "--", "/bin/sh", "-c", script])
+            .assert()
+            .failure();
+    }
+
+    assert_eq!(fs::read_to_string(skill)?, "shared skill");
+    assert_eq!(fs::read_to_string(secret)?, "adjacent secret");
+    Ok(())
+}
