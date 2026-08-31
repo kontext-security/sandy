@@ -701,7 +701,7 @@ mod tests {
         let codex = resolve_by_name("codex")?;
         assert_eq!(codex.binary_names(), ["codex"]);
         assert_eq!(codex.hook_sources().len(), 2);
-        assert_eq!(codex.grants().len(), 1);
+        assert_eq!(codex.grants().len(), 2);
 
         let opencode = resolve_by_name("opencode")?;
         assert_eq!(opencode.binary_names(), ["opencode"]);
@@ -902,12 +902,16 @@ mod tests {
     }
 
     #[test]
-    fn profile_file_grants_do_not_add_executable_authority()
+    fn codex_profile_grants_files_without_executable_authority()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
         let home = root.path().join("home");
         let codex = home.join(".codex");
+        let skills = home.join(".agents/skills");
+        let adjacent = home.join(".agents/private");
         fs::create_dir_all(&codex)?;
+        fs::create_dir_all(&skills)?;
+        fs::create_dir_all(&adjacent)?;
         let paths = ResolvedUserPaths {
             home: Some(home),
             protected: Vec::new(),
@@ -928,11 +932,24 @@ mod tests {
                 && grant.access == AccessMode::ReadWrite
                 && grant.scope == PathScope::Subtree
         }));
+        let skills = fs::canonicalize(skills)?;
+        assert!(policy.files.iter().any(|grant| {
+            grant.path.as_path() == skills
+                && grant.access == AccessMode::Read
+                && grant.scope == PathScope::Subtree
+        }));
+        let adjacent = fs::canonicalize(adjacent)?;
+        assert!(
+            !policy
+                .files
+                .iter()
+                .any(|grant| grant.path.as_path() == adjacent)
+        );
         assert!(
             !policy
                 .executables
                 .iter()
-                .any(|grant| grant.path.as_path() == codex)
+                .any(|grant| { grant.path.as_path() == codex || grant.path.as_path() == skills })
         );
         Ok(())
     }

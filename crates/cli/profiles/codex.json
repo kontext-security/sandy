@@ -4,7 +4,8 @@
   "extends": ["base"],
   "detect": { "binary_names": ["codex"] },
   "grants": [
-    { "path": "~/.codex", "access": "read_write", "scope": "subtree" }
+    { "path": "~/.codex", "access": "read_write", "scope": "subtree" },
+    { "path": "~/.agents/skills", "access": "read", "scope": "subtree" }
   ],
   "protected_write_paths": [
     "~/.codex/hooks.json",

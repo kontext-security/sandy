@@ -176,6 +176,10 @@ sandy run --profile codex -- my-codex-wrapper
 Profiles are versioned documents built into Sandy. They use Sandy's supported
 permissions and cannot contain raw sandbox rules.
 
+When present, Codex's shared `~/.agents/skills` directory is readable so Codex
+can load installed skills. The profile does not grant writes, executable
+mapping, or access to adjacent `~/.agents` content.
+
 For one explicit session policy, load a user-authored profile file:
 
 ```bash
