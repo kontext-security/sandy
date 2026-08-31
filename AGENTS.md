@@ -217,7 +217,8 @@ crates/linux/src/ffi.rs
 The Linux backend separates deterministic `LinuxPolicyPlan`, ambient
 `PreparedLinuxSandbox`, and irreversible `apply()` states. It requires a
 single-threaded caller, a private user and mount namespace, fixed Landlock ABI
-9 semantics, complete capability removal, and final seccomp enforcement.
+6 semantics with signal scoping, complete capability removal, and final
+seccomp enforcement. It never clears an inherited host `noexec` restriction.
 Unsupported policy combinations fail before enforcement; there is no weaker
 fallback.
 

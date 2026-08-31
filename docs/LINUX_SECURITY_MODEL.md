@@ -20,10 +20,11 @@ apply()                 irreversible current-process transition
 ## Enforcement transaction
 
 Preparation verifies the single-threaded precondition, rejects unsupported
-policy combinations, opens policy paths with `openat2`, exercises the namespace
-and modern mount transaction in a sacrificial child, creates a hard-required
-Landlock ruleset, and compiles the seccomp filters. A preparation failure leaves
-the process unrestricted.
+policy combinations, opens policy paths with `openat2`, verifies that
+executable grants do not require clearing an inherited host `noexec`, exercises
+the namespace and modern mount transaction in a sacrificial child, creates a
+hard-required Landlock ruleset, and compiles the seccomp filters. A preparation
+failure leaves the process unrestricted.
 
 Application then:
 
@@ -45,13 +46,13 @@ its target.
 
 ## Fixed native semantics
 
-Sandy's fixed filesystem-rights baseline requires Landlock ABI 5. An exact
-external pathname Unix-socket grant under `BlockAll` requires ABI 9 so socket
-connection authority remains separate from filesystem visibility. The
-requirement is policy-specific and hard: a host never receives a weakened
+Sandy's fixed filesystem and signal-isolation baseline requires Landlock ABI 6.
+Every accepted policy scopes signal delivery: a sandboxed process may signal
+same-domain descendants but cannot signal an unsandboxed parent, sibling, or
+other host process. The requirement is hard: a host never receives a weakened
 version of a requested policy. A newer host ABI does not silently add
-restrictions. The backend does not implicitly restrict signal delivery. Device
-ioctls on already-open descriptors remain inherited capabilities.
+restrictions. Device ioctls on already-open descriptors remain inherited
+capabilities.
 
 The host must permit the calling executable to create and configure user,
 mount, and—when blocking network access—network namespaces. Some distributions
@@ -63,18 +64,17 @@ available through their normal system security policy.
 
 Read authority never includes execute authority. The private filesystem marks
 non-executable mounts `noexec`; an executable nested below a readable subtree
-receives its own executable overmount. Landlock separately mediates `execve`.
-Read/write authority uses the fixed mutation rights through ABI 8 because ABI
-9's aggregate write set also contains pathname-socket resolution. `ResolveUnix`
-is added only for an exact typed socket grant.
+receives its own executable overmount only when the host mount is executable.
+Sandy never clears an inherited `noexec` attribute and rejects an executable
+grant that would require doing so. Landlock separately mediates `execve`.
+Read/write authority uses a fixed ABI 8 filesystem-mutation set so later kernel
+rights do not silently alter the accepted policy.
 
-`BlockAll` uses a private network namespace and denies new externally
-addressable non-Unix socket descriptors. When the policy has no pathname
-Unix-socket grants, creating addressable sockets is denied without requiring
-pathname-socket mediation. A typed external pathname-socket grant enables only
-Unix socket creation and requires ABI 9 to limit connections to that exact
-path. Unnamed Unix `socketpair` IPC remains available because it cannot connect
-to a host endpoint. Ring setup, entry, and registration are disabled under
+`BlockAll` uses a private network namespace and denies creation of new
+addressable socket descriptors. Exact pathname Unix-socket authority is not in
+the initial Linux contract and is rejected during deterministic planning.
+Unnamed Unix `socketpair` IPC remains available because it cannot connect to a
+host endpoint. Ring setup, entry, and registration are disabled under
 `BlockAll` so asynchronous socket operations cannot bypass these controls.
 Already-open ordinary descriptors remain caller-held capabilities, matching the
 public current-process contract.
@@ -108,6 +108,7 @@ weakened:
   replacement cannot both be represented without broadening authority;
 - exact directory write protections, because pinning a mount point prevents
   replacement but not every metadata mutation;
+- pathname Unix-socket exceptions;
 - global metadata compatibility;
 - local-host-only TCP exceptions.
 

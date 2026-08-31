@@ -28,12 +28,11 @@ impl LinuxPolicyPlan {
 
     /// Returns the minimum Landlock ABI required by this policy.
     ///
-    /// The requirement is policy-specific: ordinary filesystem policies use
-    /// the fixed baseline while exact pathname Unix-socket authority requires
-    /// the newer socket-resolution right.
+    /// The initial backend uses one fixed semantic floor for every accepted
+    /// policy, including process-signal isolation.
     #[must_use]
     pub fn required_landlock_abi(&self) -> u32 {
-        crate::support::required_abi(self.policy.spec())
+        crate::BASELINE_LANDLOCK_ABI
     }
 }
 
@@ -50,6 +49,9 @@ pub fn plan(policy: &ValidatedPolicy) -> Result<LinuxPolicyPlan, LinuxError> {
     }
     if !spec.local_host_tcp.is_empty() {
         return Err(unsupported("local-host TCP policy"));
+    }
+    if !spec.unix_sockets.is_empty() {
+        return Err(unsupported("pathname Unix-socket policy"));
     }
     if spec.runtime_compatibility != RuntimeCompatibility::Minimal
         && spec.runtime_compatibility != RuntimeCompatibility::ForegroundCli
@@ -171,6 +173,24 @@ mod tests {
                 operation: LocalHostTcpOperation::Connect,
             }],
             network: NetworkPolicy::BlockAll,
+            ..PolicySpec::default()
+        })?;
+
+        let error = plan(&policy).err().ok_or("policy unexpectedly supported")?;
+        assert_eq!(error.kind(), LinuxErrorKind::Unsupported);
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_pathname_socket_authority_until_the_backend_contract_supports_it()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use sandy_core::{UnixSocketGrant, UnixSocketOperation};
+
+        let policy = ValidatedPolicy::try_from(PolicySpec {
+            unix_sockets: vec![UnixSocketGrant {
+                path: path("/service.sock")?,
+                operation: UnixSocketOperation::Connect,
+            }],
             ..PolicySpec::default()
         })?;
 

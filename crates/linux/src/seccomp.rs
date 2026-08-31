@@ -11,12 +11,12 @@ pub(crate) struct SeccompPrograms {
     clone3: BpfProgram,
     topology: BpfProgram,
     block_network: bool,
+    allow_subprocesses: bool,
 }
 
 pub(crate) fn compile(
     allow_subprocesses: bool,
     block_network: bool,
-    allow_pathname_unix: bool,
 ) -> Result<SeccompPrograms, LinuxError> {
     let architecture = TargetArch::try_from(std::env::consts::ARCH)
         .map_err(|_| unsupported("seccomp architecture"))?;
@@ -72,32 +72,7 @@ pub(crate) fn compile(
         denied.insert(libc::SYS_io_uring_setup, Vec::new());
         denied.insert(libc::SYS_io_uring_enter, Vec::new());
         denied.insert(libc::SYS_io_uring_register, Vec::new());
-        let socket_rules = if allow_pathname_unix {
-            vec![
-                SeccompRule::new(vec![
-                    SeccompCondition::new(
-                        0,
-                        SeccompCmpArgLen::Dword,
-                        SeccompCmpOp::Ne,
-                        libc::AF_UNIX as u64,
-                    )
-                    .map_err(|_| preparation("seccomp compilation"))?,
-                ])
-                .map_err(|_| preparation("seccomp compilation"))?,
-            ]
-        } else {
-            Vec::new()
-        };
-        denied.insert(libc::SYS_socket, socket_rules);
-        if allow_pathname_unix {
-            // The typed endpoint capability is connect-only. Once AF_UNIX
-            // socket creation is enabled, prevent it from becoming server
-            // authority in an otherwise writable directory.
-            denied.insert(libc::SYS_bind, Vec::new());
-            denied.insert(libc::SYS_listen, Vec::new());
-            denied.insert(libc::SYS_accept, Vec::new());
-            denied.insert(libc::SYS_accept4, Vec::new());
-        }
+        denied.insert(libc::SYS_socket, Vec::new());
     }
 
     let topology = compile_filter(
@@ -109,6 +84,7 @@ pub(crate) fn compile(
         clone3,
         topology,
         block_network,
+        allow_subprocesses,
     })
 }
 
@@ -129,6 +105,15 @@ pub(crate) fn apply(programs: &SeccompPrograms) -> Result<(), LinuxError> {
         .map_err(|_| LinuxError::new(LinuxErrorKind::EnforcementFailed, "seccomp application"))?;
     if programs.block_network {
         crate::ffi::verify_io_uring_blocked().map_err(|_| {
+            LinuxError::new(LinuxErrorKind::EnforcementFailed, "seccomp postcondition")
+        })?;
+    }
+    crate::ffi::verify_clone3_blocked()
+        .map_err(|_| LinuxError::new(LinuxErrorKind::EnforcementFailed, "seccomp postcondition"))?;
+    crate::ffi::verify_namespace_change_blocked()
+        .map_err(|_| LinuxError::new(LinuxErrorKind::EnforcementFailed, "seccomp postcondition"))?;
+    if !programs.allow_subprocesses {
+        crate::ffi::verify_fork_blocked().map_err(|_| {
             LinuxError::new(LinuxErrorKind::EnforcementFailed, "seccomp postcondition")
         })?;
     }
@@ -170,7 +155,20 @@ mod tests {
 
     #[test]
     fn compiles_both_process_modes() {
-        assert!(compile(false, true, false).is_ok());
-        assert!(compile(true, false, true).is_ok());
+        assert!(compile(false, true).is_ok());
+        assert!(compile(true, false).is_ok());
+    }
+
+    #[test]
+    fn disabled_process_mode_includes_legacy_entry_points() {
+        let mut denied = BTreeMap::new();
+        deny_arch_process_creation(&mut denied);
+        #[cfg(target_arch = "x86_64")]
+        {
+            assert!(denied.contains_key(&libc::SYS_fork));
+            assert!(denied.contains_key(&libc::SYS_vfork));
+        }
+        #[cfg(target_arch = "aarch64")]
+        assert!(denied.is_empty());
     }
 }

@@ -154,15 +154,6 @@ fn probe_mount_sequence() -> bool {
     if probe_mount_setattr(mount_fd, &attributes) < 0 {
         return false;
     }
-    let executable_attributes = libc::mount_attr {
-        attr_set: 0,
-        attr_clr: libc::MOUNT_ATTR_NOEXEC,
-        propagation: 0,
-        userns_fd: 0,
-    };
-    if probe_mount_setattr(mount_fd, &executable_attributes) < 0 {
-        return false;
-    }
     let target = probe_open(c"/tmp/.sandy-probe-root/usr");
     if target < 0 {
         return false;
@@ -386,11 +377,8 @@ pub(crate) fn restrict_mount(
             } else {
                 libc::MOUNT_ATTR_NOEXEC
             },
-        attr_clr: if allow_execute {
-            libc::MOUNT_ATTR_NOEXEC
-        } else {
-            0
-        },
+        // A caller grant must never clear a host or administrator restriction.
+        attr_clr: 0,
         propagation: 0,
         userns_fd: 0,
     };
@@ -412,6 +400,71 @@ pub(crate) fn restrict_mount(
         Err(io::Error::last_os_error())
     } else {
         Ok(())
+    }
+}
+
+pub(crate) fn mount_is_noexec(fd: RawFd) -> io::Result<bool> {
+    let mut status = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    // SAFETY: `fd` is a borrowed live descriptor. `status` points to writable,
+    // correctly aligned storage for exactly one `statvfs` value. The kernel
+    // initializes it on success and retains neither pointer nor descriptor.
+    cvt(unsafe { libc::fstatvfs(fd, status.as_mut_ptr()) })?;
+    // SAFETY: the successful call above initialized the complete structure.
+    let status = unsafe { status.assume_init() };
+    Ok(status.f_flag & libc::ST_NOEXEC != 0)
+}
+
+pub(crate) fn verify_clone3_blocked() -> io::Result<()> {
+    // SAFETY: the installed filter must reject clone3 before inspecting the
+    // deliberately null argument pointer. No child or ownership transfer can
+    // occur on the required ENOSYS path.
+    let result =
+        unsafe { libc::syscall(libc::SYS_clone3, std::ptr::null::<libc::c_void>(), 0_usize) };
+    expect_errno(result, libc::ENOSYS)
+}
+
+pub(crate) fn verify_namespace_change_blocked() -> io::Result<()> {
+    // SAFETY: unshare receives only the fixed mount-namespace flag and borrows
+    // no pointers. The installed filter must reject it before any state change.
+    let result = unsafe { libc::unshare(libc::CLONE_NEWNS) };
+    expect_errno(result.into(), libc::EPERM)
+}
+
+pub(crate) fn verify_fork_blocked() -> io::Result<()> {
+    // SAFETY: the installed filter must reject fork before a child is created.
+    // If a broken filter unexpectedly creates one, the child immediately exits
+    // without running Rust cleanup and the parent reaps it before returning an
+    // error. No borrowed memory or descriptor ownership crosses this boundary.
+    let result = unsafe { libc::fork() };
+    match result {
+        -1 => {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::EPERM) {
+                Ok(())
+            } else {
+                Err(error)
+            }
+        }
+        0 => {
+            // SAFETY: this is the unexpected child path described above.
+            unsafe { libc::_exit(127) }
+        }
+        child => {
+            let mut status = 0;
+            // SAFETY: `child` was returned by fork in this process and is
+            // reaped exactly once; the status pointer remains live for the call.
+            unsafe { libc::waitpid(child, &mut status, 0) };
+            Err(io::Error::from_raw_os_error(libc::EPERM))
+        }
+    }
+}
+
+fn expect_errno(result: libc::c_long, expected: libc::c_int) -> io::Result<()> {
+    let error = io::Error::last_os_error();
+    if result == -1 && error.raw_os_error() == Some(expected) {
+        Ok(())
+    } else {
+        Err(io::Error::from_raw_os_error(libc::EPERM))
     }
 }
 

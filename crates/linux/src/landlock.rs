@@ -4,7 +4,7 @@ use landlock::{
     ABI, Access, AccessFs, BitFlags, CompatLevel, Compatible, PathBeneath, Ruleset, RulesetAttr,
     RulesetCreated, RulesetCreatedAttr, RulesetStatus, Scope,
 };
-use sandy_core::{AccessMode, NetworkPolicy, PathScope, PolicySpec};
+use sandy_core::{AccessMode, PathScope, PolicySpec};
 
 use crate::{
     LinuxError, LinuxErrorKind,
@@ -19,23 +19,11 @@ pub(crate) fn prepare(
     policy: &PolicySpec,
     pinned: &BTreeMap<sandy_core::AbsolutePath, PinnedPath>,
 ) -> Result<PreparedLandlock, LinuxError> {
-    let restrict_pathname_sockets =
-        policy.network == NetworkPolicy::BlockAll && !policy.unix_sockets.is_empty();
-    let mut handled = AccessFs::from_all(ABI::V8);
-    if restrict_pathname_sockets {
-        handled |= AccessFs::ResolveUnix;
-    }
     let builder = Ruleset::default()
         .set_compatibility(CompatLevel::HardRequirement)
-        .handle_access(handled)
-        .map_err(|_| unsupported("Landlock ABI"))?;
-    let builder = if restrict_pathname_sockets {
-        builder
-            .scope(Scope::AbstractUnixSocket)
-            .map_err(|_| unsupported("Landlock scope"))?
-    } else {
-        builder
-    };
+        .handle_access(AccessFs::from_all(ABI::V8))
+        .and_then(|builder| builder.scope(Scope::Signal))
+        .map_err(|_| unsupported("Landlock ABI or signal scope"))?;
     let mut ruleset = builder
         .create()
         .map_err(|_| unsupported("Landlock ruleset creation"))?;
@@ -63,19 +51,6 @@ pub(crate) fn prepare(
             .file;
         ruleset = add_rule(ruleset, file, AccessFs::Execute.into())?;
     }
-    if restrict_pathname_sockets {
-        for grant in &policy.unix_sockets {
-            if denied(&grant.path, &policy.protected_paths) {
-                continue;
-            }
-            let file = &pinned
-                .get(&grant.path)
-                .ok_or_else(|| preparation("Landlock socket lookup"))?
-                .file;
-            ruleset = add_rule(ruleset, file, AccessFs::ResolveUnix.into())?;
-        }
-    }
-
     // The shape checks in preparation ensure all directory rules are subtree
     // rules. PathBeneath is therefore an exact rule for files and a recursive
     // rule only where the typed policy requested one.
@@ -114,9 +89,7 @@ fn read_rights(kind: PinnedKind) -> BitFlags<AccessFs> {
 }
 
 fn write_rights(kind: PinnedKind) -> BitFlags<AccessFs> {
-    // ABI 9's `from_write` includes ResolveUnix. Socket connection authority
-    // is independent from filesystem mutation, so use the complete fixed ABI 8
-    // mutation set and add ResolveUnix only for typed socket grants.
+    // Keep the fixed filesystem mutation set independent from future rights.
     let rights = AccessFs::from_write(ABI::V8);
     if kind == PinnedKind::Directory {
         rights

@@ -79,11 +79,7 @@ pub fn prepare(
     let namespace = namespace::prepare(block_network)?;
     let mount = prepare_mounts(&plan, working_directory)?;
     let landlock = landlock::prepare(plan.policy.spec(), &mount.pinned)?;
-    let seccomp = seccomp::compile(
-        plan.allows_subprocesses(),
-        block_network,
-        !plan.policy.spec().unix_sockets.is_empty(),
-    )?;
+    let seccomp = seccomp::compile(plan.allows_subprocesses(), block_network)?;
     Ok(PreparedLinuxSandbox {
         mount,
         landlock,
@@ -130,19 +126,6 @@ fn prepare_mounts(
         entry.recursive |= grant.scope == PathScope::Subtree;
         entry.executable = true;
     }
-    for grant in &spec.unix_sockets {
-        if !denied(&grant.path, &spec.protected_paths) {
-            requested
-                .entry(grant.path.clone())
-                .or_insert_with(|| MountRequirement {
-                    path: grant.path.clone(),
-                    recursive: false,
-                    writable: false,
-                    executable: false,
-                });
-        }
-    }
-
     let mut pinned = BTreeMap::new();
     for path in requested.keys().chain(
         spec.write_protections
@@ -191,20 +174,6 @@ fn prepare_mounts(
             return Err(unsupported("executable grant shape"));
         }
     }
-    for grant in &spec.unix_sockets {
-        if denied(&grant.path, &spec.protected_paths) {
-            continue;
-        }
-        if pinned
-            .get(&grant.path)
-            .ok_or_else(|| preparation("socket pinning"))?
-            .kind
-            != PinnedKind::Socket
-        {
-            return Err(unsupported("pathname socket type"));
-        }
-    }
-
     let mut mounts = requested.into_values().collect::<Vec<_>>();
     mounts.sort_by_key(|entry| entry.path.as_path().components().count());
     let mut effective = Vec::<MountRequirement>::new();
@@ -241,6 +210,19 @@ fn prepare_mounts(
         })
         .collect::<Result<Vec<_>, LinuxError>>()?;
 
+    for requirement in effective
+        .iter()
+        .filter(|requirement| requirement.executable)
+    {
+        reject_host_noexec(&requirement.path, &pinned)?;
+    }
+    for requirement in protections
+        .iter()
+        .filter(|requirement| requirement.executable)
+    {
+        reject_host_noexec(&requirement.path, &pinned)?;
+    }
+
     if !visible(working_directory, effective.iter()) {
         return Err(unsupported("working directory visibility"));
     }
@@ -254,6 +236,21 @@ fn prepare_mounts(
         aliases,
         working_directory,
     })
+}
+
+fn reject_host_noexec(
+    path: &AbsolutePath,
+    pinned: &BTreeMap<AbsolutePath, PinnedPath>,
+) -> Result<(), LinuxError> {
+    let source = pinned
+        .get(path)
+        .ok_or_else(|| preparation("executable mount lookup"))?;
+    if crate::ffi::mount_is_noexec(source.file.as_raw_fd())
+        .map_err(|_| preparation("host mount inspection"))?
+    {
+        return Err(unsupported("host noexec restriction"));
+    }
+    Ok(())
 }
 
 fn executable(path: &AbsolutePath, grants: &[sandy_core::ExecutableGrant]) -> bool {
