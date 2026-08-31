@@ -1,6 +1,6 @@
 [package]
 name = "sandy-cli"
-description = "Native macOS sandboxing for AI coding agents"
+description = "Native process sandboxing for AI coding agents"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,6 +10,9 @@ homepage.workspace = true
 authors.workspace = true
 publish = false
 default-run = "sandy"
+
+[features]
+live-tests = []
 
 [lints]
 workspace = true
@@ -30,6 +33,15 @@ thiserror.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 sandy-seatbelt.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+sandy-linux.workspace = true
+
 [dev-dependencies]
 assert_cmd.workspace = true
 predicates.workspace = true
+
+[[test]]
+name = "live_linux"
+path = "tests/live_linux.rs"
+harness = false
+required-features = ["live-tests"]

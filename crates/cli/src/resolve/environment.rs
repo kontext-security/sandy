@@ -24,21 +24,24 @@ pub(crate) fn sanitized_environment(
     entries
 }
 
-/// Returns the macOS-maintained public root bundle when the caller has not
+/// Returns the platform-maintained public root bundle when the caller has not
 /// selected a certificate source explicitly.
 ///
-/// Rust TLS clients commonly query the user's trust settings through Keychain
-/// services. Sandy deliberately denies that IPC surface. Pointing clients at
-/// the operating system's public PEM bundle preserves ordinary provider TLS
-/// without granting access to Keychain databases or credential services.
+/// Pointing clients at the operating system's public PEM bundle preserves
+/// ordinary provider TLS without granting access to broader credential stores
+/// or macOS Keychain services.
 pub(crate) fn default_ca_bundle() -> Option<&'static Path> {
-    const MACOS_CA_BUNDLE: &str = "/etc/ssl/cert.pem";
-
     if env::var_os("SSL_CERT_FILE").is_some_and(|value| !value.is_empty()) {
         return None;
     }
-    let path = Path::new(MACOS_CA_BUNDLE);
-    path.is_file().then_some(path)
+    [
+        "/etc/ssl/cert.pem",
+        "/etc/ssl/certs/ca-certificates.crt",
+        "/etc/pki/tls/certs/ca-bundle.crt",
+    ]
+    .into_iter()
+    .map(Path::new)
+    .find(|path| path.is_file())
 }
 
 fn append_default_ca_bundle(entries: &mut Vec<EnvironmentEntry>, bundle: Option<&Path>) {
@@ -65,6 +68,7 @@ fn sensitive_key(key: &std::ffi::OsStr) -> bool {
         return false;
     };
     key.starts_with("DYLD_")
+        || key.starts_with("LD_")
         || key.starts_with("KONTEXT_")
         || matches!(key, "SSH_AUTH_SOCK" | "GIT_ASKPASS" | "SSH_ASKPASS")
 }
@@ -76,6 +80,8 @@ mod tests {
     #[test]
     fn recognizes_sensitive_names() {
         assert!(sensitive_key(std::ffi::OsStr::new("DYLD_INSERT_LIBRARIES")));
+        assert!(sensitive_key(std::ffi::OsStr::new("LD_PRELOAD")));
+        assert!(sensitive_key(std::ffi::OsStr::new("LD_LIBRARY_PATH")));
         assert!(sensitive_key(std::ffi::OsStr::new("KONTEXT_SOCKET")));
         assert!(sensitive_key(std::ffi::OsStr::new("SSH_AUTH_SOCK")));
         assert!(!sensitive_key(std::ffi::OsStr::new("PATH")));

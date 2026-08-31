@@ -6,7 +6,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 #[command(
     name = "sandy",
     version,
-    about = "Native macOS sandboxing for AI coding agents"
+    about = "Native process sandboxing for AI coding agents"
 )]
 pub(crate) struct Cli {
     #[command(subcommand)]
@@ -15,7 +15,7 @@ pub(crate) struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
-    /// Run a command inside a macOS sandbox.
+    /// Run a command inside a native process sandbox.
     Run(RunArgs),
     /// Check whether Sandy can enforce a sandbox on this machine.
     Doctor(DoctorArgs),
@@ -118,7 +118,8 @@ pub(crate) struct RunArgs {
     pub(crate) numbat: bool,
 
     /// With --block-net, allow one IPv4 TCP port on this Mac for an
-    /// operator-started Numbat OTLP/HTTP collector. PORT defaults to 4318.
+    /// operator-started Numbat OTLP/HTTP collector. Unsupported on Linux.
+    /// PORT defaults to 4318.
     #[arg(
         long,
         value_name = "PORT",

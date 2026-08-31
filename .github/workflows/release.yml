@@ -86,9 +86,19 @@ jobs:
           - runner: macos-26
             target: aarch64-apple-darwin
             archive_arch: arm64
+            asset_os: darwin
           - runner: macos-26-intel
             target: x86_64-apple-darwin
             archive_arch: amd64
+            asset_os: darwin
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            archive_arch: arm64
+            asset_os: linux
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            archive_arch: amd64
+            asset_os: linux
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: write
@@ -106,27 +116,43 @@ jobs:
         run: ./scripts/verify-release-version.sh "$TAG_NAME"
       - name: Build release binary
         run: cargo build --release --locked --target "${{ matrix.target }}" -p sandy-cli
+      - name: Verify native Linux binary
+        if: ${{ matrix.asset_os == 'linux' }}
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          if sysctl -n kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          "target/${TARGET}/release/sandy" doctor
       - name: Package release
         env:
           TAG_NAME: ${{ inputs.tag_name }}
           TARGET: ${{ matrix.target }}
           ARCH: ${{ matrix.archive_arch }}
+          ASSET_OS: ${{ matrix.asset_os }}
         run: |
           version="${TAG_NAME#v}"
-          asset="sandy_${version}_darwin_${ARCH}"
+          asset="sandy_${version}_${ASSET_OS}_${ARCH}"
           mkdir -p "dist/${asset}"
           install -m 0755 "target/${TARGET}/release/sandy" "dist/${asset}/sandy"
           cp LICENSE README.md "dist/${asset}/"
           COPYFILE_DISABLE=1 tar -C "dist/${asset}" -czf "dist/${asset}.tar.gz" sandy LICENSE README.md
-          shasum -a 256 "dist/${asset}.tar.gz" | awk '{print $1}' > "dist/${asset}.tar.gz.sha256"
+          if command -v shasum >/dev/null 2>&1; then
+            digest="$(shasum -a 256 "dist/${asset}.tar.gz" | awk '{print $1}')"
+          else
+            digest="$(sha256sum "dist/${asset}.tar.gz" | awk '{print $1}')"
+          fi
+          printf '%s\n' "$digest" > "dist/${asset}.tar.gz.sha256"
       - name: Upload release assets
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ inputs.tag_name }}
           ARCH: ${{ matrix.archive_arch }}
+          ASSET_OS: ${{ matrix.asset_os }}
         run: |
           version="${TAG_NAME#v}"
-          asset="sandy_${version}_darwin_${ARCH}.tar.gz"
+          asset="sandy_${version}_${ASSET_OS}_${ARCH}.tar.gz"
           gh release upload "$TAG_NAME" "dist/$asset" "dist/${asset}.sha256" --repo "$GITHUB_REPOSITORY" --clobber
 
   publish-crates:

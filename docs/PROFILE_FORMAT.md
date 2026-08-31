@@ -99,7 +99,7 @@ same-user process outside the sandbox can still replace filesystem entries
 during that interval. The current session's source denial does not establish
 the file's provenance and cannot protect earlier or future launches.
 
-Dry-run schema version 5 reports the user-visible profile name, `source` set to
+Dry-run schema version 6 reports the user-visible profile name, `source` set to
 `user_file`, and the selected `base`. It does not place the profile-file path or
 document contents in profile metadata. The complete dry-run policy necessarily
 contains policy paths, including source-path denials; treat dry-run output as

@@ -12,7 +12,7 @@ use crate::{
 };
 
 pub(crate) fn run(arguments: DoctorArgs) -> Result<i32, AppError> {
-    if !cfg!(target_os = "macos") {
+    if !cfg!(any(target_os = "linux", target_os = "macos")) {
         return Err(AppError::UnsupportedPlatform);
     }
 
@@ -20,18 +20,21 @@ pub(crate) fn run(arguments: DoctorArgs) -> Result<i32, AppError> {
         env::current_exe().map_err(|error| AppError::io("resolve Sandy executable", error))?;
     let status = Command::new(executable)
         .arg("__probe")
+        .env_clear()
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .status()
-        .map_err(|error| AppError::io("run Seatbelt support probe", error))?;
+        .map_err(|error| AppError::io("run native sandbox support probe", error))?;
     if !status.success() {
         return Err(AppError::Probe(
-            "the macOS Seatbelt runtime probe failed; Sandy cannot enforce a sandbox here"
-                .to_owned(),
+            "the native runtime probe failed; Sandy cannot enforce a sandbox here".to_owned(),
         ));
     }
-    println!("Seatbelt enforcement: available");
+    #[cfg(target_os = "macos")]
+    println!("macOS enforcement: available");
+    #[cfg(target_os = "linux")]
+    println!("Linux enforcement: available");
 
     let resolved = if arguments.kontext || arguments.numbat {
         let selected = profile::select(Some(&"claude".to_owned()), std::ffi::OsStr::new("claude"))?;
@@ -81,7 +84,40 @@ pub(crate) fn probe_child() -> Result<i32, AppError> {
         sandy_seatbelt::probe()?;
         Ok(0)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        use std::fs;
+
+        use sandy_core::{
+            AbsolutePath, AccessMode, FileGrant, NetworkPolicy, PathScope, PolicySpec,
+            ValidatedPolicy,
+        };
+
+        let working_directory = env::current_dir()
+            .and_then(fs::canonicalize)
+            .map_err(|error| AppError::io("resolve probe working directory", error))?;
+        let working_directory = AbsolutePath::new(
+            working_directory
+                .to_str()
+                .ok_or_else(|| AppError::NonUtf8Path(working_directory.clone()))?
+                .to_owned(),
+        )
+        .map_err(|_| AppError::Launch("probe working directory is invalid".to_owned()))?;
+        let policy = ValidatedPolicy::try_from(PolicySpec {
+            files: vec![FileGrant {
+                path: working_directory.clone(),
+                access: AccessMode::Read,
+                scope: PathScope::Subtree,
+            }],
+            network: NetworkPolicy::BlockAll,
+            ..PolicySpec::default()
+        })?;
+        let plan = sandy_linux::plan(&policy)?;
+        let prepared = sandy_linux::prepare(plan, &working_directory)?;
+        sandy_linux::apply(prepared)?;
+        Ok(0)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         Err(AppError::UnsupportedPlatform)
     }

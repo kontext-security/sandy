@@ -40,8 +40,8 @@ jobs:
       - name: Test Seatbelt enforcement
         run: make test-live
 
-  linux-substrate:
-    name: Linux enforcement substrate (${{ matrix.runner }})
+  linux:
+    name: Linux (${{ matrix.runner }})
     strategy:
       fail-fast: false
       matrix:
@@ -53,24 +53,28 @@ jobs:
         with:
           persist-credentials: false
       - name: Install Rust toolchain
-        run: rustup toolchain install 1.91.1 --profile minimal --component clippy
-      - name: Lint Linux backend
-        run: cargo clippy -p sandy-linux --all-targets --all-features --locked -- -D warnings
+        run: rustup toolchain install 1.91.1 --profile minimal --component clippy,rustfmt
+      - name: Check release version metadata
+        run: make release-version-check
+      - name: Check formatting
+        run: cargo fmt --all --check
       - name: Verify restricted user namespaces fail closed
-        env:
-          SANDY_LINUX_EXPECT_UNSUPPORTED: "1"
         run: |
-          if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = "1" ]; then
-            cargo test -p sandy-linux --test live_linux --features live-tests --locked
+          if test "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true)" = "1"; then
+            SANDY_LINUX_EXPECT_UNSUPPORTED=1 cargo test -p sandy-linux --test live_linux --features live-tests --locked
           fi
       - name: Enable user namespaces for positive enforcement tests
         run: |
-          if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+          if sysctl -n kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
-      - name: Test Linux backend
+      - name: Lint workspace
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Test workspace
+        run: cargo test --workspace --locked
+      - name: Test Linux enforcement
         run: make test-live-linux
-      - name: Preserve unsupported facade contract
+      - name: Test packaged facade consumer
         run: |
           cargo check -p sandy-sandbox --all-targets --all-features --locked
           cargo run --manifest-path tests/package-consumer/Cargo.toml --locked

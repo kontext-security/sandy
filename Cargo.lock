@@ -439,6 +439,7 @@ dependencies = [
  "clap",
  "predicates",
  "sandy-core",
+ "sandy-linux",
  "sandy-seatbelt",
  "serde",
  "serde_json",

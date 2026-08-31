@@ -43,6 +43,10 @@ container, VM, background service, or modified copy of the agent.
 brew install kontext-security/tap/sandy
 ```
 
+Homebrew is the macOS distribution. Linux x86-64 and arm64 archives are
+attached to each GitHub release; unpack the archive and place `sandy` on your
+`PATH`.
+
 Check that sandboxing works:
 
 ```bash
@@ -151,9 +155,10 @@ sandy run --dry-run -- claude
 
 Dry-run output is a versioned JSON document. `dry_run_schema_version` identifies
 its public schema independently from the internal launch-manifest protocol.
-Schema version 5 identifies the selected profile's `source` as `embedded` or
-`user_file`; user-file selections also report their built-in `base` without
-placing the source path or document contents in profile metadata.
+Schema version 6 reports a backend-neutral `native_policy` summary and
+identifies the selected profile's `source` as `embedded` or `user_file`;
+user-file selections also report their built-in `base` without placing the
+source path or document contents in profile metadata.
 The resolved policy includes the CLI's explicit runtime baseline and reports
 its filesystem metadata, executable, subprocess, and foreground compatibility
 behavior.
@@ -266,11 +271,11 @@ sandy run --block-net --numbat-collector -- codex --sandbox danger-full-access
 ```
 
 `--numbat-collector=PORT` selects a different nonzero port and requires
-`--block-net`. Sandy does not start or probe the collector and does not
-configure the agent's telemetry exporter. It authorizes TCP connect to the
-selected port on IPv4 addresses belonging to this Mac, including loopback and
-other local interfaces; it does not authorize external addresses or other
-ports.
+`--block-net`. This local-host TCP exception is currently macOS-only. Sandy
+does not start or probe the collector and does not configure the agent's
+telemetry exporter. On macOS it authorizes TCP connect to the selected port on
+IPv4 addresses belonging to the host, including loopback and other local
+interfaces; it does not authorize external addresses or other ports.
 
 ## Security and support
 
@@ -281,10 +286,23 @@ Network access is allowed by default and can be blocked with `--block-net`.
 Known-agent profiles may grant access to agent state directories for
 compatibility.
 
-The `sandy` CLI currently supports macOS; the Rust current-process library also
-supports Linux on hosts that satisfy its native requirements. Version `0.1.x`
-is experimental and has not completed an independent security audit. The
-macOS backend uses Apple's private, deprecated Seatbelt interface.
+The `sandy` CLI and Rust current-process library support macOS and Linux.
+Linux requires Landlock ABI 9, user and mount namespaces, the modern mount API,
+and a host security policy that permits the calling executable to configure
+those namespaces. Some distributions restrict unprivileged user namespaces by
+default; `sandy doctor` detects this and Sandy never falls back to weaker
+enforcement.
+
+The initial Linux private filesystem intentionally omits host `/proc`, `/sys`,
+`/run`, and new `/dev` opens. Inherited standard streams and controlling
+terminal descriptors continue to work. Policies that require nested
+confidential denies, absent write-protected files, or local-host-only TCP are
+rejected before target execution. See
+[the Linux security model](docs/LINUX_SECURITY_MODEL.md) for the exact support
+contract.
+
+Version `0.1.x` is experimental and has not completed an independent security
+audit. The macOS backend uses Apple's private, deprecated Seatbelt interface.
 
 Read [THREAT_MODEL.md](THREAT_MODEL.md) for the full security model and
 [SECURITY.md](SECURITY.md) for vulnerability reporting.

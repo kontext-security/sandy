@@ -134,13 +134,14 @@ weakened:
 - global metadata compatibility;
 - local-host-only TCP exceptions.
 
-The private root never mounts procfs. Process entries, descriptor magic links,
-and the host process tree remain absent. A foreground CLI launch recreates
-`/proc/self/exe` as a static symlink to the already-visible, executable primary
-target. This lets that target identify or re-execute its own image without
-adding underlying file authority. Descendants see the primary target rather
-than a dynamic per-process link. `/proc/self/fd`, `/dev/fd`, and `/dev/shm`
-remain unavailable.
+The private root never mounts procfs. The CLI may bind only explicitly selected
+public proc files such as CPU and kernel-version data. A foreground CLI launch
+recreates `/proc/self/exe` as a static symlink to the already-visible,
+executable primary target. This lets that target identify or re-execute its own
+image without adding underlying file authority. Descendants see the primary
+target rather than a dynamic per-process link. Process entries,
+`/proc/self/fd`, `/dev/fd`, `/dev/shm`, magic links, and the host process tree
+remain absent.
 
 When the internal foreground-CLI compatibility capability is present, the
 backend recreates a bounded set of host runtime symlinks (`/bin`, `/sbin`,
@@ -152,6 +153,24 @@ the host distribution.
 The requested working directory must be visible through an explicit grant.
 Sandy rejects the policy before enforcement rather than silently changing the
 working directory to the private root.
+
+## CLI compatibility boundary
+
+The Linux CLI baseline explicitly grants the system program and library trees,
+public certificate and timezone data, selected resolver and account files, and
+the small public proc-file set documented in the dry-run policy. Read access and
+executable mapping remain separate. A bounded set of host runtime symlinks is
+recreated only when its canonical target already has matching authority.
+
+Host `/sys`, `/run`, the procfs process tree, and new `/dev` opens are absent.
+Standard input, output, error, and an existing controlling terminal remain
+native because they were opened before enforcement. Linux does not support the
+CLI's local-host-only TCP exception.
+
+Write-protected entries must exist so the backend can pin and overmount them.
+If an agent profile names an absent control file, or a user profile requests a
+confidential deny nested inside the writable project tree, preparation fails
+before the bootstrap executes the target.
 
 ## Unsafe boundary
 

@@ -18,22 +18,22 @@ flowchart LR
     Composition --> Core[sandy-core validation]
     Core --> Manifest[Versioned launch manifest]
     Manifest --> Bootstrap[Fresh bootstrap]
-    Bootstrap --> Seatbelt[Seatbelt compiler and apply]
-    Seatbelt --> Agent[Agent process tree]
+    Bootstrap --> Backend[Selected native backend]
+    Backend --> Agent[Agent process tree]
     Agent --> Hook[Recognized registration]
     Hook -. optional exact endpoint .-> Host[Host runtime service]
 ```
 
 The parent performs discovery before the sandbox exists. Each resolver owns one
-service's installation and hook protocol, but it cannot emit Seatbelt source.
+service's installation and hook protocol, but it cannot emit native policy.
 Its output is data: immutable executables, filesystem grants, write
 protections, and exact local endpoints. `RuntimeControls` combines the resolved
 controls once and pins every protected resource through its enclosing
 writable ancestors. Core validation independently rejects a manifest that
-omits that integrity closure. The bootstrap and Seatbelt compiler never receive
+omits that integrity closure. The bootstrap and native backend never receive
 an agent or service name.
 
-Setup is a separate, explicit host-mutation plane. Both supported providers use
+Setup is a separate, explicit macOS host-mutation plane. Both supported providers use
 the same lifecycle: inspect the selected agent registration, locate an existing
 executable, install only when it is absent, invoke the provider-owned
 configuration command, and verify the result through the normal runtime
@@ -53,7 +53,8 @@ capabilities still come exclusively from the existing bounded resolvers.
 
 A local endpoint control is independent from hook discovery. For example,
 `--numbat-collector` resolves only connect authority for one IPv4 TCP port
-on the local Mac and requires the otherwise blocked network policy. The
+on the local Mac and requires the otherwise blocked network policy. Linux
+rejects this capability because it cannot preserve the address semantics. The
 operator starts the collector and configures the agent's OTLP exporter
 separately; Sandy neither launches nor health-checks it.
 
@@ -93,10 +94,10 @@ a failure.
 ## Current execution identities
 
 Kontext and Numbat hooks execute as descendants of the agent and therefore
-inside the same Seatbelt sandbox. Sandy can make their registration, binary,
+inside the same native sandbox. Sandy can make their registration, binary,
 and operator-controlled inputs readable but immutable. It cannot make a file
 writable by an in-sandbox hook while denying the same write to the agent:
-Seatbelt sees both processes as one sandbox identity.
+the backend sees both processes as one sandbox identity.
 
 For Numbat, rule directories are read-only and recursively protected. Its
 record output and sequence-state database remain writable by the entire agent

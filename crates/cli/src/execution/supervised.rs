@@ -12,7 +12,7 @@ use sandy_core::{
 use serde_json::json;
 use tempfile::Builder;
 
-const DRY_RUN_SCHEMA_VERSION: u32 = 5;
+const DRY_RUN_SCHEMA_VERSION: u32 = 6;
 
 use crate::{
     cli::RunArgs,
@@ -26,8 +26,14 @@ use crate::{
 };
 
 pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
-    if !cfg!(target_os = "macos") {
+    if !cfg!(any(target_os = "linux", target_os = "macos")) {
         return Err(AppError::UnsupportedPlatform);
+    }
+    #[cfg(target_os = "linux")]
+    if arguments.numbat_collector.is_some() {
+        return Err(AppError::Launch(
+            "local-host TCP exceptions are not supported by the Linux backend".to_owned(),
+        ));
     }
     let command = resolve_command(&arguments.target)?;
     let selected = match arguments.profile_file.as_deref() {
@@ -68,7 +74,7 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
     } else {
         NetworkPolicy::AllowAll
     };
-    let mut intent = runtime::macos::intent(network);
+    let mut intent = runtime::intent(network);
     intent = intent.grant_file_and_execute(
         paths.working_directory.as_path(),
         AccessMode::ReadWrite,
@@ -181,11 +187,22 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
     let validated = ValidatedLaunch::try_from(manifest.clone())?;
 
     #[cfg(target_os = "macos")]
-    let profile_source = sandy_seatbelt::compile(validated.policy())?
-        .source()
-        .to_owned();
-    #[cfg(not(target_os = "macos"))]
-    let profile_source = String::new();
+    let native_policy = json!({
+        "backend": "seatbelt",
+        "details": sandy_seatbelt::compile(validated.policy())?.source(),
+    });
+    #[cfg(target_os = "linux")]
+    let native_policy = {
+        let plan = sandy_linux::plan(validated.policy())?;
+        let prepared = sandy_linux::prepare(plan, &validated.manifest().working_directory)?;
+        drop(prepared);
+        json!({
+            "backend": "linux",
+            "landlock_abi": sandy_linux::REQUIRED_LANDLOCK_ABI,
+        })
+    };
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let native_policy = json!({"backend": "unsupported"});
 
     if arguments.dry_run {
         let output = json!({
@@ -215,7 +232,7 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
                     "version": control.version(),
                 }))
                 .collect::<Vec<_>>(),
-            "seatbelt_profile": profile_source,
+            "native_policy": native_policy,
         });
         println!(
             "{}",
@@ -244,6 +261,7 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
         .arg("__bootstrap")
         .arg("--manifest")
         .arg(&manifest_path)
+        .env_clear()
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())

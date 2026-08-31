@@ -262,6 +262,9 @@ Sandy has native macOS and Linux backends. Other platforms return
 kernel carrying Landlock ABI 6, user, mount, and IPC namespaces, `openat2`, the
 modern mount API, and seccomp. A host or policy combination that cannot preserve
 the contract returns `Unsupported`; it is never weakened.
+Host security policy must permit the calling executable to configure those
+namespaces. Sandy tests that transition in a sacrificial child before altering
+the caller.
 
 On Linux, preparation verifies that the caller is single-threaded. Application
 enters private namespaces and a descriptor-built filesystem view before adding

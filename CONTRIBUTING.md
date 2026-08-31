@@ -10,15 +10,17 @@ Run:
 make check
 ```
 
-Changes to capabilities, policy rendering, the native boundary, bootstrap,
-supervision, or Kontext compatibility also require the live macOS tests:
+Changes to capabilities, native compilation, the native boundary, bootstrap,
+supervision, or runtime controls also require the relevant live tests:
 
 ```bash
 make test-live
+make test-live-linux
 ```
 
-That target runs both the CLI and current-process facade suites. It must run
-directly on macOS, not from inside another sandbox.
+These targets run the CLI, backend, and current-process facade suites. Run them
+directly on the matching host, not from inside another sandbox. Linux hosts
+must permit the test executable to configure user and mount namespaces.
 
 Use a Conventional Commit title for each pull request. Pull requests are
 squash-merged so Release Please sees exactly one changelog-bearing commit per

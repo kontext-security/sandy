@@ -18,6 +18,19 @@ fn help_exposes_only_public_commands() -> Result<(), Box<dyn std::error::Error>>
 }
 
 #[test]
+#[cfg(target_os = "linux")]
+fn doctor_exercises_the_linux_backend_in_a_sacrificial_process()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut command = Command::cargo_bin("sandy")?;
+    command
+        .arg("doctor")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Linux enforcement: available"));
+    Ok(())
+}
+
+#[test]
 fn run_help_documents_explicit_user_profile_files() -> Result<(), Box<dyn std::error::Error>> {
     let mut command = Command::cargo_bin("sandy")?;
     command
@@ -31,6 +44,7 @@ fn run_help_documents_explicit_user_profile_files() -> Result<(), Box<dyn std::e
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn integration_setup_does_not_mutate_an_active_numbat_installation()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
@@ -69,6 +83,7 @@ fn integration_setup_does_not_mutate_an_active_numbat_installation()
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn integration_setup_configures_an_existing_numbat_binary() -> Result<(), Box<dyn std::error::Error>>
 {
     let directory = tempfile::tempdir()?;
@@ -116,6 +131,21 @@ fn integration_setup_configures_an_existing_numbat_binary() -> Result<(), Box<dy
 }
 
 #[test]
+#[cfg(target_os = "linux")]
+fn integration_setup_is_explicitly_unsupported_on_linux() -> Result<(), Box<dyn std::error::Error>>
+{
+    let mut command = Command::cargo_bin("sandy")?;
+    command
+        .args(["integrations", "setup", "numbat", "--agent", "codex"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "integration setup is currently supported only on macOS",
+        ));
+    Ok(())
+}
+
+#[test]
 fn dry_run_does_not_require_kontext() -> Result<(), Box<dyn std::error::Error>> {
     let mut command = Command::cargo_bin("sandy")?;
     command
@@ -137,7 +167,7 @@ fn dry_run_json_has_a_versioned_runtime_control_schema() -> Result<(), Box<dyn s
     assert!(output.status.success());
 
     let document: serde_json::Value = serde_json::from_slice(&output.stdout)?;
-    assert_eq!(document["dry_run_schema_version"], 5);
+    assert_eq!(document["dry_run_schema_version"], 6);
     assert!(document.get("schema_version").is_none());
 
     let keys = document
@@ -161,7 +191,7 @@ fn dry_run_json_has_a_versioned_runtime_control_schema() -> Result<(), Box<dyn s
             "profile",
             "runtime_controls",
             "runtime_compatibility",
-            "seatbelt_profile",
+            "native_policy",
             "unix_socket_grants",
             "working_directory",
         ])
@@ -191,16 +221,27 @@ fn dry_run_json_has_a_versioned_runtime_control_schema() -> Result<(), Box<dyn s
     let grants = document["file_grants"]
         .as_array()
         .ok_or("file_grants must be an array")?;
+    #[cfg(target_os = "macos")]
     assert!(grants.iter().any(|grant| {
         grant["path"] == "/" && grant["access"] == "read" && grant["scope"] == "exact"
     }));
     assert!(grants.iter().any(|grant| {
         grant["path"] == "/bin" && grant["access"] == "read" && grant["scope"] == "subtree"
     }));
-    assert!(grants.iter().any(|grant| {
-        grant["path"] == "/dev/null" && grant["access"] == "read_write" && grant["scope"] == "exact"
-    }));
-    assert_eq!(document["file_metadata"], "allow");
+    #[cfg(target_os = "macos")]
+    {
+        assert!(grants.iter().any(|grant| {
+            grant["path"] == "/dev/null"
+                && grant["access"] == "read_write"
+                && grant["scope"] == "exact"
+        }));
+        assert_eq!(document["file_metadata"], "allow");
+    }
+    #[cfg(target_os = "linux")]
+    {
+        assert!(!grants.iter().any(|grant| grant["path"] == "/dev/null"));
+        assert_eq!(document["file_metadata"], "deny");
+    }
     assert_eq!(document["allow_subprocesses"], true);
     assert_eq!(document["runtime_compatibility"], "foreground_cli");
     assert!(
@@ -221,12 +262,22 @@ fn dry_run_json_has_a_versioned_runtime_control_schema() -> Result<(), Box<dyn s
         }));
         assert!(!executables.iter().any(|grant| grant["path"] == ca_bundle));
     }
-    assert!(
-        document["seatbelt_profile"]
-            .as_str()
-            .ok_or("seatbelt_profile must be a string")?
-            .contains("file-read-metadata")
-    );
+    #[cfg(target_os = "macos")]
+    {
+        assert_eq!(document["native_policy"]["backend"], "seatbelt");
+        assert!(
+            document["native_policy"]["details"]
+                .as_str()
+                .ok_or("native policy details must be a string")?
+                .contains("file-read-metadata")
+        );
+    }
+    #[cfg(target_os = "linux")]
+    {
+        assert_eq!(document["native_policy"]["backend"], "linux");
+        assert_eq!(document["native_policy"]["landlock_abi"], 9);
+        assert!(document["native_policy"].get("details").is_none());
+    }
     Ok(())
 }
 
@@ -305,6 +356,7 @@ fn blocked_network_dry_run_has_no_implicit_socket_authority()
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn numbat_collector_grants_only_the_selected_local_host_port()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut default_port = Command::cargo_bin("sandy")?;
@@ -366,6 +418,28 @@ fn numbat_collector_grants_only_the_selected_local_host_port()
             "the following required arguments were not provided",
         ))
         .stderr(predicate::str::contains("--block-net"));
+    Ok(())
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn linux_rejects_local_host_tcp_exceptions_before_launch() -> Result<(), Box<dyn std::error::Error>>
+{
+    let mut command = Command::cargo_bin("sandy")?;
+    command
+        .args([
+            "run",
+            "--dry-run",
+            "--block-net",
+            "--numbat-collector",
+            "--",
+            "/bin/echo",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "local-host TCP exceptions are not supported by the Linux backend",
+        ));
     Ok(())
 }
 
@@ -497,7 +571,7 @@ fn user_profile_composes_with_one_embedded_base_and_reports_safe_source()
     assert!(output.status.success());
     let document: serde_json::Value = serde_json::from_slice(&output.stdout)?;
 
-    assert_eq!(document["dry_run_schema_version"], 5);
+    assert_eq!(document["dry_run_schema_version"], 6);
     assert_eq!(document["profile"]["name"], "team-session");
     assert_eq!(document["profile"]["source"], "user_file");
     assert_eq!(document["profile"]["base"], "generic");
@@ -533,12 +607,17 @@ fn user_profile_composes_with_one_embedded_base_and_reports_safe_source()
             .any(|grant| { grant["path"] == executable.to_string_lossy().as_ref() })
     );
 
-    let rendered = document["seatbelt_profile"]
-        .as_str()
-        .ok_or("seatbelt_profile must be a string")?;
-    for denied in [&profile, &protected, &immutable] {
-        assert!(rendered.contains(denied.to_string_lossy().as_ref()));
+    #[cfg(target_os = "macos")]
+    {
+        let rendered = document["native_policy"]["details"]
+            .as_str()
+            .ok_or("native policy details must be a string")?;
+        for denied in [&profile, &protected, &immutable] {
+            assert!(rendered.contains(denied.to_string_lossy().as_ref()));
+        }
     }
+    #[cfg(target_os = "linux")]
+    assert_eq!(document["native_policy"]["backend"], "linux");
     Ok(())
 }
 
@@ -684,7 +763,7 @@ fn user_protected_target_error_is_positioned_and_redacted() -> Result<(), Box<dy
 }
 
 #[test]
-fn embedded_profile_dry_run_reports_version_five_source_metadata()
+fn embedded_profile_dry_run_reports_version_six_source_metadata()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut command = Command::cargo_bin("sandy")?;
     let output = command
@@ -692,7 +771,7 @@ fn embedded_profile_dry_run_reports_version_five_source_metadata()
         .output()?;
     assert!(output.status.success());
     let document: serde_json::Value = serde_json::from_slice(&output.stdout)?;
-    assert_eq!(document["dry_run_schema_version"], 5);
+    assert_eq!(document["dry_run_schema_version"], 6);
     assert_eq!(document["profile"]["source"], "embedded");
     assert!(document["profile"]["base"].is_null());
     assert_eq!(sandy_core::MANIFEST_SCHEMA_V2, 2);
