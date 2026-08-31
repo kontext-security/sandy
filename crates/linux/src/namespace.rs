@@ -40,16 +40,23 @@ pub(crate) fn enter(
 ) -> Result<(), LinuxError> {
     ffi::unshare_namespaces(block_network).map_err(|_| enforcement("namespace creation"))?;
 
-    match fs::write("/proc/self/setgroups", b"deny") {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(_) => return Err(enforcement("group mapping")),
-    }
     fs::write(
         "/proc/self/uid_map",
         format!("0 {} 1\n", preparation.effective_uid),
     )
     .map_err(|_| enforcement("user mapping"))?;
+    match fs::write("/proc/self/setgroups", b"deny") {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+            let state = fs::read_to_string("/proc/self/setgroups")
+                .map_err(|_| enforcement("group mapping"))?;
+            if state.trim() != "deny" {
+                return Err(enforcement("group mapping"));
+            }
+        }
+        Err(_) => return Err(enforcement("group mapping")),
+    }
     fs::write(
         "/proc/self/gid_map",
         format!("0 {} 1\n", preparation.effective_gid),
