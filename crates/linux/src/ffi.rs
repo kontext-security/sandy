@@ -483,6 +483,33 @@ pub(crate) fn verify_no_capabilities() -> io::Result<()> {
     }
 }
 
+pub(crate) fn verify_io_uring_blocked() -> io::Result<()> {
+    // SAFETY: the seccomp filter must reject this syscall before the kernel
+    // dereferences the deliberately null parameter pointer. No descriptor is
+    // created on the required EPERM path and no ownership is transferred.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_io_uring_setup,
+            1_u32,
+            std::ptr::null::<libc::c_void>(),
+        )
+    };
+    let error = io::Error::last_os_error();
+    if result == -1 && error.raw_os_error() == Some(libc::EPERM) {
+        Ok(())
+    } else {
+        if result >= 0 {
+            let descriptor =
+                i32::try_from(result).map_err(|_| io::Error::from_raw_os_error(libc::EOVERFLOW))?;
+            // SAFETY: an unexpected successful setup returned a fresh
+            // descriptor, which is closed exactly once before reporting the
+            // failed postcondition.
+            unsafe { libc::close(descriptor) };
+        }
+        Err(io::Error::from_raw_os_error(libc::EPERM))
+    }
+}
+
 pub(crate) fn c_string(value: &str) -> io::Result<CString> {
     CString::new(value).map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))
 }

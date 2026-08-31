@@ -10,6 +10,7 @@ use crate::{LinuxError, LinuxErrorKind};
 pub(crate) struct SeccompPrograms {
     clone3: BpfProgram,
     topology: BpfProgram,
+    block_network: bool,
 }
 
 pub(crate) fn compile(
@@ -65,6 +66,12 @@ pub(crate) fn compile(
     denied.insert(libc::SYS_clone, clone_rules);
 
     if block_network {
+        // io_uring can create and connect sockets without entering the
+        // corresponding socket/connect syscalls, so BlockAll must disable the
+        // ring interface as one indivisible capability.
+        denied.insert(libc::SYS_io_uring_setup, Vec::new());
+        denied.insert(libc::SYS_io_uring_enter, Vec::new());
+        denied.insert(libc::SYS_io_uring_register, Vec::new());
         let socket_rules = if allow_pathname_unix {
             vec![
                 SeccompRule::new(vec![
@@ -89,7 +96,11 @@ pub(crate) fn compile(
         SeccompAction::Errno(libc::EPERM as u32),
         architecture,
     )?;
-    Ok(SeccompPrograms { clone3, topology })
+    Ok(SeccompPrograms {
+        clone3,
+        topology,
+        block_network,
+    })
 }
 
 fn deny_arch_process_creation(_denied: &mut BTreeMap<i64, Vec<SeccompRule>>) {
@@ -106,7 +117,13 @@ fn deny_arch_process_creation(_denied: &mut BTreeMap<i64, Vec<SeccompRule>>) {
 pub(crate) fn apply(programs: &SeccompPrograms) -> Result<(), LinuxError> {
     seccompiler::apply_filter(&programs.clone3)
         .and_then(|()| seccompiler::apply_filter(&programs.topology))
-        .map_err(|_| LinuxError::new(LinuxErrorKind::EnforcementFailed, "seccomp application"))
+        .map_err(|_| LinuxError::new(LinuxErrorKind::EnforcementFailed, "seccomp application"))?;
+    if programs.block_network {
+        crate::ffi::verify_io_uring_blocked().map_err(|_| {
+            LinuxError::new(LinuxErrorKind::EnforcementFailed, "seccomp postcondition")
+        })?;
+    }
+    Ok(())
 }
 
 fn compile_filter(

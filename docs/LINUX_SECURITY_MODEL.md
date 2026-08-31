@@ -72,8 +72,10 @@ Unix-socket grants, creating addressable sockets is denied without requiring
 pathname-socket mediation. A typed external pathname-socket grant enables only
 Unix socket creation and requires ABI 9 to limit connections to that exact
 path. Unnamed Unix `socketpair` IPC remains available because it cannot connect
-to a host endpoint. Already-open descriptors remain caller-held capabilities,
-matching the public current-process contract.
+to a host endpoint. Ring setup, entry, and registration are disabled under
+`BlockAll` so asynchronous socket operations cannot bypass these controls.
+Already-open ordinary descriptors remain caller-held capabilities, matching the
+public current-process contract.
 
 `clone3` is rejected with `ENOSYS` so standard libraries can use their legacy
 `clone` fallback. Legacy `clone` always rejects namespace flags. When subprocess
