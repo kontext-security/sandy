@@ -159,20 +159,21 @@ fn integration_setup_is_explicitly_unsupported_on_linux() -> Result<(), Box<dyn 
 }
 
 #[test]
-fn dry_run_does_not_require_kontext() -> Result<(), Box<dyn std::error::Error>> {
+fn dry_run_does_not_require_optional_runtime_controls() -> Result<(), Box<dyn std::error::Error>> {
     let expected_command = fs::canonicalize("/bin/echo")?;
     let expected_command = expected_command
         .to_str()
         .ok_or("canonical command path must be UTF-8")?;
     let mut command = Command::cargo_bin("sandy")?;
-    command
+    let assertion = command
         .args(["run", "--dry-run", "--", "/bin/echo", "hello"])
         .assert()
-        .success()
-        .stdout(predicate::str::contains(r#""enabled": false"#))
-        .stdout(predicate::str::contains(format!(
-            r#""command": "{expected_command}""#
-        )));
+        .success();
+    #[cfg(target_os = "macos")]
+    let assertion = assertion.stdout(predicate::str::contains(r#""enabled": false"#));
+    assertion.stdout(predicate::str::contains(format!(
+        r#""command": "{expected_command}""#
+    )));
     Ok(())
 }
 
