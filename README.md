@@ -314,9 +314,9 @@ arm64. The x86-64 archive is built on Ubuntu 22.04 to avoid requiring a newer
 glibc than the verified runtime host.
 
 The initial Linux private filesystem intentionally omits the host process tree,
-`/sys`, `/run`, and broad `/dev` access. The CLI names only its required runtime
-devices and public proc files; adjacent devices and process entries remain
-absent. Policies that require nested confidential denies,
+`/sys`, and broad `/run` and `/dev` contents. The CLI names only its required
+runtime devices and public proc files; adjacent devices and process entries
+remain absent. Policies that require nested confidential denies,
 absent write-protected files, or local-host-only TCP are rejected before target
 execution. See
 [the Linux security model](docs/LINUX_SECURITY_MODEL.md) for the exact support

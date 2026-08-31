@@ -98,6 +98,10 @@ mod linux {
         fs::create_dir(&home)?;
         fs::create_dir(&project)?;
         fs::write(&outside, "not visible")?;
+        let hidden_run_entry = ["/run/lock", "/run/user", "/run/utmp"]
+            .into_iter()
+            .find(|path| Path::new(path).exists())
+            .ok_or("host has no known adjacent /run entry for the negative test")?;
 
         let status = Command::new(SANDY)
             .env("HOME", &home)
@@ -123,14 +127,18 @@ mod linux {
                 if test -e /dev/ptmx; then exit 100; fi
                 if test -e /proc/1/status; then exit 101; fi
                 if test -e /sys; then exit 102; fi
-                if test -e /run; then exit 103; fi
+                if test -e "$2"; then exit 103; fi
             "#,
                 "sandy-live",
             ])
             .arg(&outside)
+            .arg(hidden_run_entry)
             .status()?;
-        if !status.success() || fs::read_to_string(project.join("created.txt"))? != "created" {
-            return Err("Linux CLI did not preserve intended project access".into());
+        if !status.success() {
+            return Err(format!("Linux CLI project smoke exited with {status}").into());
+        }
+        if fs::read_to_string(project.join("created.txt"))? != "created" {
+            return Err("Linux CLI did not preserve intended project writes".into());
         }
 
         assert_exit(&home, &project, "exit 23", 23)?;

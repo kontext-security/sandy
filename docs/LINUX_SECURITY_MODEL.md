@@ -106,9 +106,10 @@ The backend pins each source path before enforcement. After namespace entry it
 reopens the canonical path and rejects replacement unless device, inode, and
 object type still match the original pin. It clones mounts only from those
 new-namespace descriptors and attaches them to descriptor-pinned targets in a
-private tmpfs root. Non-granted siblings, host `/proc`, `/sys`, `/run`, and the
-former host root are absent. Open descriptors and memory acquired before
-`apply()` are not revoked.
+private tmpfs root. Non-granted siblings, the host process tree, `/sys`, broad
+`/run` contents, and the former host root are absent. Exact selected files may
+create otherwise-empty parent directories in the private view. Open descriptors
+and memory acquired before `apply()` are not revoked.
 
 An exact protected file is overmounted read-only. Filesystem enforcement is
 pathname-based. A protected regular file with a pre-existing hard-link alias is
@@ -175,10 +176,10 @@ their controlling terminal and use the terminal operations permitted by that
 device. The live suite proves the named devices work while adjacent devices
 such as `/dev/full` and `/dev/ptmx` remain absent.
 
-Host `/sys`, `/run`, the procfs process tree, and broad `/dev` access are absent.
-Standard input, output, error, and an existing controlling terminal remain
-native. Linux does not support the CLI's local-host-only TCP exception or exact
-external Unix-socket grants in the initial CLI.
+Host `/sys`, the procfs process tree, and broad `/run` and `/dev` contents are
+absent. Standard input, output, error, and an existing controlling terminal
+remain native. Linux does not support the CLI's local-host-only TCP exception
+or exact external Unix-socket grants in the initial CLI.
 
 Write-protected entries must exist so the backend can pin and overmount them.
 Built-in agent profiles are rejected by the initial Linux CLI. A user profile
