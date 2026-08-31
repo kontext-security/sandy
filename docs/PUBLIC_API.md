@@ -257,9 +257,17 @@ Unimplemented operations are absent rather than published as placeholders.
 
 ## Platform contract
 
-The API and policy vocabulary are platform-neutral. Version 0.1 enforces them
-on macOS. Other platforms return `ErrorKind::Unsupported`; adding a backend must
-preserve these semantics rather than silently omit a requested capability.
+The API and policy vocabulary are platform-neutral. Version 0.1 has native
+macOS and Linux backends. Other platforms return `ErrorKind::Unsupported`.
+Linux additionally requires user and mount namespaces, `openat2`, the modern
+mount API, seccomp, and Landlock ABI 9. A host or policy combination that cannot
+preserve the contract returns `Unsupported`; it is never weakened.
+
+On Linux, preparation verifies that the caller is single-threaded. Application
+enters private namespaces and a descriptor-built filesystem view before adding
+Landlock and seccomp restrictions. Preparation errors leave the process
+unchanged. An enforcement error can leave it partially restricted, so the
+caller must terminate immediately.
 
 ## Intentionally private or absent
 

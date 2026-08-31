@@ -40,8 +40,10 @@ JSON parsing performs no filesystem access. Paths are resolved and required to
 exist only when `apply` prepares the policy.
 
 Application is irreversible. Call `apply` before creating threads, opening
-sensitive resources, or starting untrusted work. The initial enforcement
-backend is macOS; unsupported platforms return `ErrorKind::Unsupported`.
+sensitive resources, or starting untrusted work. Sandy has native macOS and
+Linux backends; unsupported hosts and policy combinations return
+`ErrorKind::Unsupported` rather than falling back to weaker enforcement. The
+Linux backend requires user and mount namespaces plus Landlock ABI 9.
 
 See the repository's [public API contract][api], security documentation, and
 threat model before embedding Sandy.
