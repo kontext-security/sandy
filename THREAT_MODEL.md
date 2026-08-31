@@ -41,9 +41,9 @@ builder. The format has no discovery, inheritance, includes, interpolation, or
 implicit authority. The embedding application owns loading and protecting the
 source bytes; Sandy retains neither their contents nor their source path.
 
-The facade's optional subprocess capability permits process creation,
-same-sandbox inspection and signals, and the platform runtime services needed
-to start ordinary descendants. On macOS this includes broad Mach lookup, which
+The facade's optional subprocess capability permits ordinary descendant
+creation and same-sandbox signals. It does not promise portable process
+inspection. On macOS the compatibility class includes broad Mach lookup, which
 may reach same-user local services even when IP networking is blocked.
 
 Typed capabilities are the only input to policy compilation. Raw native policy
@@ -59,7 +59,9 @@ view, then applies Landlock, removes capabilities, and installs seccomp. A
 preparation failure leaves the process unchanged. An enforcement failure may
 leave it partially restricted, so continuing is unsupported. The private view
 omits host procfs and the former host root. Unsupported policy combinations
-fail rather than receiving approximate enforcement.
+fail rather than receiving approximate enforcement. Landlock signal scoping
+prevents the restricted process from signaling processes outside its sandbox
+domain while preserving signals among its descendants.
 
 An explicitly selected user profile file is parsed through a narrower schema
 than embedded profiles. It can only add required filesystem grants, executable

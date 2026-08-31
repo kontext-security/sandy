@@ -3,7 +3,7 @@
 Sandy is experimental security software. Version `0.1.x` has not completed an
 independent audit. Its macOS backend uses a private, deprecated Seatbelt
 interface; its Linux facade backend relies on user and mount namespaces,
-Landlock ABI 9, capability removal, and seccomp.
+Landlock ABI 6, capability removal, and seccomp.
 
 Please report vulnerabilities privately through GitHub's security advisory
 flow for `kontext-security/sandy`. Do not open a public issue for an unpatched

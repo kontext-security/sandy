@@ -28,9 +28,9 @@ command for Kontext and Numbat. Setup is not part of sandbox launch.
 
 The `sandy-sandbox` package provides the supported `sandy` Rust library. It is
 a caller-policy-only, current-process primitive with no executable dependency.
-Its public model is platform-neutral; `0.1.x` has macOS and Linux backends and
-returns `Unsupported` for hosts or policy combinations that cannot preserve
-the complete contract.
+Its public model is platform-neutral; `0.1.x` has the macOS backend and `0.2.x`
+adds Linux. Unsupported hosts or policy combinations return `Unsupported`
+rather than receiving a weakened contract.
 
 Agent presets are versioned, strictly typed profile documents embedded in the
 CLI at compile time. Profiles resolve through deterministic inheritance in

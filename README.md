@@ -92,9 +92,11 @@ policy to select `allow_subprocesses()`.
 
 `apply` is irreversible. Call it before creating threads, opening sensitive
 resources, or starting untrusted work. If native enforcement fails, terminate
-the process instead of continuing with a weaker boundary. The library has
-native macOS and Linux backends. Unsupported hosts and policy combinations
-return `ErrorKind::Unsupported` without weakening the requested boundary.
+the process instead of continuing with a weaker boundary. Starting with 0.2,
+the library has native macOS and Linux backends. Unsupported hosts and policy
+combinations return `ErrorKind::Unsupported` without weakening the requested
+boundary. On Linux the current working directory must be covered by an explicit
+filesystem grant.
 
 ## Run
 

@@ -43,7 +43,8 @@ Application is irreversible. Call `apply` before creating threads, opening
 sensitive resources, or starting untrusted work. Sandy has native macOS and
 Linux backends; unsupported hosts and policy combinations return
 `ErrorKind::Unsupported` rather than falling back to weaker enforcement. The
-Linux backend requires user and mount namespaces plus Landlock ABI 9.
+Linux backend requires user and mount namespaces plus Landlock ABI 6, and the
+current working directory must be covered by an explicit filesystem grant.
 
 See the repository's [public API contract][api], security documentation, and
 threat model before embedding Sandy.

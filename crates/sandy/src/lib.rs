@@ -70,6 +70,8 @@ pub use sandy_core::{AccessMode, NetworkPolicy, PathScope, PolicyDocumentError, 
 /// contract even on platforms that may restrict them as an implementation
 /// detail. Already-open file descriptors, sockets, memory, and environment
 /// values remain capabilities held by the process.
+/// On Linux, the current working directory must be covered by a filesystem
+/// grant because the backend constructs a private view from explicit grants.
 ///
 /// # Errors
 ///
