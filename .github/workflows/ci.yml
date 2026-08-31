@@ -61,7 +61,7 @@ jobs:
           SANDY_LINUX_EXPECT_UNSUPPORTED: "1"
         run: |
           if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = "1" ]; then
-            cargo test -p sandy-linux --test live_linux --locked
+            cargo test -p sandy-linux --test live_linux --features live-tests --locked
           fi
       - name: Enable user namespaces for positive enforcement tests
         run: |

@@ -63,10 +63,12 @@ pub fn plan(policy: &ValidatedPolicy) -> Result<LinuxPolicyPlan, LinuxError> {
     // same metadata-denial semantics as a fully absent path.
     for protected in &spec.protected_paths {
         let overlaps_visible_subtree = spec.files.iter().any(|grant| {
-            grant.scope == PathScope::Subtree
+            !denied(&grant.path, &spec.protected_paths)
+                && grant.scope == PathScope::Subtree
                 && protected.as_path().starts_with(grant.path.as_path())
         }) || spec.executables.iter().any(|grant| {
-            grant.scope == PathScope::Subtree
+            !denied(&grant.path, &spec.protected_paths)
+                && grant.scope == PathScope::Subtree
                 && protected.as_path().starts_with(grant.path.as_path())
         });
         if overlaps_visible_subtree {
@@ -77,6 +79,12 @@ pub fn plan(policy: &ValidatedPolicy) -> Result<LinuxPolicyPlan, LinuxError> {
     Ok(LinuxPolicyPlan {
         policy: policy.clone(),
     })
+}
+
+fn denied(path: &sandy_core::AbsolutePath, protected: &[sandy_core::AbsolutePath]) -> bool {
+    protected
+        .iter()
+        .any(|entry| path.as_path().starts_with(entry.as_path()))
 }
 
 fn unsupported(phase: &'static str) -> LinuxError {
@@ -129,6 +137,26 @@ mod tests {
 
         let error = plan(&policy).err().ok_or("policy unexpectedly supported")?;
         assert_eq!(error.kind(), LinuxErrorKind::Unsupported);
+        Ok(())
+    }
+
+    #[test]
+    fn accepts_a_deny_that_completely_removes_a_grant() -> Result<(), Box<dyn std::error::Error>> {
+        for (granted, protected) in [
+            (path("/workspace")?, path("/workspace")?),
+            (path("/workspace/project")?, path("/workspace")?),
+        ] {
+            let policy = ValidatedPolicy::try_from(PolicySpec {
+                files: vec![FileGrant {
+                    path: granted,
+                    access: AccessMode::Read,
+                    scope: PathScope::Subtree,
+                }],
+                protected_paths: vec![protected],
+                ..PolicySpec::default()
+            })?;
+            assert!(plan(&policy).is_ok());
+        }
         Ok(())
     }
 

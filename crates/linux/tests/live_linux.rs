@@ -239,13 +239,16 @@ mod linux {
         let allowed = absolute_from_environment(SOCKET_PATH)?;
         let denied = absolute_from_environment(DENIED_SOCKET_PATH)?;
         let root = absolute(allowed.as_path().parent().ok_or("socket has no parent")?)?;
-        let policy = block_socket_policy(root.clone(), workspace, allowed.clone())?;
+        let policy = block_socket_policy(root.clone(), workspace.clone(), allowed.clone())?;
         let prepared = sandy_linux::prepare(sandy_linux::plan(&policy)?, &root)?;
         sandy_linux::apply(prepared)?;
 
         UnixStream::connect(allowed.as_path())?;
         if UnixStream::connect(denied.as_path()).is_ok() {
             return Err("adjacent pathname socket connection succeeded".into());
+        }
+        if UnixListener::bind(workspace.as_path().join("unexpected.sock")).is_ok() {
+            return Err("connect-only endpoint authority enabled a server socket".into());
         }
         let abstract_name = env::var(ABSTRACT_SOCKET_NAME)?;
         let abstract_address = SocketAddr::from_abstract_name(abstract_name.as_bytes())?;

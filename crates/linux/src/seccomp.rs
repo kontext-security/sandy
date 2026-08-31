@@ -89,6 +89,15 @@ pub(crate) fn compile(
             Vec::new()
         };
         denied.insert(libc::SYS_socket, socket_rules);
+        if allow_pathname_unix {
+            // The typed endpoint capability is connect-only. Once AF_UNIX
+            // socket creation is enabled, prevent it from becoming server
+            // authority in an otherwise writable directory.
+            denied.insert(libc::SYS_bind, Vec::new());
+            denied.insert(libc::SYS_listen, Vec::new());
+            denied.insert(libc::SYS_accept, Vec::new());
+            denied.insert(libc::SYS_accept4, Vec::new());
+        }
     }
 
     let topology = compile_filter(

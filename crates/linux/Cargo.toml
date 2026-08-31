@@ -10,6 +10,9 @@ homepage.workspace = true
 authors.workspace = true
 publish = false
 
+[features]
+live-tests = []
+
 [dependencies]
 sandy-core.workspace = true
 
@@ -25,6 +28,7 @@ tempfile.workspace = true
 name = "live_linux"
 path = "tests/live_linux.rs"
 harness = false
+required-features = ["live-tests"]
 
 [lints]
 workspace = true

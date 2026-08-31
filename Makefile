@@ -16,7 +16,7 @@ test-live: ## Run sacrificial macOS Seatbelt enforcement tests.
 	cargo test -p sandy-sandbox --test live_macos --features live-tests --locked
 
 test-live-linux: ## Run sacrificial Linux enforcement tests.
-	cargo test -p sandy-linux --test live_linux --locked -- --test-threads=1
+	cargo test -p sandy-linux --test live_linux --features live-tests --locked -- --test-threads=1
 
 fmt: ## Format Rust sources.
 	cargo fmt --all
