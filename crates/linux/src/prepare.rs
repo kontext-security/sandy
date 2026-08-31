@@ -5,7 +5,7 @@ use std::{
         fd::AsRawFd,
         unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt},
     },
-    path::{Path, PathBuf},
+    path::PathBuf,
 };
 
 use sandy_core::{AbsolutePath, AccessMode, PathScope, RuntimeCompatibility};
@@ -32,12 +32,14 @@ pub(crate) struct MountRequirement {
     pub(crate) path: AbsolutePath,
     pub(crate) recursive: bool,
     pub(crate) writable: bool,
+    pub(crate) executable: bool,
 }
 
 pub(crate) struct ProtectionRequirement {
     pub(crate) path: AbsolutePath,
     pub(crate) recursive: bool,
     pub(crate) read_only: bool,
+    pub(crate) executable: bool,
 }
 
 pub(crate) struct MountPreparation {
@@ -108,6 +110,7 @@ fn prepare_mounts(
                 path: grant.path.clone(),
                 recursive: false,
                 writable: false,
+                executable: false,
             });
         entry.recursive |= grant.scope == PathScope::Subtree;
         entry.writable |= grant.access == AccessMode::ReadWrite;
@@ -122,8 +125,10 @@ fn prepare_mounts(
                 path: grant.path.clone(),
                 recursive: false,
                 writable: false,
+                executable: false,
             });
         entry.recursive |= grant.scope == PathScope::Subtree;
+        entry.executable = true;
     }
     for grant in &spec.unix_sockets {
         if !denied(&grant.path, &spec.protected_paths) {
@@ -133,6 +138,7 @@ fn prepare_mounts(
                     path: grant.path.clone(),
                     recursive: false,
                     writable: false,
+                    executable: false,
                 });
         }
     }
@@ -207,6 +213,7 @@ fn prepare_mounts(
             parent.recursive
                 && mount.path.as_path().starts_with(parent.path.as_path())
                 && (!mount.writable || parent.writable)
+                && (!mount.executable || parent.executable)
         });
         if !covered {
             effective.push(mount);
@@ -229,6 +236,7 @@ fn prepare_mounts(
                 path: protection.path.clone(),
                 recursive: protection.scope == PathScope::Subtree,
                 read_only: true,
+                executable: executable(&protection.path, &spec.executables),
             })
         })
         .collect::<Result<Vec<_>, LinuxError>>()?;
@@ -248,6 +256,14 @@ fn prepare_mounts(
     })
 }
 
+fn executable(path: &AbsolutePath, grants: &[sandy_core::ExecutableGrant]) -> bool {
+    grants.iter().any(|grant| {
+        path == &grant.path
+            || (grant.scope == PathScope::Subtree
+                && path.as_path().starts_with(grant.path.as_path()))
+    })
+}
+
 fn prepare_runtime_aliases(
     compatibility: RuntimeCompatibility,
     mounts: &[MountRequirement],
@@ -257,13 +273,7 @@ fn prepare_runtime_aliases(
     }
 
     let mut aliases = Vec::new();
-    let mut destinations = Vec::<(AbsolutePath, AbsolutePath)>::new();
     for requested in [
-        "/proc/self",
-        "/dev/fd",
-        "/dev/stdin",
-        "/dev/stdout",
-        "/dev/stderr",
         "/bin",
         "/sbin",
         "/lib",
@@ -280,105 +290,25 @@ fn prepare_runtime_aliases(
         if !metadata.file_type().is_symlink() {
             continue;
         }
+        let canonical = std::fs::canonicalize(requested)
+            .map_err(|_| preparation("runtime alias resolution"))?;
+        let canonical = AbsolutePath::new(
+            canonical
+                .to_str()
+                .ok_or_else(|| preparation("runtime alias representation"))?
+                .to_owned(),
+        )
+        .map_err(|_| preparation("runtime alias representation"))?;
         let path = AbsolutePath::new(requested.to_owned())
             .map_err(|_| preparation("runtime alias representation"))?;
-        if visible(&path, mounts.iter()) {
+        if visible(&path, mounts.iter()) || !visible(&canonical, mounts.iter()) {
             continue;
         }
         let target =
             std::fs::read_link(requested).map_err(|_| preparation("runtime alias resolution"))?;
-        let lexical = lexical_symlink_target(path.as_path(), &target)
-            .ok_or_else(|| preparation("runtime alias resolution"))?;
-        let rewritten = rewrite_runtime_target(lexical, &destinations);
-        let resolved = absolute_path(&rewritten)
-            .ok()
-            .filter(|candidate| runtime_target_reachable(candidate, mounts));
-        let resolved = match resolved {
-            Some(resolved) => resolved,
-            None => {
-                let canonical = std::fs::canonicalize(requested)
-                    .map_err(|_| preparation("runtime alias resolution"))?;
-                let canonical = absolute_path(&canonical)?;
-                if !runtime_target_reachable(&canonical, mounts) {
-                    continue;
-                }
-                canonical
-            }
-        };
         aliases.push(RuntimeAlias { path, target });
-        destinations.push((
-            aliases
-                .last()
-                .ok_or_else(|| preparation("runtime alias construction"))?
-                .path
-                .clone(),
-            resolved,
-        ));
     }
     Ok(aliases)
-}
-
-fn lexical_symlink_target(path: &Path, target: &std::path::Path) -> Option<PathBuf> {
-    let candidate = if target.is_absolute() {
-        target.to_path_buf()
-    } else {
-        path.parent()?.join(target)
-    };
-    let mut normalized = PathBuf::new();
-    for component in candidate.components() {
-        match component {
-            std::path::Component::RootDir => normalized.push("/"),
-            std::path::Component::CurDir => {}
-            std::path::Component::ParentDir => {
-                if !normalized.pop() {
-                    return None;
-                }
-            }
-            std::path::Component::Normal(component) => normalized.push(component),
-            std::path::Component::Prefix(_) => return None,
-        }
-    }
-    normalized.is_absolute().then_some(normalized)
-}
-
-fn rewrite_runtime_target(
-    mut target: PathBuf,
-    destinations: &[(AbsolutePath, AbsolutePath)],
-) -> PathBuf {
-    for _ in 0..=destinations.len() {
-        let Some((source, destination)) = destinations
-            .iter()
-            .filter(|(source, _)| target.starts_with(source.as_path()))
-            .max_by_key(|(source, _)| source.as_path().components().count())
-        else {
-            break;
-        };
-        let Ok(suffix) = target.strip_prefix(source.as_path()) else {
-            break;
-        };
-        let rewritten = destination.as_path().join(suffix);
-        if rewritten == target {
-            break;
-        }
-        target = rewritten;
-    }
-    target
-}
-
-fn absolute_path(path: &Path) -> Result<AbsolutePath, LinuxError> {
-    AbsolutePath::new(
-        path.to_str()
-            .ok_or_else(|| preparation("runtime alias representation"))?
-            .to_owned(),
-    )
-    .map_err(|_| preparation("runtime alias representation"))
-}
-
-fn runtime_target_reachable(path: &AbsolutePath, mounts: &[MountRequirement]) -> bool {
-    visible(path, mounts.iter())
-        || mounts
-            .iter()
-            .any(|mount| mount.path.as_path().starts_with(path.as_path()))
 }
 
 fn pin(path: &AbsolutePath) -> Result<PinnedPath, LinuxError> {
@@ -474,57 +404,4 @@ fn enforcement(phase: &'static str) -> LinuxError {
 
 fn unsupported(phase: &'static str) -> LinuxError {
     LinuxError::new(LinuxErrorKind::Unsupported, phase)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn path(value: &str) -> Result<AbsolutePath, Box<dyn std::error::Error>> {
-        Ok(AbsolutePath::new(value.to_owned())?)
-    }
-
-    #[test]
-    fn runtime_aliases_may_target_an_ancestor_of_a_visible_mount()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let mounts = vec![MountRequirement {
-            path: path("/proc/123/fd")?,
-            recursive: true,
-            writable: false,
-        }];
-
-        assert!(runtime_target_reachable(&path("/proc/123")?, &mounts));
-        assert!(!runtime_target_reachable(&path("/proc/124")?, &mounts));
-        Ok(())
-    }
-
-    #[test]
-    fn runtime_alias_chains_resolve_only_through_known_destinations()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let destinations = vec![(path("/proc/self")?, path("/proc/123")?)];
-        assert_eq!(
-            rewrite_runtime_target(PathBuf::from("/proc/self/fd/0"), &destinations),
-            PathBuf::from("/proc/123/fd/0")
-        );
-        assert_eq!(
-            rewrite_runtime_target(PathBuf::from("/etc/passwd"), &destinations),
-            PathBuf::from("/etc/passwd")
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn relative_runtime_alias_targets_are_normalized_without_filesystem_access() {
-        assert_eq!(
-            lexical_symlink_target(
-                Path::new("/etc/resolv.conf"),
-                Path::new("../run/resolv.conf")
-            ),
-            Some(PathBuf::from("/run/resolv.conf"))
-        );
-        assert_eq!(
-            lexical_symlink_target(Path::new("/bin"), Path::new("../../outside")),
-            None
-        );
-    }
 }

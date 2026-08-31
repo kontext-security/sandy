@@ -5,6 +5,7 @@ mod linux {
         net::{TcpListener, TcpStream, UdpSocket},
         os::{
             linux::net::SocketAddrExt,
+            unix::fs::PermissionsExt as _,
             unix::net::{SocketAddr, UnixListener, UnixStream},
         },
         process::Command,
@@ -12,8 +13,9 @@ mod linux {
     };
 
     use sandy_core::{
-        AbsolutePath, AccessMode, FileGrant, NetworkPolicy, PathScope, PolicySpec, UnixSocketGrant,
-        UnixSocketOperation, ValidatedPolicy, WriteProtection,
+        AbsolutePath, AccessMode, ExecutableGrant, FileGrant, NetworkPolicy, PathScope, PolicySpec,
+        RuntimeCompatibility, UnixSocketGrant, UnixSocketOperation, ValidatedPolicy,
+        WriteProtection,
     };
 
     const CHILD_MODE: &str = "SANDY_LINUX_LIVE_CHILD";
@@ -56,6 +58,13 @@ mod linux {
         fs::create_dir(&workspace)?;
         fs::write(workspace.join("readable.txt"), "visible")?;
         fs::write(workspace.join("locked.txt"), "locked")?;
+        for name in ["allowed-true", "data-true"] {
+            let path = workspace.join(name);
+            fs::copy("/bin/true", &path)?;
+            let mut permissions = fs::metadata(&path)?.permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(path, permissions)?;
+        }
         fs::write(root.path().join("outside.txt"), "hidden")?;
 
         let status = Command::new(env::current_exe()?)
@@ -328,17 +337,48 @@ mod linux {
                 .to_owned(),
         )?;
         let locked = AbsolutePath::new(format!("{}/locked.txt", workspace.as_str()))?;
-        let policy = ValidatedPolicy::try_from(PolicySpec {
-            files: vec![FileGrant {
+        let allowed_true = AbsolutePath::new(format!("{}/allowed-true", workspace.as_str()))?;
+        let data_true = AbsolutePath::new(format!("{}/data-true", workspace.as_str()))?;
+        let system_libraries = absolute(std::path::Path::new("/usr/lib"))?;
+        let loader = absolute(&fs::canonicalize(dynamic_loader())?)?;
+        let mut files = vec![
+            FileGrant {
                 path: workspace.clone(),
                 access: AccessMode::ReadWrite,
                 scope: PathScope::Subtree,
-            }],
+            },
+            FileGrant {
+                path: system_libraries.clone(),
+                access: AccessMode::Read,
+                scope: PathScope::Subtree,
+            },
+        ];
+        if let Ok(cache) = fs::canonicalize("/etc/ld.so.cache") {
+            files.push(FileGrant {
+                path: absolute(&cache)?,
+                access: AccessMode::Read,
+                scope: PathScope::Exact,
+            });
+        }
+        let policy = ValidatedPolicy::try_from(PolicySpec {
+            files,
+            executables: vec![
+                ExecutableGrant {
+                    path: system_libraries,
+                    scope: PathScope::Subtree,
+                },
+                ExecutableGrant {
+                    path: allowed_true.clone(),
+                    scope: PathScope::Exact,
+                },
+            ],
             write_protections: vec![WriteProtection {
                 path: locked,
                 scope: PathScope::Exact,
             }],
             network: NetworkPolicy::BlockAll,
+            allow_subprocesses: true,
+            runtime_compatibility: RuntimeCompatibility::ForegroundCli,
             ..PolicySpec::default()
         })?;
 
@@ -355,6 +395,20 @@ mod linux {
         if fs::metadata("/etc/passwd").is_ok() || fs::metadata("../outside.txt").is_ok() {
             return Err("non-granted filesystem data remained visible".into());
         }
+        if !Command::new(loader.as_path())
+            .arg(allowed_true.as_path())
+            .status()?
+            .success()
+        {
+            return Err("explicit executable mapping was not preserved".into());
+        }
+        if Command::new(loader.as_path())
+            .arg(data_true.as_path())
+            .status()?
+            .success()
+        {
+            return Err("readable data was mapped executable".into());
+        }
         if TcpStream::connect_timeout(&"1.1.1.1:80".parse()?, Duration::from_millis(100)).is_ok() {
             return Err("blocked network connection succeeded".into());
         }
@@ -366,6 +420,17 @@ mod linux {
         }
         let _local_pair = UnixStream::pair()?;
         Ok(())
+    }
+
+    fn dynamic_loader() -> &'static std::path::Path {
+        #[cfg(target_arch = "x86_64")]
+        {
+            std::path::Path::new("/lib64/ld-linux-x86-64.so.2")
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            std::path::Path::new("/lib/ld-linux-aarch64.so.1")
+        }
     }
 
     fn exact_directory_grants_are_rejected_before_enforcement()

@@ -143,12 +143,24 @@ fn probe_mount_sequence() -> bool {
         return false;
     }
     let attributes = libc::mount_attr {
-        attr_set: libc::MOUNT_ATTR_NOSUID | libc::MOUNT_ATTR_NODEV | libc::MOUNT_ATTR_RDONLY,
+        attr_set: libc::MOUNT_ATTR_NOSUID
+            | libc::MOUNT_ATTR_NODEV
+            | libc::MOUNT_ATTR_NOEXEC
+            | libc::MOUNT_ATTR_RDONLY,
         attr_clr: 0,
         propagation: 0,
         userns_fd: 0,
     };
     if probe_mount_setattr(mount_fd, &attributes) < 0 {
+        return false;
+    }
+    let executable_attributes = libc::mount_attr {
+        attr_set: 0,
+        attr_clr: libc::MOUNT_ATTR_NOEXEC,
+        propagation: 0,
+        userns_fd: 0,
+    };
+    if probe_mount_setattr(mount_fd, &executable_attributes) < 0 {
         return false;
     }
     let target = probe_open(c"/tmp/.sandy-probe-root/usr");
@@ -174,7 +186,7 @@ fn probe_mount_tmpfs(target: &CStr) -> libc::c_int {
             c"tmpfs".as_ptr(),
             target.as_ptr(),
             c"tmpfs".as_ptr(),
-            (libc::MS_NOSUID | libc::MS_NODEV) as libc::c_ulong,
+            (libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC) as libc::c_ulong,
             c"mode=0700,size=1m".as_ptr().cast(),
         )
     }
@@ -297,7 +309,7 @@ pub(crate) fn mount_tmpfs(target: &CStr) -> io::Result<()> {
             c"tmpfs".as_ptr(),
             target.as_ptr(),
             c"tmpfs".as_ptr(),
-            (libc::MS_NOSUID | libc::MS_NODEV) as libc::c_ulong,
+            (libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC) as libc::c_ulong,
             c"mode=0700,size=64m".as_ptr().cast(),
         )
     })
@@ -355,6 +367,7 @@ pub(crate) fn restrict_mount(
     recursive: bool,
     read_only: bool,
     allow_device: bool,
+    allow_execute: bool,
 ) -> io::Result<()> {
     let attributes = libc::mount_attr {
         attr_set: libc::MOUNT_ATTR_NOSUID
@@ -367,8 +380,17 @@ pub(crate) fn restrict_mount(
                 libc::MOUNT_ATTR_RDONLY
             } else {
                 0
+            }
+            | if allow_execute {
+                0
+            } else {
+                libc::MOUNT_ATTR_NOEXEC
             },
-        attr_clr: 0,
+        attr_clr: if allow_execute {
+            libc::MOUNT_ATTR_NOEXEC
+        } else {
+            0
+        },
         propagation: 0,
         userns_fd: 0,
     };

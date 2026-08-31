@@ -61,10 +61,12 @@ reports the backend as unsupported when the host denies it; it never falls back
 to weaker enforcement. Host administrators must make the namespace capability
 available through their normal system security policy.
 
-Read authority never includes execute authority. Read/write authority uses the
-fixed mutation rights through ABI 8 because ABI 9's aggregate write set also
-contains pathname-socket resolution. `ResolveUnix` is added only for an exact
-typed socket grant.
+Read authority never includes execute authority. The private filesystem marks
+non-executable mounts `noexec`; an executable nested below a readable subtree
+receives its own executable overmount. Landlock separately mediates `execve`.
+Read/write authority uses the fixed mutation rights through ABI 8 because ABI
+9's aggregate write set also contains pathname-socket resolution. `ResolveUnix`
+is added only for an exact typed socket grant.
 
 `BlockAll` uses a private network namespace and denies new externally
 addressable non-Unix socket descriptors. When the policy has no pathname

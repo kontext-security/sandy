@@ -52,6 +52,7 @@ pub(crate) fn construct_and_enter(preparation: &MountPreparation) -> Result<(), 
             requirement.recursive,
             !requirement.writable,
             source.kind == PinnedKind::Device,
+            requirement.executable,
         )?;
     }
     for protection in &preparation.protections {
@@ -66,6 +67,7 @@ pub(crate) fn construct_and_enter(preparation: &MountPreparation) -> Result<(), 
             protection.recursive,
             protection.read_only,
             source.kind == PinnedKind::Device,
+            protection.executable,
         )?;
     }
     for alias in &preparation.aliases {
@@ -120,6 +122,7 @@ fn attach(
     recursive: bool,
     read_only: bool,
     allow_device: bool,
+    allow_execute: bool,
 ) -> Result<(), LinuxError> {
     let relative = path.as_str().strip_prefix('/').unwrap_or(path.as_str());
     let relative = ffi::c_string(relative).map_err(|_| enforcement("mount target pinning"))?;
@@ -127,8 +130,14 @@ fn attach(
         .map_err(|_| enforcement("mount target pinning"))?;
     let detached = ffi::clone_mount(source.as_raw_fd(), recursive)
         .map_err(|_| enforcement("detached mount creation"))?;
-    ffi::restrict_mount(detached.as_raw_fd(), recursive, read_only, allow_device)
-        .map_err(|_| enforcement("detached mount restriction"))?;
+    ffi::restrict_mount(
+        detached.as_raw_fd(),
+        recursive,
+        read_only,
+        allow_device,
+        allow_execute,
+    )
+    .map_err(|_| enforcement("detached mount restriction"))?;
     ffi::attach_mount(detached.as_raw_fd(), target.as_raw_fd())
         .map_err(|_| enforcement("mount attachment"))
 }
