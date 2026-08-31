@@ -19,22 +19,23 @@ pub(crate) fn prepare(
     policy: &PolicySpec,
     pinned: &BTreeMap<sandy_core::AbsolutePath, PinnedPath>,
 ) -> Result<PreparedLandlock, LinuxError> {
+    let restrict_pathname_sockets =
+        policy.network == NetworkPolicy::BlockAll && !policy.unix_sockets.is_empty();
     let mut handled = AccessFs::from_all(ABI::V8);
-    if policy.network == NetworkPolicy::BlockAll {
+    if restrict_pathname_sockets {
         handled |= AccessFs::ResolveUnix;
     }
     let builder = Ruleset::default()
+        .set_compatibility(CompatLevel::HardRequirement)
         .handle_access(handled)
         .map_err(|_| unsupported("Landlock ABI"))?;
-    let scope = if policy.network == NetworkPolicy::BlockAll {
-        Scope::Signal | Scope::AbstractUnixSocket
+    let builder = if restrict_pathname_sockets {
+        builder
+            .scope(Scope::AbstractUnixSocket)
+            .map_err(|_| unsupported("Landlock scope"))?
     } else {
-        Scope::Signal.into()
+        builder
     };
-    let builder = builder
-        .scope(scope)
-        .map_err(|_| unsupported("Landlock scope"))?
-        .set_compatibility(CompatLevel::HardRequirement);
     let mut ruleset = builder
         .create()
         .map_err(|_| unsupported("Landlock ruleset creation"))?;
@@ -62,7 +63,7 @@ pub(crate) fn prepare(
             .file;
         ruleset = add_rule(ruleset, file, AccessFs::Execute.into())?;
     }
-    if policy.network == NetworkPolicy::BlockAll {
+    if restrict_pathname_sockets {
         for grant in &policy.unix_sockets {
             if denied(&grant.path, &policy.protected_paths) {
                 continue;

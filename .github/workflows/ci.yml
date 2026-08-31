@@ -41,8 +41,12 @@ jobs:
         run: make test-live
 
   linux-substrate:
-    name: Linux enforcement substrate
-    runs-on: ubuntu-latest
+    name: Linux enforcement substrate (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -55,9 +59,15 @@ jobs:
       - name: Verify restricted user namespaces fail closed
         env:
           SANDY_LINUX_EXPECT_UNSUPPORTED: "1"
-        run: cargo test -p sandy-linux --test live_linux --locked
+        run: |
+          if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = "1" ]; then
+            cargo test -p sandy-linux --test live_linux --locked
+          fi
       - name: Enable user namespaces for positive enforcement tests
-        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+        run: |
+          if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
       - name: Test Linux backend
         run: make test-live-linux
       - name: Preserve unsupported facade contract

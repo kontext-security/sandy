@@ -7,8 +7,13 @@ use crate::{
 ///
 /// Any error from this function may leave the process partially restricted.
 /// The caller must terminate immediately and must not run untrusted code.
-pub fn apply(prepared: PreparedLinuxSandbox) -> Result<(), LinuxError> {
+pub fn apply(mut prepared: PreparedLinuxSandbox) -> Result<(), LinuxError> {
     namespace::enter(&prepared.namespace, prepared.block_network)?;
+    // Descriptors opened before CLONE_NEWNS still refer to mounts in the old
+    // namespace and cannot be cloned with open_tree. Reopen every canonical
+    // source in the new namespace and prove it is the same object before the
+    // old filesystem view is hidden.
+    crate::prepare::repin_after_namespace(&mut prepared.mount)?;
     mount::construct_and_enter(&prepared.mount)?;
     landlock::apply(prepared.landlock)?;
     capabilities::drop_all(prepared.namespace.last_capability)?;

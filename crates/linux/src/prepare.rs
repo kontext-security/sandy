@@ -1,7 +1,10 @@
 use std::{
     collections::BTreeMap,
     fs::{File, OpenOptions},
-    os::unix::fs::{FileTypeExt, OpenOptionsExt},
+    os::{
+        fd::AsRawFd,
+        unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt},
+    },
     path::PathBuf,
 };
 
@@ -21,6 +24,8 @@ pub(crate) enum PinnedKind {
 pub(crate) struct PinnedPath {
     pub(crate) file: File,
     pub(crate) kind: PinnedKind,
+    device: u64,
+    inode: u64,
 }
 
 pub(crate) struct MountRequirement {
@@ -296,11 +301,50 @@ fn pin(path: &AbsolutePath) -> Result<PinnedPath, LinuxError> {
     let owned = crate::ffi::open_path_at(std::os::fd::AsRawFd::as_raw_fd(&root), &relative)
         .map_err(|_| preparation("path pinning"))?;
     let file = crate::ffi::file_from_owned(owned);
-    let file_type = file
+    let metadata = file
         .metadata()
-        .map_err(|_| preparation("path inspection"))?
-        .file_type();
-    let kind = if file_type.is_dir() {
+        .map_err(|_| preparation("path inspection"))?;
+    let kind = classify(&metadata);
+    Ok(PinnedPath {
+        file,
+        kind,
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    })
+}
+
+pub(crate) fn repin_after_namespace(preparation: &mut MountPreparation) -> Result<(), LinuxError> {
+    let root = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_PATH | libc::O_CLOEXEC)
+        .open("/")
+        .map_err(|_| enforcement("namespace root pinning"))?;
+
+    for (path, pinned) in &mut preparation.pinned {
+        let relative = path.as_str().strip_prefix('/').unwrap_or(path.as_str());
+        let relative = if relative.is_empty() { "." } else { relative };
+        let relative =
+            crate::ffi::c_string(relative).map_err(|_| enforcement("mount source repinning"))?;
+        let owned = crate::ffi::open_path_at(root.as_raw_fd(), &relative)
+            .map_err(|_| enforcement("mount source repinning"))?;
+        let file = crate::ffi::file_from_owned(owned);
+        let metadata = file
+            .metadata()
+            .map_err(|_| enforcement("mount source verification"))?;
+        if metadata.dev() != pinned.device
+            || metadata.ino() != pinned.inode
+            || classify(&metadata) != pinned.kind
+        {
+            return Err(enforcement("mount source verification"));
+        }
+        pinned.file = file;
+    }
+    Ok(())
+}
+
+fn classify(metadata: &std::fs::Metadata) -> PinnedKind {
+    let file_type = metadata.file_type();
+    if file_type.is_dir() {
         PinnedKind::Directory
     } else if file_type.is_file() {
         PinnedKind::Regular
@@ -310,8 +354,7 @@ fn pin(path: &AbsolutePath) -> Result<PinnedPath, LinuxError> {
         PinnedKind::Device
     } else {
         PinnedKind::Other
-    };
-    Ok(PinnedPath { file, kind })
+    }
 }
 
 pub(crate) fn denied(path: &AbsolutePath, protected_paths: &[AbsolutePath]) -> bool {
@@ -331,6 +374,10 @@ fn visible<'a>(
 
 fn preparation(phase: &'static str) -> LinuxError {
     LinuxError::new(LinuxErrorKind::PreparationFailed, phase)
+}
+
+fn enforcement(phase: &'static str) -> LinuxError {
+    LinuxError::new(LinuxErrorKind::EnforcementFailed, phase)
 }
 
 fn unsupported(phase: &'static str) -> LinuxError {

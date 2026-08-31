@@ -35,4 +35,4 @@ pub use error::{LinuxError, LinuxErrorKind};
 pub use plan::{LinuxPolicyPlan, plan};
 #[cfg(target_os = "linux")]
 pub use prepare::{PreparedLinuxSandbox, prepare};
-pub use support::{REQUIRED_LANDLOCK_ABI, SupportInfo, probe};
+pub use support::{BASELINE_LANDLOCK_ABI, PATHNAME_SOCKET_LANDLOCK_ABI, SupportInfo, probe};

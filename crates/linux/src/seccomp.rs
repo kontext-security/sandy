@@ -58,8 +58,7 @@ pub(crate) fn compile(
         .collect::<Result<Vec<_>, _>>()?;
     if !allow_subprocesses {
         clone_rules.push(masked_clone_rule(libc::CLONE_THREAD as u64, 0)?);
-        denied.insert(libc::SYS_fork, Vec::new());
-        denied.insert(libc::SYS_vfork, Vec::new());
+        deny_arch_process_creation(&mut denied);
         denied.insert(libc::SYS_execve, Vec::new());
         denied.insert(libc::SYS_execveat, Vec::new());
     }
@@ -91,6 +90,17 @@ pub(crate) fn compile(
         architecture,
     )?;
     Ok(SeccompPrograms { clone3, topology })
+}
+
+fn deny_arch_process_creation(_denied: &mut BTreeMap<i64, Vec<SeccompRule>>) {
+    // AArch64 has no separate fork or vfork syscalls; libc implements both
+    // through clone. Other supported architectures retain the legacy entry
+    // points, which must be denied alongside clone.
+    #[cfg(target_arch = "x86_64")]
+    {
+        _denied.insert(libc::SYS_fork, Vec::new());
+        _denied.insert(libc::SYS_vfork, Vec::new());
+    }
 }
 
 pub(crate) fn apply(programs: &SeccompPrograms) -> Result<(), LinuxError> {

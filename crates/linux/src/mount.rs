@@ -125,8 +125,10 @@ fn attach(
     let relative = ffi::c_string(relative).map_err(|_| enforcement("mount target pinning"))?;
     let target = ffi::open_path_at(root.as_raw_fd(), &relative)
         .map_err(|_| enforcement("mount target pinning"))?;
-    let detached = ffi::clone_mount(source.as_raw_fd(), recursive, read_only, allow_device)
+    let detached = ffi::clone_mount(source.as_raw_fd(), recursive)
         .map_err(|_| enforcement("detached mount creation"))?;
+    ffi::restrict_mount(detached.as_raw_fd(), recursive, read_only, allow_device)
+        .map_err(|_| enforcement("detached mount restriction"))?;
     ffi::attach_mount(detached.as_raw_fd(), target.as_raw_fd())
         .map_err(|_| enforcement("mount attachment"))
 }

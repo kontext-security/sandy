@@ -2,8 +2,11 @@
 mod linux {
     use std::{
         env, fs,
-        net::TcpStream,
-        os::unix::net::{UnixListener, UnixStream},
+        net::{TcpListener, TcpStream, UdpSocket},
+        os::{
+            linux::net::SocketAddrExt,
+            unix::net::{SocketAddr, UnixListener, UnixStream},
+        },
         process::Command,
         time::Duration,
     };
@@ -15,6 +18,10 @@ mod linux {
 
     const CHILD_MODE: &str = "SANDY_LINUX_LIVE_CHILD";
     const ALLOW_SOCKET_CHILD: &str = "SANDY_LINUX_ALLOW_SOCKET_CHILD";
+    const BLOCK_SOCKET_CHILD: &str = "SANDY_LINUX_BLOCK_SOCKET_CHILD";
+    const DENIED_SOCKET_PATH: &str = "SANDY_LINUX_DENIED_SOCKET";
+    const ABSTRACT_SOCKET_NAME: &str = "SANDY_LINUX_ABSTRACT_SOCKET";
+    const REPLACEMENT_CHILD: &str = "SANDY_LINUX_REPLACEMENT_CHILD";
     const SOCKET_PATH: &str = "SANDY_LINUX_LIVE_SOCKET";
     const EXPECT_UNSUPPORTED: &str = "SANDY_LINUX_EXPECT_UNSUPPORTED";
     const WORKSPACE: &str = "SANDY_LINUX_LIVE_WORKSPACE";
@@ -26,11 +33,18 @@ mod linux {
         if env::var_os(ALLOW_SOCKET_CHILD).is_some() {
             return allow_socket_child();
         }
+        if env::var_os(BLOCK_SOCKET_CHILD).is_some() {
+            return block_socket_child();
+        }
+        if env::var_os(REPLACEMENT_CHILD).is_some() {
+            return replacement_child();
+        }
         if env::var_os(EXPECT_UNSUPPORTED).is_some() {
             return restricted_host_is_rejected_before_enforcement();
         }
 
         exact_directory_grants_are_rejected_before_enforcement()?;
+        mount_source_replacement_is_rejected()?;
 
         let root = tempfile::tempdir()?;
         let workspace = root.path().join("workspace");
@@ -47,6 +61,44 @@ mod linux {
             return Err("sacrificial sandbox child failed".into());
         }
         allow_all_preserves_pathname_socket_connections(root.path(), &workspace)?;
+        block_all_preserves_only_typed_endpoint_authority(root.path(), &workspace)?;
+        Ok(())
+    }
+
+    fn mount_source_replacement_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
+        let status = Command::new(env::current_exe()?)
+            .env(REPLACEMENT_CHILD, "1")
+            .status()?;
+        if !status.success() {
+            return Err("mount source replacement child failed".into());
+        }
+        Ok(())
+    }
+
+    fn replacement_child() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let workspace_path = root.path().join("workspace");
+        fs::create_dir(&workspace_path)?;
+        let workspace = absolute(&workspace_path)?;
+        let policy = ValidatedPolicy::try_from(PolicySpec {
+            files: vec![FileGrant {
+                path: workspace.clone(),
+                access: AccessMode::ReadWrite,
+                scope: PathScope::Subtree,
+            }],
+            network: NetworkPolicy::BlockAll,
+            ..PolicySpec::default()
+        })?;
+        let prepared = sandy_linux::prepare(sandy_linux::plan(&policy)?, &workspace)?;
+
+        fs::rename(&workspace_path, root.path().join("replaced"))?;
+        fs::create_dir(&workspace_path)?;
+        let error = sandy_linux::apply(prepared)
+            .err()
+            .ok_or("replaced mount source unexpectedly applied")?;
+        if error.kind() != sandy_linux::LinuxErrorKind::EnforcementFailed {
+            return Err("mount replacement returned the wrong error class".into());
+        }
         Ok(())
     }
 
@@ -89,8 +141,104 @@ mod linux {
         Ok(())
     }
 
+    fn block_all_preserves_only_typed_endpoint_authority(
+        root: &std::path::Path,
+        workspace: &std::path::Path,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let allowed = root.join("allowed.sock");
+        let denied = root.join("denied.sock");
+        let abstract_name = format!("sandy-live-{}", std::process::id());
+        let _allowed_listener = UnixListener::bind(&allowed)?;
+        let _denied_listener = UnixListener::bind(&denied)?;
+        let abstract_address = SocketAddr::from_abstract_name(abstract_name.as_bytes())?;
+        let _abstract_listener = UnixListener::bind_addr(&abstract_address)?;
+
+        let policy =
+            block_socket_policy(absolute(root)?, absolute(workspace)?, absolute(&allowed)?)?;
+        match sandy_linux::probe(&policy) {
+            Ok(_) => {}
+            Err(error) if error.kind() == sandy_linux::LinuxErrorKind::Unsupported => {
+                return Ok(());
+            }
+            Err(error) => return Err(error.into()),
+        }
+
+        let status = Command::new(env::current_exe()?)
+            .env(BLOCK_SOCKET_CHILD, "1")
+            .env(WORKSPACE, workspace)
+            .env(SOCKET_PATH, &allowed)
+            .env(DENIED_SOCKET_PATH, &denied)
+            .env(ABSTRACT_SOCKET_NAME, &abstract_name)
+            .status()?;
+        if !status.success() {
+            return Err("block-all socket child failed".into());
+        }
+        Ok(())
+    }
+
+    fn block_socket_child() -> Result<(), Box<dyn std::error::Error>> {
+        let workspace = absolute_from_environment(WORKSPACE)?;
+        let allowed = absolute_from_environment(SOCKET_PATH)?;
+        let denied = absolute_from_environment(DENIED_SOCKET_PATH)?;
+        let root = absolute(allowed.as_path().parent().ok_or("socket has no parent")?)?;
+        let policy = block_socket_policy(root.clone(), workspace, allowed.clone())?;
+        let prepared = sandy_linux::prepare(sandy_linux::plan(&policy)?, &root)?;
+        sandy_linux::apply(prepared)?;
+
+        UnixStream::connect(allowed.as_path())?;
+        if UnixStream::connect(denied.as_path()).is_ok() {
+            return Err("adjacent pathname socket connection succeeded".into());
+        }
+        let abstract_name = env::var(ABSTRACT_SOCKET_NAME)?;
+        let abstract_address = SocketAddr::from_abstract_name(abstract_name.as_bytes())?;
+        if UnixStream::connect_addr(&abstract_address).is_ok() {
+            return Err("external abstract socket connection succeeded".into());
+        }
+        if TcpListener::bind("127.0.0.1:0").is_ok()
+            || TcpListener::bind("[::1]:0").is_ok()
+            || UdpSocket::bind("127.0.0.1:0").is_ok()
+            || TcpStream::connect_timeout(&"1.1.1.1:80".parse()?, Duration::from_millis(100))
+                .is_ok()
+        {
+            return Err("IP socket creation succeeded".into());
+        }
+        let _local_pair = UnixStream::pair()?;
+        Ok(())
+    }
+
+    fn block_socket_policy(
+        root: AbsolutePath,
+        workspace: AbsolutePath,
+        allowed: AbsolutePath,
+    ) -> Result<ValidatedPolicy, Box<dyn std::error::Error>> {
+        Ok(ValidatedPolicy::try_from(PolicySpec {
+            files: vec![
+                FileGrant {
+                    path: root,
+                    access: AccessMode::Read,
+                    scope: PathScope::Subtree,
+                },
+                FileGrant {
+                    path: workspace,
+                    access: AccessMode::ReadWrite,
+                    scope: PathScope::Subtree,
+                },
+            ],
+            unix_sockets: vec![UnixSocketGrant {
+                path: allowed,
+                operation: UnixSocketOperation::Connect,
+            }],
+            network: NetworkPolicy::BlockAll,
+            ..PolicySpec::default()
+        })?)
+    }
+
     fn absolute_from_environment(name: &str) -> Result<AbsolutePath, Box<dyn std::error::Error>> {
         let path = fs::canonicalize(env::var_os(name).ok_or("missing test path")?)?;
+        absolute(&path)
+    }
+
+    fn absolute(path: &std::path::Path) -> Result<AbsolutePath, Box<dyn std::error::Error>> {
         Ok(AbsolutePath::new(
             path.to_str().ok_or("test path is not UTF-8")?.to_owned(),
         )?)
@@ -161,6 +309,13 @@ mod linux {
         if TcpStream::connect_timeout(&"1.1.1.1:80".parse()?, Duration::from_millis(100)).is_ok() {
             return Err("blocked network connection succeeded".into());
         }
+        if TcpListener::bind("127.0.0.1:0").is_ok()
+            || UdpSocket::bind("127.0.0.1:0").is_ok()
+            || UnixListener::bind("server.sock").is_ok()
+        {
+            return Err("addressable socket creation succeeded".into());
+        }
+        let _local_pair = UnixStream::pair()?;
         Ok(())
     }
 

@@ -112,17 +112,135 @@ unsafe fn namespace_probe_child(uid_map: &[u8], gid_map: &[u8], block_network: b
                 std::ptr::null(),
             )
         } == 0
-        && unsafe {
-            libc::mount(
-                c"tmpfs".as_ptr(),
-                c"/tmp".as_ptr(),
-                c"tmpfs".as_ptr(),
-                (libc::MS_NOSUID | libc::MS_NODEV) as libc::c_ulong,
-                c"mode=0700,size=1m".as_ptr().cast(),
-            )
-        } == 0;
+        && probe_mount_sequence();
     // SAFETY: `_exit` performs no Rust cleanup and cannot return.
     unsafe { libc::_exit(if succeeded { 0 } else { 1 }) }
+}
+
+fn probe_mount_sequence() -> bool {
+    // Exercise the same modern mount transaction as the real backend with a
+    // source descriptor opened after CLONE_NEWNS. All paths and structures
+    // are fixed before use, and the sacrificial child exits immediately.
+    if probe_mount_tmpfs(c"/tmp") != 0
+        || probe_mkdir(c"/tmp/.sandy-probe-root") != 0
+        || probe_mount_tmpfs(c"/tmp/.sandy-probe-root") != 0
+        || probe_mkdir(c"/tmp/.sandy-probe-root/usr") != 0
+        || probe_mkdir(c"/tmp/.sandy-probe-root/.old_root") != 0
+    {
+        return false;
+    }
+
+    let source = probe_open(c"/usr");
+    if source < 0 {
+        return false;
+    }
+    let flags = libc::OPEN_TREE_CLONE
+        | libc::OPEN_TREE_CLOEXEC
+        | libc::AT_EMPTY_PATH as u32
+        | libc::AT_RECURSIVE as u32;
+    let mount_fd = probe_open_tree(source, flags);
+    if mount_fd < 0 {
+        return false;
+    }
+    let attributes = libc::mount_attr {
+        attr_set: libc::MOUNT_ATTR_NOSUID | libc::MOUNT_ATTR_NODEV | libc::MOUNT_ATTR_RDONLY,
+        attr_clr: 0,
+        propagation: 0,
+        userns_fd: 0,
+    };
+    if probe_mount_setattr(mount_fd, &attributes) < 0 {
+        return false;
+    }
+    let target = probe_open(c"/tmp/.sandy-probe-root/usr");
+    if target < 0 {
+        return false;
+    }
+    if probe_move_mount(mount_fd, target) < 0
+        || probe_chdir(c"/tmp/.sandy-probe-root") != 0
+        || probe_pivot_root() < 0
+        || probe_chdir(c"/") != 0
+        || probe_detach_old_root() != 0
+    {
+        return false;
+    }
+    true
+}
+
+fn probe_mount_tmpfs(target: &CStr) -> libc::c_int {
+    // SAFETY: every pointer is a live C string for the call, mount copies the
+    // values, and the operation is confined to the sacrificial mount namespace.
+    unsafe {
+        libc::mount(
+            c"tmpfs".as_ptr(),
+            target.as_ptr(),
+            c"tmpfs".as_ptr(),
+            (libc::MS_NOSUID | libc::MS_NODEV) as libc::c_ulong,
+            c"mode=0700,size=1m".as_ptr().cast(),
+        )
+    }
+}
+
+fn probe_mkdir(path: &CStr) -> libc::c_int {
+    // SAFETY: `path` is a live C string and mkdir retains no pointer.
+    unsafe { libc::mkdir(path.as_ptr(), 0o700) }
+}
+
+fn probe_open(path: &CStr) -> libc::c_int {
+    // SAFETY: `path` is a live C string. The sacrificial child exclusively
+    // owns any descriptor returned by the kernel until it exits.
+    unsafe { libc::open(path.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) }
+}
+
+fn probe_open_tree(source: libc::c_int, flags: u32) -> libc::c_long {
+    // SAFETY: `source` is checked by the kernel and the empty path is a static
+    // C string selected by AT_EMPTY_PATH. No pointer is retained.
+    unsafe { libc::syscall(libc::SYS_open_tree, source, EMPTY.as_ptr(), flags) }
+}
+
+fn probe_mount_setattr(mount_fd: libc::c_long, attributes: &libc::mount_attr) -> libc::c_long {
+    // SAFETY: `mount_fd` is checked by the kernel and `attributes` remains live
+    // for the fixed-size call. The kernel copies it and retains no pointer.
+    unsafe {
+        libc::syscall(
+            libc::SYS_mount_setattr,
+            mount_fd,
+            EMPTY.as_ptr(),
+            libc::AT_EMPTY_PATH | libc::AT_RECURSIVE,
+            attributes,
+            size_of::<libc::mount_attr>(),
+        )
+    }
+}
+
+fn probe_move_mount(mount_fd: libc::c_long, target: libc::c_int) -> libc::c_long {
+    // SAFETY: both descriptors are checked by the kernel; the static empty
+    // paths select them and no pointer or Rust ownership is retained.
+    unsafe {
+        libc::syscall(
+            libc::SYS_move_mount,
+            mount_fd,
+            EMPTY.as_ptr(),
+            target,
+            EMPTY.as_ptr(),
+            libc::MOVE_MOUNT_F_EMPTY_PATH | libc::MOVE_MOUNT_T_EMPTY_PATH,
+        )
+    }
+}
+
+fn probe_chdir(path: &CStr) -> libc::c_int {
+    // SAFETY: `path` is a live C string and chdir retains no pointer.
+    unsafe { libc::chdir(path.as_ptr()) }
+}
+
+fn probe_pivot_root() -> libc::c_long {
+    // SAFETY: both static paths refer to directories created above, remain
+    // live for the syscall, and are used only in the sacrificial namespace.
+    unsafe { libc::syscall(libc::SYS_pivot_root, c".".as_ptr(), c".old_root".as_ptr()) }
+}
+
+fn probe_detach_old_root() -> libc::c_int {
+    // SAFETY: the static path remains live and umount2 retains no pointer.
+    unsafe { libc::umount2(c"/.old_root".as_ptr(), libc::MNT_DETACH) }
 }
 
 unsafe fn write_probe_file(path: &CStr, contents: &[u8]) -> bool {
@@ -214,12 +332,7 @@ pub(crate) fn open_path_at(root: RawFd, relative: &CStr) -> io::Result<OwnedFd> 
     }
 }
 
-pub(crate) fn clone_mount(
-    source: RawFd,
-    recursive: bool,
-    read_only: bool,
-    allow_device: bool,
-) -> io::Result<OwnedFd> {
+pub(crate) fn clone_mount(source: RawFd, recursive: bool) -> io::Result<OwnedFd> {
     let mut flags = libc::OPEN_TREE_CLONE | libc::OPEN_TREE_CLOEXEC | libc::AT_EMPTY_PATH as u32;
     if recursive {
         flags |= libc::AT_RECURSIVE as u32;
@@ -234,8 +347,15 @@ pub(crate) fn clone_mount(
     let raw = i32::try_from(fd).map_err(|_| io::Error::from_raw_os_error(libc::EOVERFLOW))?;
     // SAFETY: the successful syscall returned a fresh descriptor and ownership
     // is transferred exactly once.
-    let mount_fd = unsafe { OwnedFd::from_raw_fd(raw) };
+    Ok(unsafe { OwnedFd::from_raw_fd(raw) })
+}
 
+pub(crate) fn restrict_mount(
+    mount_fd: RawFd,
+    recursive: bool,
+    read_only: bool,
+    allow_device: bool,
+) -> io::Result<()> {
     let attributes = libc::mount_attr {
         attr_set: libc::MOUNT_ATTR_NOSUID
             | if allow_device {
@@ -259,7 +379,7 @@ pub(crate) fn clone_mount(
     let result = unsafe {
         libc::syscall(
             libc::SYS_mount_setattr,
-            mount_fd.as_raw_fd(),
+            mount_fd,
             EMPTY.as_ptr(),
             attribute_flags,
             &attributes,
@@ -269,7 +389,7 @@ pub(crate) fn clone_mount(
     if result < 0 {
         Err(io::Error::last_os_error())
     } else {
-        Ok(mount_fd)
+        Ok(())
     }
 }
 
@@ -386,5 +506,3 @@ fn cvt_long(value: libc::c_long) -> io::Result<libc::c_long> {
         Ok(value)
     }
 }
-
-use std::os::fd::AsRawFd;
