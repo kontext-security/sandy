@@ -48,6 +48,112 @@ pub(crate) fn unshare_namespaces(block_network: bool) -> io::Result<()> {
     cvt(unsafe { libc::unshare(flags) }).map(|_| ())
 }
 
+/// Exercises the irreversible namespace setup in a sacrificial child.
+///
+/// Every allocation is completed before `fork`, and the child executes only
+/// async-signal-safe libc/syscall operations before `_exit`.
+pub(crate) fn probe_namespace_setup(
+    effective_uid: u32,
+    effective_gid: u32,
+    block_network: bool,
+) -> io::Result<()> {
+    let uid_map = format!("{effective_uid} {effective_uid} 1\n").into_bytes();
+    let gid_map = format!("{effective_gid} {effective_gid} 1\n").into_bytes();
+
+    // SAFETY: callers have verified that the process is single-threaded. The
+    // child uses only the fixed native operations in `namespace_probe_child`
+    // and terminates through `_exit`; the parent waits synchronously.
+    let child = unsafe { libc::fork() };
+    if child < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if child == 0 {
+        // SAFETY: this is the sacrificial post-fork child described above.
+        unsafe { namespace_probe_child(&uid_map, &gid_map, block_network) }
+    }
+
+    let mut status = 0;
+    loop {
+        // SAFETY: `child` is the positive PID returned by fork, `status` is a
+        // valid writable integer, and no ownership is transferred.
+        let result = unsafe { libc::waitpid(child, &mut status, 0) };
+        if result == child {
+            break;
+        }
+        if result < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+            continue;
+        }
+        return Err(io::Error::last_os_error());
+    }
+    if libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::from_raw_os_error(libc::EPERM))
+    }
+}
+
+unsafe fn namespace_probe_child(uid_map: &[u8], gid_map: &[u8], block_network: bool) -> ! {
+    let mut flags = libc::CLONE_NEWUSER | libc::CLONE_NEWNS;
+    if block_network {
+        flags |= libc::CLONE_NEWNET;
+    }
+    // SAFETY: this child is single-threaded and disposable; all pointers below
+    // refer to fixed C strings or buffers allocated before fork.
+    let succeeded = unsafe { libc::unshare(flags) } == 0
+        && unsafe { write_probe_file(c"/proc/self/uid_map", uid_map) }
+        && unsafe { write_probe_file(c"/proc/self/setgroups", b"deny") }
+        && unsafe { write_probe_file(c"/proc/self/gid_map", gid_map) }
+        && unsafe {
+            libc::mount(
+                std::ptr::null(),
+                c"/".as_ptr(),
+                std::ptr::null(),
+                (libc::MS_REC | libc::MS_PRIVATE) as libc::c_ulong,
+                std::ptr::null(),
+            )
+        } == 0
+        && unsafe {
+            libc::mount(
+                c"tmpfs".as_ptr(),
+                c"/tmp".as_ptr(),
+                c"tmpfs".as_ptr(),
+                (libc::MS_NOSUID | libc::MS_NODEV) as libc::c_ulong,
+                c"mode=0700,size=1m".as_ptr().cast(),
+            )
+        } == 0;
+    // SAFETY: `_exit` performs no Rust cleanup and cannot return.
+    unsafe { libc::_exit(if succeeded { 0 } else { 1 }) }
+}
+
+unsafe fn write_probe_file(path: &CStr, contents: &[u8]) -> bool {
+    // SAFETY: `path` is NUL-terminated and remains valid for the call.
+    let fd = unsafe { libc::open(path.as_ptr(), libc::O_WRONLY | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return path == c"/proc/self/setgroups"
+            && io::Error::last_os_error().kind() == io::ErrorKind::NotFound;
+    }
+    let mut offset = 0;
+    while offset < contents.len() {
+        // SAFETY: the byte slice remains valid, and its remaining length is
+        // passed exactly. The descriptor is owned by this child.
+        let written = unsafe {
+            libc::write(
+                fd,
+                contents[offset..].as_ptr().cast(),
+                contents.len() - offset,
+            )
+        };
+        if written <= 0 {
+            // SAFETY: `fd` is a live descriptor opened above.
+            unsafe { libc::close(fd) };
+            return false;
+        }
+        offset += written as usize;
+    }
+    // SAFETY: `fd` is a live descriptor opened above and is closed once.
+    (unsafe { libc::close(fd) }) == 0
+}
+
 pub(crate) fn make_mounts_private() -> io::Result<()> {
     // SAFETY: all pointers are either null as required by mount(2), or the
     // process-lifetime static C string `/`. No pointer is retained. The flags

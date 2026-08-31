@@ -27,7 +27,13 @@ impl SupportInfo {
 /// This is diagnostic only. [`crate::prepare`] repeats every authoritative
 /// check and remains the gate before native application.
 pub fn probe(policy: &ValidatedPolicy) -> Result<SupportInfo, LinuxError> {
-    let _ = crate::plan(policy)?;
+    let plan = crate::plan(policy)?;
+    #[cfg(target_os = "linux")]
+    {
+        crate::namespace::prepare(plan.blocks_network())?;
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = plan;
     probe_platform()
 }
 

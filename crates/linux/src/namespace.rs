@@ -8,9 +8,11 @@ pub(crate) struct NamespacePreparation {
     pub(crate) last_capability: u32,
 }
 
-pub(crate) fn prepare() -> Result<NamespacePreparation, LinuxError> {
+pub(crate) fn prepare(block_network: bool) -> Result<NamespacePreparation, LinuxError> {
     ensure_single_threaded()?;
     let (effective_uid, effective_gid) = ffi::effective_ids();
+    ffi::probe_namespace_setup(effective_uid, effective_gid, block_network)
+        .map_err(|_| LinuxError::new(LinuxErrorKind::Unsupported, "namespace support"))?;
     let raw_last_capability = fs::read_to_string("/proc/sys/kernel/cap_last_cap")
         .map_err(|_| preparation("capability discovery"))?;
     if raw_last_capability.len() > 16 {
@@ -42,7 +44,10 @@ pub(crate) fn enter(
 
     fs::write(
         "/proc/self/uid_map",
-        format!("0 {} 1\n", preparation.effective_uid),
+        format!(
+            "{} {} 1\n",
+            preparation.effective_uid, preparation.effective_uid
+        ),
     )
     .map_err(|_| enforcement("user mapping"))?;
     match fs::write("/proc/self/setgroups", b"deny") {
@@ -59,7 +64,10 @@ pub(crate) fn enter(
     }
     fs::write(
         "/proc/self/gid_map",
-        format!("0 {} 1\n", preparation.effective_gid),
+        format!(
+            "{} {} 1\n",
+            preparation.effective_gid, preparation.effective_gid
+        ),
     )
     .map_err(|_| enforcement("group mapping"))?;
 

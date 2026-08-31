@@ -52,6 +52,12 @@ jobs:
         run: rustup toolchain install 1.91.1 --profile minimal --component clippy
       - name: Lint Linux backend
         run: cargo clippy -p sandy-linux --all-targets --all-features --locked -- -D warnings
+      - name: Verify restricted user namespaces fail closed
+        env:
+          SANDY_LINUX_EXPECT_UNSUPPORTED: "1"
+        run: cargo test -p sandy-linux --test live_linux --locked
+      - name: Enable user namespaces for positive enforcement tests
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Test Linux backend
         run: make test-live-linux
       - name: Preserve unsupported facade contract

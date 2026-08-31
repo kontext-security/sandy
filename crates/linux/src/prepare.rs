@@ -38,7 +38,7 @@ pub(crate) struct MountPreparation {
     pub(crate) pinned: BTreeMap<AbsolutePath, PinnedPath>,
     pub(crate) mounts: Vec<MountRequirement>,
     pub(crate) protections: Vec<ProtectionRequirement>,
-    pub(crate) working_directory: Option<AbsolutePath>,
+    pub(crate) working_directory: AbsolutePath,
 }
 
 /// Fully prepared Linux sandbox whose remaining operations are irreversible.
@@ -61,10 +61,10 @@ pub fn prepare(
     plan: LinuxPolicyPlan,
     working_directory: &AbsolutePath,
 ) -> Result<PreparedLinuxSandbox, LinuxError> {
-    let namespace = namespace::prepare()?;
+    let block_network = plan.blocks_network();
+    let namespace = namespace::prepare(block_network)?;
     let mount = prepare_mounts(&plan, working_directory)?;
     let landlock = landlock::prepare(plan.policy.spec(), &mount.pinned)?;
-    let block_network = plan.blocks_network();
     let seccomp = seccomp::compile(
         plan.allows_subprocesses(),
         block_network,
@@ -216,8 +216,10 @@ fn prepare_mounts(
         })
         .collect::<Result<Vec<_>, LinuxError>>()?;
 
-    let working_directory =
-        visible(working_directory, effective.iter()).then(|| working_directory.clone());
+    if !visible(working_directory, effective.iter()) {
+        return Err(unsupported("working directory visibility"));
+    }
+    let working_directory = working_directory.clone();
 
     Ok(MountPreparation {
         pinned,

@@ -75,10 +75,8 @@ pub(crate) fn construct_and_enter(preparation: &MountPreparation) -> Result<(), 
     ffi::detach_mount(c"/.old_root").map_err(|_| enforcement("old root detachment"))?;
     fs::remove_dir("/.old_root").map_err(|_| enforcement("old root cleanup"))?;
 
-    if let Some(working_directory) = &preparation.working_directory {
-        std::env::set_current_dir(working_directory.as_path())
-            .map_err(|_| enforcement("working directory restoration"))?;
-    }
+    std::env::set_current_dir(preparation.working_directory.as_path())
+        .map_err(|_| enforcement("working directory restoration"))?;
     Ok(())
 }
 

@@ -27,7 +27,8 @@ the process unrestricted.
 Application then:
 
 1. enters a user and mount namespace, plus a network namespace for `BlockAll`;
-2. installs one-entry UID and GID maps and makes mount propagation private;
+2. installs same-ID, one-entry UID and GID maps and makes mount propagation
+   private;
 3. constructs a private tmpfs root from descriptor-pinned grants;
 4. overlays typed write protections and enters the private root;
 5. applies the complete Landlock ruleset and `no_new_privs`;
@@ -41,10 +42,20 @@ its target.
 
 ## Fixed native semantics
 
-Sandy requires Landlock ABI 9. The implementation requests only the fixed ABI 9
-filesystem rights and scope flags it has reviewed; a newer host ABI does not
-silently add restrictions. ABI 9 is required so pathname Unix-socket connect
-authority remains separate from filesystem visibility.
+Sandy requires Landlock ABI 9. The implementation handles the fixed ABI 8
+filesystem rights plus ABI 9 pathname Unix-socket resolution and reviewed scope
+flags; a newer host ABI does not silently add restrictions. Device ioctls on
+already-open descriptors remain inherited capabilities. ABI 9 is required so
+pathname Unix-socket connect authority remains separate from filesystem
+visibility.
+
+The host must permit the calling executable to create and configure user,
+mount, and—when blocking network access—network namespaces. Some distributions
+restrict those operations through a system security profile. Sandy exercises
+the complete namespace setup in a sacrificial child during preparation and
+reports the backend as unsupported when the host denies it; it never falls back
+to weaker enforcement. Host administrators must make the namespace capability
+available through their normal system security policy.
 
 Read authority never includes execute authority. Read/write authority uses the
 fixed mutation rights through ABI 8 because ABI 9's aggregate write set also
@@ -89,6 +100,10 @@ weakened:
 The private root deliberately omits procfs. Product compatibility grants and
 any future selective procfs design belong to the CLI boundary and require live
 positive and negative tests before shipping.
+
+The requested working directory must be visible through an explicit grant.
+Sandy rejects the policy before enforcement rather than silently changing the
+working directory to the private root.
 
 ## Unsafe boundary
 

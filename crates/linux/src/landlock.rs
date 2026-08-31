@@ -4,7 +4,7 @@ use landlock::{
     ABI, Access, AccessFs, BitFlags, CompatLevel, Compatible, PathBeneath, Ruleset, RulesetAttr,
     RulesetCreated, RulesetCreatedAttr, RulesetStatus, Scope,
 };
-use sandy_core::{AccessMode, PathScope, PolicySpec};
+use sandy_core::{AccessMode, NetworkPolicy, PathScope, PolicySpec};
 
 use crate::{
     LinuxError, LinuxErrorKind,
@@ -19,10 +19,18 @@ pub(crate) fn prepare(
     policy: &PolicySpec,
     pinned: &BTreeMap<sandy_core::AbsolutePath, PinnedPath>,
 ) -> Result<PreparedLandlock, LinuxError> {
+    let handled = AccessFs::from_all(ABI::V8) | AccessFs::ResolveUnix;
     let builder = Ruleset::default()
-        .handle_access(AccessFs::from_all(ABI::V9))
-        .and_then(|ruleset| ruleset.scope(Scope::Signal | Scope::AbstractUnixSocket))
-        .map_err(|_| unsupported("Landlock ABI"))?
+        .handle_access(handled)
+        .map_err(|_| unsupported("Landlock ABI"))?;
+    let scope = if policy.network == NetworkPolicy::BlockAll {
+        Scope::Signal | Scope::AbstractUnixSocket
+    } else {
+        Scope::Signal.into()
+    };
+    let builder = builder
+        .scope(scope)
+        .map_err(|_| unsupported("Landlock scope"))?
         .set_compatibility(CompatLevel::HardRequirement);
     let mut ruleset = builder
         .create()

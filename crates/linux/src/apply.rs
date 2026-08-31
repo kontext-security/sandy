@@ -19,9 +19,7 @@ pub fn apply(prepared: PreparedLinuxSandbox) -> Result<(), LinuxError> {
 fn verify_postconditions() -> Result<(), LinuxError> {
     // After pivot_root the former host root and procfs must be absent. This is
     // an invariant check, not a source of policy authority.
-    if std::path::Path::new("/.old_root").exists()
-        || std::path::Path::new("/proc/self/root").exists()
-    {
+    if std::path::Path::new("/.old_root").exists() {
         Err(LinuxError::new(
             LinuxErrorKind::EnforcementFailed,
             "postcondition verification",

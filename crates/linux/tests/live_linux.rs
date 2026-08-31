@@ -8,11 +8,15 @@ mod linux {
     };
 
     const CHILD_MODE: &str = "SANDY_LINUX_LIVE_CHILD";
+    const EXPECT_UNSUPPORTED: &str = "SANDY_LINUX_EXPECT_UNSUPPORTED";
     const WORKSPACE: &str = "SANDY_LINUX_LIVE_WORKSPACE";
 
     pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         if env::var_os(CHILD_MODE).is_some() {
             return child_checks();
+        }
+        if env::var_os(EXPECT_UNSUPPORTED).is_some() {
+            return restricted_host_is_rejected_before_enforcement();
         }
 
         exact_directory_grants_are_rejected_before_enforcement()?;
@@ -30,6 +34,32 @@ mod linux {
             .status()?;
         if !status.success() {
             return Err("sacrificial sandbox child failed".into());
+        }
+        Ok(())
+    }
+
+    fn restricted_host_is_rejected_before_enforcement() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let path = AbsolutePath::new(
+            fs::canonicalize(root.path())?
+                .to_str()
+                .ok_or("path is not UTF-8")?
+                .to_owned(),
+        )?;
+        let policy = ValidatedPolicy::try_from(PolicySpec {
+            files: vec![FileGrant {
+                path: path.clone(),
+                access: AccessMode::Read,
+                scope: PathScope::Subtree,
+            }],
+            network: NetworkPolicy::BlockAll,
+            ..PolicySpec::default()
+        })?;
+        let error = sandy_linux::prepare(sandy_linux::plan(&policy)?, &path)
+            .err()
+            .ok_or("restricted host unexpectedly passed preparation")?;
+        if error.kind() != sandy_linux::LinuxErrorKind::Unsupported {
+            return Err("restricted host returned the wrong error class".into());
         }
         Ok(())
     }
