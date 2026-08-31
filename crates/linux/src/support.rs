@@ -74,7 +74,7 @@ fn probe_platform(_required_abi: u32) -> Result<SupportInfo, LinuxError> {
     ))
 }
 
-fn required_abi(policy: &PolicySpec) -> u32 {
+pub(crate) fn required_abi(policy: &PolicySpec) -> u32 {
     if policy.network == NetworkPolicy::BlockAll && !policy.unix_sockets.is_empty() {
         PATHNAME_SOCKET_LANDLOCK_ABI
     } else {

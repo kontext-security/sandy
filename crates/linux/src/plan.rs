@@ -25,6 +25,16 @@ impl LinuxPolicyPlan {
     pub fn allows_subprocesses(&self) -> bool {
         self.policy.spec().allow_subprocesses
     }
+
+    /// Returns the minimum Landlock ABI required by this policy.
+    ///
+    /// The requirement is policy-specific: ordinary filesystem policies use
+    /// the fixed baseline while exact pathname Unix-socket authority requires
+    /// the newer socket-resolution right.
+    #[must_use]
+    pub fn required_landlock_abi(&self) -> u32 {
+        crate::support::required_abi(self.policy.spec())
+    }
 }
 
 /// Lowers a validated policy into deterministic Linux semantics.
@@ -100,6 +110,7 @@ mod tests {
         let plan = plan(&policy)?;
         assert!(plan.blocks_network());
         assert!(!plan.allows_subprocesses());
+        assert_eq!(plan.required_landlock_abi(), crate::BASELINE_LANDLOCK_ABI);
         Ok(())
     }
 

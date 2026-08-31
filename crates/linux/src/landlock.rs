@@ -49,7 +49,7 @@ pub(crate) fn prepare(
             .ok_or_else(|| preparation("Landlock path lookup"))?;
         let mut rights = read_rights(pinned_path.kind);
         if grant.access == AccessMode::ReadWrite {
-            rights |= write_rights();
+            rights |= write_rights(pinned_path.kind);
         }
         ruleset = add_rule(ruleset, &pinned_path.file, rights)?;
     }
@@ -113,11 +113,17 @@ fn read_rights(kind: PinnedKind) -> BitFlags<AccessFs> {
     }
 }
 
-fn write_rights() -> BitFlags<AccessFs> {
+fn write_rights(kind: PinnedKind) -> BitFlags<AccessFs> {
     // ABI 9's `from_write` includes ResolveUnix. Socket connection authority
     // is independent from filesystem mutation, so use the complete fixed ABI 8
     // mutation set and add ResolveUnix only for typed socket grants.
-    AccessFs::from_write(ABI::V8)
+    let rights = AccessFs::from_write(ABI::V8);
+    if kind == PinnedKind::Directory {
+        rights
+    } else {
+        // Never attach directory-mutation rights to an exact file-like rule.
+        rights & AccessFs::from_file(ABI::V8)
+    }
 }
 
 fn preparation(phase: &'static str) -> LinuxError {

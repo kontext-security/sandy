@@ -20,6 +20,7 @@ mod linux {
     const ALLOW_SOCKET_CHILD: &str = "SANDY_LINUX_ALLOW_SOCKET_CHILD";
     const BLOCK_SOCKET_CHILD: &str = "SANDY_LINUX_BLOCK_SOCKET_CHILD";
     const DENIED_SOCKET_PATH: &str = "SANDY_LINUX_DENIED_SOCKET";
+    const DEVICE_CHILD: &str = "SANDY_LINUX_DEVICE_CHILD";
     const ABSTRACT_SOCKET_NAME: &str = "SANDY_LINUX_ABSTRACT_SOCKET";
     const REPLACEMENT_CHILD: &str = "SANDY_LINUX_REPLACEMENT_CHILD";
     const SOCKET_PATH: &str = "SANDY_LINUX_LIVE_SOCKET";
@@ -36,6 +37,9 @@ mod linux {
         if env::var_os(BLOCK_SOCKET_CHILD).is_some() {
             return block_socket_child();
         }
+        if env::var_os(DEVICE_CHILD).is_some() {
+            return exact_device_child();
+        }
         if env::var_os(REPLACEMENT_CHILD).is_some() {
             return replacement_child();
         }
@@ -44,6 +48,7 @@ mod linux {
         }
 
         exact_directory_grants_are_rejected_before_enforcement()?;
+        exact_device_grants_do_not_expose_adjacent_devices()?;
         mount_source_replacement_is_rejected()?;
 
         let root = tempfile::tempdir()?;
@@ -62,6 +67,50 @@ mod linux {
         }
         allow_all_preserves_pathname_socket_connections(root.path(), &workspace)?;
         block_all_preserves_only_typed_endpoint_authority(root.path(), &workspace)?;
+        Ok(())
+    }
+
+    fn exact_device_grants_do_not_expose_adjacent_devices() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = tempfile::tempdir()?;
+        let workspace = root.path().join("workspace");
+        fs::create_dir(&workspace)?;
+        let status = Command::new(env::current_exe()?)
+            .env(DEVICE_CHILD, "1")
+            .env(WORKSPACE, &workspace)
+            .status()?;
+        if !status.success() {
+            return Err("exact device child failed".into());
+        }
+        Ok(())
+    }
+
+    fn exact_device_child() -> Result<(), Box<dyn std::error::Error>> {
+        let workspace = absolute_from_environment(WORKSPACE)?;
+        let null_device = absolute(std::path::Path::new("/dev/null"))?;
+        let policy = ValidatedPolicy::try_from(PolicySpec {
+            files: vec![
+                FileGrant {
+                    path: workspace.clone(),
+                    access: AccessMode::ReadWrite,
+                    scope: PathScope::Subtree,
+                },
+                FileGrant {
+                    path: null_device,
+                    access: AccessMode::ReadWrite,
+                    scope: PathScope::Exact,
+                },
+            ],
+            network: NetworkPolicy::AllowAll,
+            ..PolicySpec::default()
+        })?;
+        let prepared = sandy_linux::prepare(sandy_linux::plan(&policy)?, &workspace)?;
+        sandy_linux::apply(prepared)?;
+
+        fs::write("/dev/null", b"discarded")?;
+        if fs::metadata("/dev/zero").is_ok() {
+            return Err("adjacent device remained visible".into());
+        }
         Ok(())
     }
 

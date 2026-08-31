@@ -160,9 +160,14 @@ fn prepare_mounts(
             grant.scope == PathScope::Exact && pinned_path.kind == PinnedKind::Directory;
         let subtree_non_directory =
             grant.scope == PathScope::Subtree && pinned_path.kind != PinnedKind::Directory;
-        let exact_read_write =
-            grant.scope == PathScope::Exact && grant.access == AccessMode::ReadWrite;
-        if exact_directory || subtree_non_directory || exact_read_write {
+        // Landlock can constrain file-like write operations on one exact
+        // object. Directory mutation rights apply beneath directories, so an
+        // exact read-write directory would silently imply subtree authority.
+        // A typed exact device grant does not carry that ambiguity.
+        let unsupported_exact_read_write = grant.scope == PathScope::Exact
+            && grant.access == AccessMode::ReadWrite
+            && pinned_path.kind != PinnedKind::Device;
+        if exact_directory || subtree_non_directory || unsupported_exact_read_write {
             return Err(unsupported("filesystem grant shape"));
         }
     }
