@@ -6,8 +6,8 @@
 [![Follow Sandy on LinkedIn](https://img.shields.io/badge/LinkedIn-Follow-0A66C2?logo=linkedin&logoColor=white)](https://www.linkedin.com/company/kontextdev)
 
 > [!WARNING]
-> Sandy `0.1.x` is experimental and has not completed an independent security
-> audit. See [Security and support](#security-and-support).
+> Sandy is experimental and has not completed an independent security audit.
+> See [Security and support](#security-and-support).
 
 Run AI coding agents in a sandbox.
 
@@ -56,7 +56,7 @@ no Sandy executable dependency and adds no application compatibility baseline.
 
 ```toml
 [dependencies]
-sandy = { package = "sandy-sandbox", version = "0.1" }
+sandy = { package = "sandy-sandbox", version = "0.2" }
 ```
 
 ```rust,no_run

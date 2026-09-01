@@ -6,7 +6,7 @@ consumers alias the package to its `sandy` library name:
 
 ```toml
 [dependencies]
-sandy = { package = "sandy-sandbox", version = "0.1" }
+sandy = { package = "sandy-sandbox", version = "0.2" }
 ```
 
 It requires no Sandy executable, daemon, bootstrap hook, or special application
@@ -258,7 +258,7 @@ Unimplemented operations are absent rather than published as placeholders.
 
 The API and policy vocabulary are platform-neutral. Starting with version 0.2,
 Sandy has native macOS and Linux backends. Other platforms return
-`ErrorKind::Unsupported`. Linux additionally requires user and mount
+`ErrorKind::Unsupported`. Linux additionally requires user, mount, and IPC
 namespaces, `openat2`, the modern mount API, seccomp, and Landlock ABI 6. A host
 or policy combination that cannot preserve the contract returns `Unsupported`;
 it is never weakened.

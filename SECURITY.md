@@ -1,9 +1,9 @@
 # Security policy
 
-Sandy is experimental security software. Version `0.1.x` has not completed an
-independent audit. Its macOS backend uses a private, deprecated Seatbelt
-interface; its Linux facade backend relies on user and mount namespaces,
-Landlock ABI 6, capability removal, and seccomp.
+Sandy is experimental security software and has not completed an independent
+audit. Its macOS backend uses a private, deprecated Seatbelt interface; its
+Linux facade backend relies on user, mount, and IPC namespaces, Landlock ABI 6,
+capability removal, and seccomp.
 
 Please report vulnerabilities privately through GitHub's security advisory
 flow for `kontext-security/sandy`. Do not open a public issue for an unpatched

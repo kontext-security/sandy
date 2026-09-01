@@ -106,22 +106,30 @@ fn apply_platform(policy: SandboxPolicy) -> Result<(), SandboxError> {
 #[cfg(target_os = "linux")]
 fn apply_platform(policy: SandboxPolicy) -> Result<(), SandboxError> {
     let resolved = resolve::resolve(policy)?;
-    let plan = sandy_linux::plan(resolved.policy()).map_err(map_linux_error)?;
-    let prepared =
-        sandy_linux::prepare(plan, resolved.working_directory()).map_err(map_linux_error)?;
-    sandy_linux::apply(prepared).map_err(map_linux_error)
+    let plan = sandy_linux::plan(resolved.policy()).map_err(map_linux_preparation_error)?;
+    let prepared = sandy_linux::prepare(plan, resolved.working_directory())
+        .map_err(map_linux_preparation_error)?;
+    sandy_linux::apply(prepared).map_err(map_linux_enforcement_error)
 }
 
 #[cfg(target_os = "linux")]
-fn map_linux_error(error: sandy_linux::LinuxError) -> SandboxError {
+fn map_linux_preparation_error(error: sandy_linux::LinuxError) -> SandboxError {
     let kind = match error.kind() {
         sandy_linux::LinuxErrorKind::Unsupported => ErrorKind::Unsupported,
         sandy_linux::LinuxErrorKind::InvalidPolicy => ErrorKind::InvalidPolicy,
         sandy_linux::LinuxErrorKind::PreparationFailed => ErrorKind::PreparationFailed,
         sandy_linux::LinuxErrorKind::EnforcementFailed => ErrorKind::EnforcementFailed,
-        _ => ErrorKind::Unsupported,
+        _ => ErrorKind::PreparationFailed,
     };
     SandboxError::new(kind)
+}
+
+#[cfg(target_os = "linux")]
+fn map_linux_enforcement_error(_error: sandy_linux::LinuxError) -> SandboxError {
+    // Once the irreversible transaction begins, no backend error may be
+    // classified as a safe pre-enforcement incompatibility. This remains
+    // conservative when the non-exhaustive backend error enum grows.
+    SandboxError::new(ErrorKind::EnforcementFailed)
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
