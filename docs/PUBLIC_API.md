@@ -258,10 +258,10 @@ Unimplemented operations are absent rather than published as placeholders.
 
 The API and policy vocabulary are platform-neutral. Starting with version 0.2,
 Sandy has native macOS and Linux backends. Other platforms return
-`ErrorKind::Unsupported`. Linux additionally requires user, mount, and IPC
-namespaces, `openat2`, the modern mount API, seccomp, and Landlock ABI 6. A host
-or policy combination that cannot preserve the contract returns `Unsupported`;
-it is never weakened.
+`ErrorKind::Unsupported`. Linux additionally requires Linux 6.12 or a vendor
+kernel carrying Landlock ABI 6, user, mount, and IPC namespaces, `openat2`, the
+modern mount API, and seccomp. A host or policy combination that cannot preserve
+the contract returns `Unsupported`; it is never weakened.
 
 On Linux, preparation verifies that the caller is single-threaded. Application
 enters private namespaces and a descriptor-built filesystem view before adding
@@ -269,7 +269,8 @@ Landlock and seccomp restrictions. Preparation errors leave the process
 unchanged. An enforcement error can leave it partially restricted, so the
 caller must terminate immediately. The current working directory must be
 covered by an explicit filesystem grant because the private view contains only
-granted paths.
+granted paths. The Linux backend replaces the inherited session keyring with an
+anonymous ring and denies key-management syscalls as fixed native semantics.
 
 ## Intentionally private or absent
 

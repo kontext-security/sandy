@@ -116,20 +116,25 @@ fn apply_platform(policy: SandboxPolicy) -> Result<(), SandboxError> {
 fn map_linux_preparation_error(error: sandy_linux::LinuxError) -> SandboxError {
     let kind = match error.kind() {
         sandy_linux::LinuxErrorKind::Unsupported => ErrorKind::Unsupported,
-        sandy_linux::LinuxErrorKind::InvalidPolicy => ErrorKind::InvalidPolicy,
         sandy_linux::LinuxErrorKind::PreparationFailed => ErrorKind::PreparationFailed,
         sandy_linux::LinuxErrorKind::EnforcementFailed => ErrorKind::EnforcementFailed,
-        _ => ErrorKind::PreparationFailed,
     };
     SandboxError::new(kind)
 }
 
 #[cfg(target_os = "linux")]
-fn map_linux_enforcement_error(_error: sandy_linux::LinuxError) -> SandboxError {
+fn map_linux_enforcement_error(error: sandy_linux::LinuxError) -> SandboxError {
     // Once the irreversible transaction begins, no backend error may be
-    // classified as a safe pre-enforcement incompatibility. This remains
-    // conservative when the non-exhaustive backend error enum grows.
-    SandboxError::new(ErrorKind::EnforcementFailed)
+    // classified as a safe pre-enforcement incompatibility. The exhaustive
+    // match makes every future internal error addition choose this mapping
+    // deliberately at compile time.
+    match error.kind() {
+        sandy_linux::LinuxErrorKind::Unsupported
+        | sandy_linux::LinuxErrorKind::PreparationFailed
+        | sandy_linux::LinuxErrorKind::EnforcementFailed => {
+            SandboxError::new(ErrorKind::EnforcementFailed)
+        }
+    }
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
