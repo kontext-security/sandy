@@ -640,13 +640,14 @@ subprocess.run(["/bin/sh", "-c", "printf child > python-child.txt"], check=True)
     }
 
     fn private_root_child() -> Result<(), Box<dyn std::error::Error>> {
-        if std::env::current_exe().is_ok()
-            || Path::new("/proc/self/exe").exists()
+        let current_executable = std::env::current_exe()?;
+        if !current_executable.is_file()
+            || !Path::new("/proc/self/exe").exists()
             || Path::new("/proc/self/fd").exists()
             || Path::new("/dev/fd").exists()
             || Path::new("/dev/shm").exists()
         {
-            return Err("an intentionally absent process or shared-memory path was exposed".into());
+            return Err("the bounded executable identity or private-root contract changed".into());
         }
         let mut subprocess = Command::new("/bin/sh");
         subprocess.args(["-c", "exit 0"]);

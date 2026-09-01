@@ -23,7 +23,8 @@ pub(crate) fn run(arguments: BootstrapArgs) -> Result<i32, AppError> {
     // exec so allocator, filesystem, and environment discovery cannot occur
     // in the restricted bootstrap.
     let manifest = launch.manifest();
-    let mut command = Command::new(manifest.command.program.to_os_string());
+    let program = manifest.command.program.to_os_string();
+    let mut command = Command::new(&program);
     command.args(
         manifest
             .command
@@ -44,8 +45,13 @@ pub(crate) fn run(arguments: BootstrapArgs) -> Result<i32, AppError> {
     }
     #[cfg(target_os = "linux")]
     {
+        let primary_executable = crate::resolve::absolute_if_utf8(std::path::Path::new(&program))?;
         let plan = sandy_linux::plan(launch.policy())?;
-        let prepared = sandy_linux::prepare(plan, &manifest.working_directory)?;
+        let prepared = sandy_linux::prepare_foreground_launch(
+            plan,
+            &manifest.working_directory,
+            &primary_executable,
+        )?;
         sandy_linux::apply(prepared)?;
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
