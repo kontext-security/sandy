@@ -6,8 +6,8 @@ This file governs the entire repository.
 
 Sandy is a macOS-native process sandbox for AI coding agents.
 
-- Cargo workspace: `sandy-core`, `sandy-seatbelt`, `sandy-sandbox`, and
-  `sandy-cli`
+- Cargo workspace: `sandy-core`, `sandy-seatbelt`, `sandy-linux`,
+  `sandy-sandbox`, and `sandy-cli`
 - Installed executable: `sandy`
 - Default mode: standalone sandboxing
 - Optional integrations: preserve verified existing Kontext hooks or
@@ -45,7 +45,7 @@ There is no implicit discovery, include, URL, fallback, or user-to-user
 inheritance. File I/O and ambient resolution remain in `sandy-cli`; lexical
 validation and deterministic additive composition remain in `sandy-core`.
 
-Do not add Linux, detached sessions, a PTY proxy, domain filtering, credential
+Do not add detached sessions, a PTY proxy, domain filtering, credential
 brokering, dynamic grants, rollback, resource limits, raw Seatbelt input, or
 organization-managed Kontext support or outside-sandbox synchronous hook
 decision services without an explicit scope decision.
@@ -55,12 +55,13 @@ changes.
 
 ## Architecture
 
-Use a virtual workspace with four packages representing validation,
+Use a virtual workspace with five packages representing validation,
 native-code, embedding, and product boundaries.
 
 ```text
 crates/core/               package sandy-core; validated security contract
 crates/seatbelt/           package sandy-seatbelt; macOS compiler and FFI
+crates/linux/              package sandy-linux; Linux preparation and enforcement
 crates/sandy/              package sandy-sandbox; supported Rust facade
 crates/cli/                package sandy-cli; sandy binary and product UX
 ```
@@ -75,10 +76,12 @@ Keep dependencies flowing in one direction:
 CLI
   -> sandy-core
   -> sandy-seatbelt -> sandy-core
+  -> sandy-linux -> sandy-core
 
 sandy facade
   -> sandy-core
   -> sandy-seatbelt -> sandy-core
+  -> sandy-linux -> sandy-core
 
 optional integrations
   -> typed capabilities
@@ -86,7 +89,7 @@ optional integrations
 ```
 
 `sandy-core` performs deterministic validation but no ambient filesystem
-discovery. `sandy-seatbelt` receives only validated policy and does not see
+discovery. Native backends receive only validated policy and do not see
 argv, environment, agent preset names, Clap, or service configuration. The CLI
 does not render policy. `SandboxPolicy` is the shared, side-effect-free intent;
 callers may construct it with the Rust builder or its strict, bounded,
@@ -204,8 +207,25 @@ cleanup. The FFI boundary exposes only owned safe Rust types and functions.
 Raw pointers, unsafe functions, native error buffers, and raw sandbox flags
 must not escape it.
 
-Adding a native symbol requires documenting its SDK declaration, availability,
-deprecation status, cleanup contract, and live macOS coverage.
+`sandy-linux` follows the same rule. Its only permitted unsafe and native-call
+module is:
+
+```text
+crates/linux/src/ffi.rs
+```
+
+The Linux backend separates deterministic `LinuxPolicyPlan`, ambient
+`PreparedLinuxSandbox`, and irreversible `apply()` states. It requires a
+single-threaded caller, private user, mount, and IPC namespaces, fixed Landlock
+ABI 6 semantics with signal scoping, complete capability removal, and final
+seccomp enforcement. It replaces the inherited session keyring with an
+anonymous ring and denies key-management syscalls before untrusted work. It
+never clears an inherited host `noexec` restriction. Unsupported policy
+combinations fail before enforcement; there is no weaker fallback.
+
+Adding a native operation requires documenting its declaration, availability,
+deprecation status, cleanup contract, and live coverage on every supported
+host and architecture.
 
 ## Data and CLI contracts
 

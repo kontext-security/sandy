@@ -40,17 +40,37 @@ jobs:
       - name: Test Seatbelt enforcement
         run: make test-live
 
-  linux-facade:
-    name: Linux facade compile
-    runs-on: ubuntu-latest
+  linux-substrate:
+    name: Linux enforcement substrate (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
       - name: Install Rust toolchain
-        run: rustup toolchain install 1.91.1 --profile minimal
-      - name: Check facade and run external consumer
+        run: rustup toolchain install 1.91.1 --profile minimal --component clippy
+      - name: Lint Linux backend
+        run: cargo clippy -p sandy-linux --all-targets --all-features --locked -- -D warnings
+      - name: Verify restricted user namespaces fail closed
+        env:
+          SANDY_LINUX_EXPECT_UNSUPPORTED: "1"
+        run: |
+          if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = "1" ]; then
+            cargo test -p sandy-linux --test live_linux --features live-tests --locked
+          fi
+      - name: Enable user namespaces for positive enforcement tests
+        run: |
+          if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+      - name: Test Linux backend
+        run: make test-live-linux
+      - name: Preserve unsupported facade contract
         run: |
           cargo check -p sandy-sandbox --all-targets --all-features --locked
           cargo run --manifest-path tests/package-consumer/Cargo.toml --locked

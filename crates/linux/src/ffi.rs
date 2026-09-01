@@ -1,0 +1,776 @@
+//! Sole Linux unsafe/native boundary.
+
+use std::{
+    ffi::{CStr, CString},
+    fs::File,
+    io,
+    mem::size_of,
+    os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd},
+};
+
+const EMPTY: &CStr = c"";
+const BASE_NAMESPACE_FLAGS: libc::c_int =
+    libc::CLONE_NEWUSER | libc::CLONE_NEWNS | libc::CLONE_NEWIPC;
+
+#[repr(C)]
+struct CapHeader {
+    version: u32,
+    pid: i32,
+}
+
+#[repr(C)]
+struct OpenHow {
+    flags: u64,
+    mode: u64,
+    resolve: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct CapData {
+    effective: u32,
+    permitted: u32,
+    inheritable: u32,
+}
+
+pub(crate) struct MountRestrictions {
+    pub(crate) recursive: bool,
+    pub(crate) read_only: bool,
+    pub(crate) allow_device: bool,
+    pub(crate) allow_execute: bool,
+}
+
+pub(crate) fn effective_ids() -> (u32, u32) {
+    // SAFETY: `geteuid` and `getegid` take no pointers, own no resources, and
+    // return process credentials directly.
+    unsafe { (libc::geteuid(), libc::getegid()) }
+}
+
+pub(crate) fn unshare_namespaces(block_network: bool) -> io::Result<()> {
+    let mut flags = BASE_NAMESPACE_FLAGS;
+    if block_network {
+        flags |= libc::CLONE_NEWNET;
+    }
+    // SAFETY: `unshare` receives only a validated fixed flag set. It borrows no
+    // pointers and transfers no ownership. Callers enforce the single-threaded
+    // process precondition before invoking this irreversible operation.
+    cvt(unsafe { libc::unshare(flags) }).map(|_| ())
+}
+
+/// Exercises the irreversible namespace setup in a sacrificial child.
+///
+/// Every allocation is completed before `fork`, and the child executes only
+/// async-signal-safe libc/syscall operations before `_exit`.
+pub(crate) fn probe_namespace_setup(
+    effective_uid: u32,
+    effective_gid: u32,
+    block_network: bool,
+) -> io::Result<()> {
+    let uid_map = format!("{effective_uid} {effective_uid} 1\n").into_bytes();
+    let gid_map = format!("{effective_gid} {effective_gid} 1\n").into_bytes();
+
+    // SAFETY: callers have verified that the process is single-threaded. The
+    // child uses only the fixed native operations in `namespace_probe_child`
+    // and terminates through `_exit`; the parent waits synchronously.
+    let child = unsafe { libc::fork() };
+    if child < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if child == 0 {
+        // SAFETY: this is the sacrificial post-fork child described above.
+        unsafe { namespace_probe_child(&uid_map, &gid_map, block_network) }
+    }
+
+    let mut status = 0;
+    loop {
+        // SAFETY: `child` is the positive PID returned by fork, `status` is a
+        // valid writable integer, and no ownership is transferred.
+        let result = unsafe { libc::waitpid(child, &mut status, 0) };
+        if result == child {
+            break;
+        }
+        if result < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+            continue;
+        }
+        return Err(io::Error::last_os_error());
+    }
+    if libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::from_raw_os_error(libc::EPERM))
+    }
+}
+
+unsafe fn namespace_probe_child(uid_map: &[u8], gid_map: &[u8], block_network: bool) -> ! {
+    let mut flags = BASE_NAMESPACE_FLAGS;
+    if block_network {
+        flags |= libc::CLONE_NEWNET;
+    }
+    // SAFETY: this child is single-threaded and disposable; all pointers below
+    // refer to fixed C strings or buffers allocated before fork.
+    let succeeded = unsafe { libc::unshare(flags) } == 0
+        && unsafe { write_probe_file(c"/proc/self/uid_map", uid_map) }
+        && unsafe { write_probe_file(c"/proc/self/setgroups", b"deny") }
+        && unsafe { write_probe_file(c"/proc/self/gid_map", gid_map) }
+        && probe_isolate_session_keyring()
+        && unsafe {
+            libc::mount(
+                std::ptr::null(),
+                c"/".as_ptr(),
+                std::ptr::null(),
+                (libc::MS_REC | libc::MS_PRIVATE) as libc::c_ulong,
+                std::ptr::null(),
+            )
+        } == 0
+        && probe_mount_sequence();
+    // SAFETY: `_exit` performs no Rust cleanup and cannot return.
+    unsafe { libc::_exit(if succeeded { 0 } else { 1 }) }
+}
+
+fn probe_isolate_session_keyring() -> bool {
+    // SAFETY: the fixed keyctl operation accepts a null name to create an
+    // anonymous session keyring, retains no pointer, and affects only this
+    // sacrificial child.
+    unsafe {
+        libc::syscall(
+            libc::SYS_keyctl,
+            libc::KEYCTL_JOIN_SESSION_KEYRING,
+            std::ptr::null::<libc::c_char>(),
+        ) >= 0
+    }
+}
+
+fn probe_mount_sequence() -> bool {
+    // Exercise the same modern mount transaction as the real backend with a
+    // source descriptor opened after CLONE_NEWNS. All paths and structures
+    // are fixed before use, and the sacrificial child exits immediately.
+    if probe_mount_tmpfs(c"/tmp") != 0
+        || probe_mkdir(c"/tmp/.sandy-probe-root") != 0
+        || probe_mount_tmpfs(c"/tmp/.sandy-probe-root") != 0
+        || probe_mkdir(c"/tmp/.sandy-probe-root/usr") != 0
+        || probe_mkdir(c"/tmp/.sandy-probe-root/.old_root") != 0
+    {
+        return false;
+    }
+
+    let source = probe_open(c"/usr");
+    if source < 0 {
+        return false;
+    }
+    let flags = libc::OPEN_TREE_CLONE
+        | libc::OPEN_TREE_CLOEXEC
+        | libc::AT_EMPTY_PATH as u32
+        | libc::AT_RECURSIVE as u32;
+    let mount_fd = probe_open_tree(source, flags);
+    if mount_fd < 0 {
+        return false;
+    }
+    let attributes = libc::mount_attr {
+        attr_set: libc::MOUNT_ATTR_NOSUID
+            | libc::MOUNT_ATTR_NODEV
+            | libc::MOUNT_ATTR_NOEXEC
+            | libc::MOUNT_ATTR_RDONLY,
+        attr_clr: 0,
+        propagation: 0,
+        userns_fd: 0,
+    };
+    if probe_mount_setattr(mount_fd, &attributes) < 0 {
+        return false;
+    }
+    let target = probe_open(c"/tmp/.sandy-probe-root/usr");
+    if target < 0 {
+        return false;
+    }
+    if probe_move_mount(mount_fd, target) < 0
+        || probe_chdir(c"/tmp/.sandy-probe-root") != 0
+        || probe_pivot_root() < 0
+        || probe_chdir(c"/") != 0
+        || probe_detach_old_root() != 0
+    {
+        return false;
+    }
+    true
+}
+
+fn probe_mount_tmpfs(target: &CStr) -> libc::c_int {
+    // SAFETY: every pointer is a live C string for the call, mount copies the
+    // values, and the operation is confined to the sacrificial mount namespace.
+    unsafe {
+        libc::mount(
+            c"tmpfs".as_ptr(),
+            target.as_ptr(),
+            c"tmpfs".as_ptr(),
+            (libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC) as libc::c_ulong,
+            c"mode=0700,size=1m".as_ptr().cast(),
+        )
+    }
+}
+
+fn probe_mkdir(path: &CStr) -> libc::c_int {
+    // SAFETY: `path` is a live C string and mkdir retains no pointer.
+    unsafe { libc::mkdir(path.as_ptr(), 0o700) }
+}
+
+fn probe_open(path: &CStr) -> libc::c_int {
+    // SAFETY: `path` is a live C string. The sacrificial child exclusively
+    // owns any descriptor returned by the kernel until it exits.
+    unsafe { libc::open(path.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) }
+}
+
+fn probe_open_tree(source: libc::c_int, flags: u32) -> libc::c_long {
+    // SAFETY: `source` is checked by the kernel and the empty path is a static
+    // C string selected by AT_EMPTY_PATH. No pointer is retained.
+    unsafe { libc::syscall(libc::SYS_open_tree, source, EMPTY.as_ptr(), flags) }
+}
+
+fn probe_mount_setattr(mount_fd: libc::c_long, attributes: &libc::mount_attr) -> libc::c_long {
+    // SAFETY: `mount_fd` is checked by the kernel and `attributes` remains live
+    // for the fixed-size call. The kernel copies it and retains no pointer.
+    unsafe {
+        libc::syscall(
+            libc::SYS_mount_setattr,
+            mount_fd,
+            EMPTY.as_ptr(),
+            libc::AT_EMPTY_PATH | libc::AT_RECURSIVE,
+            attributes,
+            size_of::<libc::mount_attr>(),
+        )
+    }
+}
+
+fn probe_move_mount(mount_fd: libc::c_long, target: libc::c_int) -> libc::c_long {
+    // SAFETY: both descriptors are checked by the kernel; the static empty
+    // paths select them and no pointer or Rust ownership is retained.
+    unsafe {
+        libc::syscall(
+            libc::SYS_move_mount,
+            mount_fd,
+            EMPTY.as_ptr(),
+            target,
+            EMPTY.as_ptr(),
+            libc::MOVE_MOUNT_F_EMPTY_PATH | libc::MOVE_MOUNT_T_EMPTY_PATH,
+        )
+    }
+}
+
+fn probe_chdir(path: &CStr) -> libc::c_int {
+    // SAFETY: `path` is a live C string and chdir retains no pointer.
+    unsafe { libc::chdir(path.as_ptr()) }
+}
+
+fn probe_pivot_root() -> libc::c_long {
+    // SAFETY: both static paths refer to directories created above, remain
+    // live for the syscall, and are used only in the sacrificial namespace.
+    unsafe { libc::syscall(libc::SYS_pivot_root, c".".as_ptr(), c".old_root".as_ptr()) }
+}
+
+fn probe_detach_old_root() -> libc::c_int {
+    // SAFETY: the static path remains live and umount2 retains no pointer.
+    unsafe { libc::umount2(c"/.old_root".as_ptr(), libc::MNT_DETACH) }
+}
+
+unsafe fn write_probe_file(path: &CStr, contents: &[u8]) -> bool {
+    // SAFETY: `path` is NUL-terminated and remains valid for the call.
+    let fd = unsafe { libc::open(path.as_ptr(), libc::O_WRONLY | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return path == c"/proc/self/setgroups"
+            && io::Error::last_os_error().kind() == io::ErrorKind::NotFound;
+    }
+    let mut offset = 0;
+    while offset < contents.len() {
+        // SAFETY: the byte slice remains valid, and its remaining length is
+        // passed exactly. The descriptor is owned by this child.
+        let written = unsafe {
+            libc::write(
+                fd,
+                contents[offset..].as_ptr().cast(),
+                contents.len() - offset,
+            )
+        };
+        if written <= 0 {
+            // SAFETY: `fd` is a live descriptor opened above.
+            unsafe { libc::close(fd) };
+            return false;
+        }
+        offset += written as usize;
+    }
+    // SAFETY: `fd` is a live descriptor opened above and is closed once.
+    (unsafe { libc::close(fd) }) == 0
+}
+
+pub(crate) fn make_mounts_private() -> io::Result<()> {
+    // SAFETY: all pointers are either null as required by mount(2), or the
+    // process-lifetime static C string `/`. No pointer is retained. The flags
+    // change propagation only in the already-private mount namespace.
+    cvt(unsafe {
+        libc::mount(
+            std::ptr::null(),
+            c"/".as_ptr(),
+            std::ptr::null(),
+            (libc::MS_REC | libc::MS_PRIVATE) as libc::c_ulong,
+            std::ptr::null(),
+        )
+    })
+    .map(|_| ())
+}
+
+pub(crate) fn mount_tmpfs(target: &CStr) -> io::Result<()> {
+    // SAFETY: `target` and the static source/type/data strings are valid,
+    // NUL-terminated for the duration of the call. mount(2) copies them and
+    // retains no Rust pointer. The mount is confined to the private namespace.
+    cvt(unsafe {
+        libc::mount(
+            c"tmpfs".as_ptr(),
+            target.as_ptr(),
+            c"tmpfs".as_ptr(),
+            (libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC) as libc::c_ulong,
+            c"mode=0700,size=64m".as_ptr().cast(),
+        )
+    })
+    .map(|_| ())
+}
+
+pub(crate) fn open_path_at(root: BorrowedFd<'_>, relative: &CStr) -> io::Result<OwnedFd> {
+    let how = OpenHow {
+        flags: (libc::O_PATH | libc::O_CLOEXEC | libc::O_NOFOLLOW) as u64,
+        mode: 0,
+        resolve: libc::RESOLVE_IN_ROOT | libc::RESOLVE_NO_MAGICLINKS | libc::RESOLVE_NO_SYMLINKS,
+    };
+    // SAFETY: `root` is a borrowed open directory descriptor, `relative` and
+    // `how` remain valid for the syscall, and the exact structure size is
+    // supplied. On success the returned descriptor is uniquely owned here.
+    let fd = unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            root.as_raw_fd(),
+            relative.as_ptr(),
+            &how,
+            size_of::<OpenHow>(),
+        )
+    };
+    if fd < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        let raw = i32::try_from(fd).map_err(|_| io::Error::from_raw_os_error(libc::EOVERFLOW))?;
+        // SAFETY: the successful openat2 call returned a fresh descriptor and
+        // ownership is transferred exactly once into `OwnedFd`.
+        Ok(unsafe { OwnedFd::from_raw_fd(raw) })
+    }
+}
+
+pub(crate) fn clone_mount(source: BorrowedFd<'_>, recursive: bool) -> io::Result<OwnedFd> {
+    let mut flags = libc::OPEN_TREE_CLONE | libc::OPEN_TREE_CLOEXEC | libc::AT_EMPTY_PATH as u32;
+    if recursive {
+        flags |= libc::AT_RECURSIVE as u32;
+    }
+    // SAFETY: `source` is a borrowed O_PATH descriptor. With AT_EMPTY_PATH the
+    // empty pathname selects that descriptor; no pointer is retained. A
+    // successful open_tree returns a new mount descriptor owned by this call.
+    let fd = unsafe {
+        libc::syscall(
+            libc::SYS_open_tree,
+            source.as_raw_fd(),
+            EMPTY.as_ptr(),
+            flags,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let raw = i32::try_from(fd).map_err(|_| io::Error::from_raw_os_error(libc::EOVERFLOW))?;
+    // SAFETY: the successful syscall returned a fresh descriptor and ownership
+    // is transferred exactly once.
+    Ok(unsafe { OwnedFd::from_raw_fd(raw) })
+}
+
+pub(crate) fn restrict_mount(
+    mount_fd: BorrowedFd<'_>,
+    restrictions: MountRestrictions,
+) -> io::Result<()> {
+    let attributes = libc::mount_attr {
+        attr_set: libc::MOUNT_ATTR_NOSUID
+            | if restrictions.allow_device {
+                0
+            } else {
+                libc::MOUNT_ATTR_NODEV
+            }
+            | if restrictions.read_only {
+                libc::MOUNT_ATTR_RDONLY
+            } else {
+                0
+            }
+            | if restrictions.allow_execute {
+                0
+            } else {
+                libc::MOUNT_ATTR_NOEXEC
+            },
+        // A caller grant must never clear a host or administrator restriction.
+        attr_clr: 0,
+        propagation: 0,
+        userns_fd: 0,
+    };
+    let attribute_flags = libc::AT_EMPTY_PATH
+        | if restrictions.recursive {
+            libc::AT_RECURSIVE
+        } else {
+            0
+        };
+    // SAFETY: the mount descriptor, empty path, and mount_attr pointer remain
+    // valid for the syscall; the kernel copies the fixed-size structure and
+    // retains no pointer. The detached mount is not externally visible yet.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_mount_setattr,
+            mount_fd.as_raw_fd(),
+            EMPTY.as_ptr(),
+            attribute_flags,
+            &attributes,
+            size_of::<libc::mount_attr>(),
+        )
+    };
+    if result < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+pub(crate) fn mount_is_noexec(fd: BorrowedFd<'_>) -> io::Result<bool> {
+    let mut status = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    // SAFETY: `fd` is a borrowed live descriptor. `status` points to writable,
+    // correctly aligned storage for exactly one `statvfs` value. The kernel
+    // initializes it on success and retains neither pointer nor descriptor.
+    cvt(unsafe { libc::fstatvfs(fd.as_raw_fd(), status.as_mut_ptr()) })?;
+    // SAFETY: the successful call above initialized the complete structure.
+    let status = unsafe { status.assume_init() };
+    Ok(status.f_flag & libc::ST_NOEXEC != 0)
+}
+
+pub(crate) fn verify_clone3_blocked() -> io::Result<()> {
+    // SAFETY: the installed filter must reject clone3 before inspecting the
+    // deliberately null argument pointer. No child or ownership transfer can
+    // occur on the required ENOSYS path.
+    let result =
+        unsafe { libc::syscall(libc::SYS_clone3, std::ptr::null::<libc::c_void>(), 0_usize) };
+    expect_errno(result, libc::ENOSYS)
+}
+
+pub(crate) fn verify_namespace_change_blocked() -> io::Result<()> {
+    // SAFETY: unshare receives only the fixed mount-namespace flag and borrows
+    // no pointers. The installed filter must reject it before any state change.
+    let result = unsafe { libc::unshare(libc::CLONE_NEWNS) };
+    expect_errno(result.into(), libc::EPERM)
+}
+
+pub(crate) fn verify_keyring_operations_blocked() -> io::Result<()> {
+    // SAFETY: this keyctl form takes only integer arguments and the installed
+    // filter must reject it before any keyring lookup can occur.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_keyctl,
+            libc::KEYCTL_GET_KEYRING_ID,
+            libc::KEY_SPEC_SESSION_KEYRING,
+            0,
+        )
+    };
+    expect_errno(result, libc::EPERM)
+}
+
+pub(crate) fn verify_fork_blocked() -> io::Result<()> {
+    // SAFETY: the installed filter must reject fork before a child is created.
+    // If a broken filter unexpectedly creates one, the child immediately exits
+    // without running Rust cleanup and the parent reaps it before returning an
+    // error. No borrowed memory or descriptor ownership crosses this boundary.
+    let result = unsafe { libc::fork() };
+    match result {
+        -1 => {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::EPERM) {
+                Ok(())
+            } else {
+                Err(error)
+            }
+        }
+        0 => {
+            // SAFETY: this is the unexpected child path described above.
+            unsafe { libc::_exit(127) }
+        }
+        child => {
+            let mut status = 0;
+            // SAFETY: `child` was returned by fork in this process and is
+            // reaped exactly once; the status pointer remains live for the call.
+            unsafe { libc::waitpid(child, &mut status, 0) };
+            Err(io::Error::from_raw_os_error(libc::EPERM))
+        }
+    }
+}
+
+fn expect_errno(result: libc::c_long, expected: libc::c_int) -> io::Result<()> {
+    let error = io::Error::last_os_error();
+    if result == -1 && error.raw_os_error() == Some(expected) {
+        Ok(())
+    } else {
+        Err(io::Error::from_raw_os_error(libc::EPERM))
+    }
+}
+
+pub(crate) fn attach_mount(mount_fd: BorrowedFd<'_>, target_fd: BorrowedFd<'_>) -> io::Result<()> {
+    let flags = libc::MOVE_MOUNT_F_EMPTY_PATH | libc::MOVE_MOUNT_T_EMPTY_PATH;
+    // SAFETY: both descriptors are borrowed and valid for the call. Empty
+    // pathnames select the descriptors under the matching flags. move_mount
+    // consumes the detached mount in the kernel but not the descriptor itself.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_move_mount,
+            mount_fd.as_raw_fd(),
+            EMPTY.as_ptr(),
+            target_fd.as_raw_fd(),
+            EMPTY.as_ptr(),
+            flags,
+        )
+    };
+    if result < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+pub(crate) fn isolate_session_keyring() -> io::Result<()> {
+    // SAFETY: a null name asks the kernel for a fresh anonymous session
+    // keyring. The call retains no pointer and returns no userspace-owned
+    // resource; it only replaces the calling process's inherited association.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_keyctl,
+            libc::KEYCTL_JOIN_SESSION_KEYRING,
+            std::ptr::null::<libc::c_char>(),
+        )
+    };
+    if result < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(feature = "live-tests")]
+pub(crate) fn create_private_message_queue() -> io::Result<libc::c_int> {
+    // SAFETY: msgget receives no pointers. IPC_PRIVATE creates a new queue in
+    // the caller's current IPC namespace with owner-only permissions.
+    let id = unsafe { libc::msgget(libc::IPC_PRIVATE, libc::IPC_CREAT | 0o600) };
+    if id < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(id)
+    }
+}
+
+#[cfg(feature = "live-tests")]
+pub(crate) fn message_queue_is_visible(id: libc::c_int) -> io::Result<bool> {
+    let mut state = std::mem::MaybeUninit::<libc::msqid_ds>::uninit();
+    // SAFETY: `state` is correctly aligned writable storage for one msqid_ds;
+    // IPC_STAT initializes it on success and retains no pointer.
+    let result = unsafe { libc::msgctl(id, libc::IPC_STAT, state.as_mut_ptr()) };
+    if result == 0 {
+        Ok(true)
+    } else {
+        let error = io::Error::last_os_error();
+        if matches!(
+            error.raw_os_error(),
+            Some(libc::EINVAL) | Some(libc::EACCES)
+        ) {
+            Ok(false)
+        } else {
+            Err(error)
+        }
+    }
+}
+
+#[cfg(feature = "live-tests")]
+pub(crate) fn remove_message_queue(id: libc::c_int) -> io::Result<()> {
+    // SAFETY: IPC_RMID consumes no userspace pointer and removes only the
+    // explicitly identified test queue from the caller's IPC namespace.
+    cvt(unsafe { libc::msgctl(id, libc::IPC_RMID, std::ptr::null_mut()) }).map(|_| ())
+}
+
+#[cfg(feature = "live-tests")]
+pub(crate) fn create_session_test_key(payload: &[u8]) -> io::Result<libc::c_int> {
+    isolate_session_keyring()?;
+    // SAFETY: the type and description are static C strings, `payload` remains
+    // live for its exact length, and add_key copies all supplied bytes before
+    // returning. The key is linked only into the anonymous test session ring.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_add_key,
+            c"user".as_ptr(),
+            c"sandy-live-key".as_ptr(),
+            payload.as_ptr(),
+            payload.len(),
+            libc::KEY_SPEC_SESSION_KEYRING,
+        )
+    };
+    if result < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        i32::try_from(result).map_err(|_| io::Error::from_raw_os_error(libc::EOVERFLOW))
+    }
+}
+
+#[cfg(feature = "live-tests")]
+pub(crate) fn read_test_key(id: libc::c_int) -> io::Result<Vec<u8>> {
+    let mut payload = vec![0_u8; 64];
+    // SAFETY: `payload` is writable for the exact supplied length. KEYCTL_READ
+    // copies at most that many bytes and retains no pointer.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_keyctl,
+            libc::KEYCTL_READ,
+            id,
+            payload.as_mut_ptr(),
+            payload.len(),
+        )
+    };
+    if result < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let length =
+        usize::try_from(result).map_err(|_| io::Error::from_raw_os_error(libc::EOVERFLOW))?;
+    if length > payload.len() {
+        return Err(io::Error::from_raw_os_error(libc::EOVERFLOW));
+    }
+    payload.truncate(length);
+    Ok(payload)
+}
+
+pub(crate) fn pivot_root(new_root: &CStr, old_root: &CStr) -> io::Result<()> {
+    // SAFETY: both paths are valid NUL-terminated strings for the syscall and
+    // are copied immediately. The caller has made `new_root` a mount point and
+    // created `old_root` beneath it.
+    cvt_long(unsafe { libc::syscall(libc::SYS_pivot_root, new_root.as_ptr(), old_root.as_ptr()) })
+        .map(|_| ())
+}
+
+pub(crate) fn detach_mount(path: &CStr) -> io::Result<()> {
+    // SAFETY: `path` is a valid NUL-terminated string for the duration of the
+    // call and umount2 retains no pointer.
+    cvt(unsafe { libc::umount2(path.as_ptr(), libc::MNT_DETACH) }).map(|_| ())
+}
+
+pub(crate) fn drop_all_capabilities(last_capability: u32) -> io::Result<()> {
+    const SECURE_NO_SETUID_FIXUP: libc::c_ulong = 0x04;
+    const SECURE_NO_SETUID_FIXUP_LOCKED: libc::c_ulong = 0x08;
+    const SECURE_NOROOT: libc::c_ulong = 0x01;
+    const SECURE_NOROOT_LOCKED: libc::c_ulong = 0x02;
+    const SECURE_NO_CAP_AMBIENT_RAISE: libc::c_ulong = 0x40;
+    const SECURE_NO_CAP_AMBIENT_RAISE_LOCKED: libc::c_ulong = 0x80;
+    const SECURE_BITS: libc::c_ulong = SECURE_NOROOT
+        | SECURE_NOROOT_LOCKED
+        | SECURE_NO_SETUID_FIXUP
+        | SECURE_NO_SETUID_FIXUP_LOCKED
+        | SECURE_NO_CAP_AMBIENT_RAISE
+        | SECURE_NO_CAP_AMBIENT_RAISE_LOCKED;
+    const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
+
+    // SAFETY: prctl receives only integer operations and values, borrows no
+    // pointers, and transfers no ownership. CAP_SETPCAP is still effective
+    // while the bounding set is reduced.
+    cvt(unsafe { libc::prctl(libc::PR_SET_SECUREBITS, SECURE_BITS, 0, 0, 0) })?;
+    // SAFETY: this prctl variant has no pointer arguments. It clears the
+    // calling thread's ambient set synchronously.
+    cvt(unsafe {
+        libc::prctl(
+            libc::PR_CAP_AMBIENT,
+            libc::PR_CAP_AMBIENT_CLEAR_ALL,
+            0,
+            0,
+            0,
+        )
+    })?;
+    for capability in 0..=last_capability {
+        // SAFETY: this prctl variant has no pointer arguments. Each numeric
+        // capability is bounded by the kernel-reported cap_last_cap value.
+        cvt(unsafe { libc::prctl(libc::PR_CAPBSET_DROP, capability, 0, 0, 0) })?;
+    }
+
+    let header = CapHeader {
+        version: LINUX_CAPABILITY_VERSION_3,
+        pid: 0,
+    };
+    let data = [CapData::default(), CapData::default()];
+    // SAFETY: the header and two-element data array match Linux's
+    // _LINUX_CAPABILITY_VERSION_3 ABI, remain valid for the call, contain no
+    // outgoing pointers, and are not retained by the kernel.
+    cvt_long(unsafe { libc::syscall(libc::SYS_capset, &header, data.as_ptr()) }).map(|_| ())
+}
+
+pub(crate) fn verify_no_capabilities() -> io::Result<()> {
+    const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
+    let mut header = CapHeader {
+        version: LINUX_CAPABILITY_VERSION_3,
+        pid: 0,
+    };
+    let mut data = [CapData::default(), CapData::default()];
+    // SAFETY: the writable header and data array match Linux's capability ABI,
+    // remain uniquely borrowed for the syscall, and are fully initialized.
+    cvt_long(unsafe { libc::syscall(libc::SYS_capget, &mut header, data.as_mut_ptr()) })?;
+    if data
+        .iter()
+        .any(|entry| entry.effective != 0 || entry.permitted != 0 || entry.inheritable != 0)
+    {
+        Err(io::Error::from_raw_os_error(libc::EPERM))
+    } else {
+        Ok(())
+    }
+}
+
+pub(crate) fn verify_io_uring_blocked() -> io::Result<()> {
+    // SAFETY: the seccomp filter must reject this syscall before the kernel
+    // dereferences the deliberately null parameter pointer. No descriptor is
+    // created on the required EPERM path and no ownership is transferred.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_io_uring_setup,
+            1_u32,
+            std::ptr::null::<libc::c_void>(),
+        )
+    };
+    let error = io::Error::last_os_error();
+    if result == -1 && error.raw_os_error() == Some(libc::EPERM) {
+        Ok(())
+    } else {
+        if result >= 0 {
+            let descriptor =
+                i32::try_from(result).map_err(|_| io::Error::from_raw_os_error(libc::EOVERFLOW))?;
+            // SAFETY: an unexpected successful setup returned a fresh
+            // descriptor, which is closed exactly once before reporting the
+            // failed postcondition.
+            unsafe { libc::close(descriptor) };
+        }
+        Err(io::Error::from_raw_os_error(libc::EPERM))
+    }
+}
+
+pub(crate) fn c_string(value: &str) -> io::Result<CString> {
+    CString::new(value).map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))
+}
+
+pub(crate) fn file_from_owned(fd: OwnedFd) -> File {
+    File::from(fd)
+}
+
+fn cvt(value: libc::c_int) -> io::Result<libc::c_int> {
+    if value == -1 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(value)
+    }
+}
+
+fn cvt_long(value: libc::c_long) -> io::Result<libc::c_long> {
+    if value == -1 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(value)
+    }
+}
