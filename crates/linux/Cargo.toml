@@ -8,7 +8,6 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
-publish = false
 
 [features]
 live-tests = []

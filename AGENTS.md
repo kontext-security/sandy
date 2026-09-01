@@ -4,7 +4,7 @@ This file governs the entire repository.
 
 ## Product contract
 
-Sandy is a macOS-native process sandbox for AI coding agents.
+Sandy is a native process sandbox for AI coding agents.
 
 - Cargo workspace: `sandy-core`, `sandy-seatbelt`, `sandy-linux`,
   `sandy-sandbox`, and `sandy-cli`
@@ -19,7 +19,7 @@ Sandy is a macOS-native process sandbox for AI coding agents.
 Sandy is a process sandbox, not a container or VM. Describe its guarantees
 narrowly.
 
-Version `0.1.x` is limited to macOS, one foreground `run` mode, Claude Code,
+The version `0.1.x` CLI is limited to macOS, one foreground `run` mode, Claude Code,
 Codex, OpenCode, and generic profiles, explicit filesystem and executable
 grants, network allow/block with exact runtime Unix-socket and IPv4 local-host TCP exceptions,
 dry-run output, and optional self-serve Kontext and host-installed Numbat hook
@@ -28,8 +28,9 @@ command for Kontext and Numbat. Setup is not part of sandbox launch.
 
 The `sandy-sandbox` package provides the supported `sandy` Rust library. It is
 a caller-policy-only, current-process primitive with no executable dependency.
-Its public model is platform-neutral; `0.1.x` has a macOS backend and returns
-`Unsupported` elsewhere.
+Its public model is platform-neutral; `0.1.x` has the macOS backend and `0.2.x`
+adds Linux. Unsupported hosts or policy combinations return `Unsupported`
+rather than receiving a weakened contract.
 
 Agent presets are versioned, strictly typed profile documents embedded in the
 CLI at compile time. Profiles resolve through deterministic inheritance in

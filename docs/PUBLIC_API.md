@@ -6,7 +6,7 @@ consumers alias the package to its `sandy` library name:
 
 ```toml
 [dependencies]
-sandy = { package = "sandy-sandbox", version = "0.1" }
+sandy = { package = "sandy-sandbox", version = "0.2" }
 ```
 
 It requires no Sandy executable, daemon, bootstrap hook, or special application
@@ -99,7 +99,7 @@ application owns loading and protecting that source.
 JSON path values are Unicode strings. Callers that need non-Unicode operating
 system paths must use the Rust builder.
 
-## Complete 0.1 surface
+## Complete public surface
 
 ```rust,ignore
 /// Irreversibly restricts the current process and future descendants.
@@ -140,9 +140,8 @@ impl SandboxPolicy {
         scope: PathScope,
     ) -> Self;
 
-    /// Allows ordinary descendant process creation and the platform runtime
-    /// services needed to start them. Executable paths remain scoped by
-    /// `allow_execute`.
+    /// Allows ordinary descendant process creation. Executable paths remain
+    /// scoped by `allow_execute`.
     pub fn allow_subprocesses(self) -> Self;
 
     /// Denies reads, writes, executable mapping, and launch to a subtree.
@@ -237,10 +236,10 @@ Unimplemented operations are absent rather than published as placeholders.
 - Root may only be granted exact read access. Root cannot be denied.
 - Inputs and effective rules are bounded before native enforcement.
 - Unsupported capability semantics are rejected; they are never ignored.
-- With subprocess support enabled, process creation, same-sandbox inspection,
-  same-sandbox signals, and required platform runtime services are permitted.
-  Executable mapping and launch paths remain explicit. Foreground terminal
-  compatibility is absent.
+- With subprocess support enabled, ordinary descendant creation and
+  same-sandbox signals are permitted. Executable mapping and launch paths
+  remain explicit. Process inspection and foreground terminal compatibility
+  are not part of this capability.
 
 ## Process semantics
 
@@ -257,9 +256,21 @@ Unimplemented operations are absent rather than published as placeholders.
 
 ## Platform contract
 
-The API and policy vocabulary are platform-neutral. Version 0.1 enforces them
-on macOS. Other platforms return `ErrorKind::Unsupported`; adding a backend must
-preserve these semantics rather than silently omit a requested capability.
+The API and policy vocabulary are platform-neutral. Starting with version 0.2,
+Sandy has native macOS and Linux backends. Other platforms return
+`ErrorKind::Unsupported`. Linux additionally requires Linux 6.12 or a vendor
+kernel carrying Landlock ABI 6, user, mount, and IPC namespaces, `openat2`, the
+modern mount API, and seccomp. A host or policy combination that cannot preserve
+the contract returns `Unsupported`; it is never weakened.
+
+On Linux, preparation verifies that the caller is single-threaded. Application
+enters private namespaces and a descriptor-built filesystem view before adding
+Landlock and seccomp restrictions. Preparation errors leave the process
+unchanged. An enforcement error can leave it partially restricted, so the
+caller must terminate immediately. The current working directory must be
+covered by an explicit filesystem grant because the private view contains only
+granted paths. The Linux backend replaces the inherited session keyring with an
+anonymous ring and denies key-management syscalls as fixed native semantics.
 
 ## Intentionally private or absent
 

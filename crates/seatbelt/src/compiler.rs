@@ -38,7 +38,7 @@ impl CompiledProfile {
 /// Deterministically compiles the fixed backend baseline and a validated policy into SBPL.
 ///
 /// This function performs no filesystem access and has no unrestricted fallback. Rendering errors
-/// are returned before the bootstrap attempts to apply the sandbox or execute the target.
+/// are returned before the caller attempts native application or starts untrusted work.
 pub fn compile(policy: &ValidatedPolicy) -> Result<CompiledProfile, SeatbeltError> {
     let mut source = String::from(baseline::DENY_FIRST_RULES);
     if policy.spec().allow_subprocesses {

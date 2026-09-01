@@ -1,16 +1,20 @@
 # Threat model
 
 Sandy reduces the filesystem, network, credential, and local-service access of
-a macOS process tree. The protected subject is the host user's data outside the
-explicit grants. The target command, its dependencies, generated code, and all
-descendants are untrusted.
+a process tree. The CLI supports macOS; the current-process Rust facade has
+native macOS and Linux backends. The protected subject is the host user's data
+outside explicit grants. The target command, its dependencies, generated code,
+and all descendants are untrusted.
 
 ## Trusted computing base
 
-The trusted base is the Sandy parent and bootstrap, `sandy-core` validation,
-the Seatbelt compiler and native wrapper, macOS Seatbelt, and the host kernel.
-The selected executable and agent hooks are inside the sandbox and untrusted.
-An optional Kontext daemon remains a separate host service.
+The trusted base is `sandy-core` validation, the selected native backend, and
+the host kernel. CLI launches additionally trust the Sandy parent and bootstrap.
+macOS trusts the Seatbelt compiler and native wrapper. Linux facade application
+trusts the namespace and mount preparation, Landlock, capability removal, and
+seccomp implementation. The selected executable and agent hooks are inside the
+sandbox and untrusted. An optional Kontext daemon remains a separate host
+service.
 
 The explicit `sandy integrations setup` command is a trusted host
 administration operation, not part of sandbox launch. It executes Homebrew and
@@ -37,16 +41,27 @@ builder. The format has no discovery, inheritance, includes, interpolation, or
 implicit authority. The embedding application owns loading and protecting the
 source bytes; Sandy retains neither their contents nor their source path.
 
-The facade's optional subprocess capability permits process creation,
-same-sandbox inspection and signals, and the platform runtime services needed
-to start ordinary descendants. On macOS this includes broad Mach lookup, which
+The facade's optional subprocess capability permits ordinary descendant
+creation and same-sandbox signals. It does not promise portable process
+inspection. On macOS the compatibility class includes broad Mach lookup, which
 may reach same-user local services even when IP networking is blocked.
 
-Typed capabilities are the only input to policy compilation. Raw Seatbelt
-source is not accepted. Unsafe Rust is confined to the private native wrapper
-in `sandy-seatbelt`. The compiler adds no implicit filesystem or network
-authority. The CLI explicitly composes its typed macOS runtime baseline before
-validation, including the metadata lookup needed to resolve system path aliases.
+Typed capabilities are the only input to policy compilation. Raw native policy
+source is not accepted. Unsafe Rust is confined to each backend's private native
+wrapper. Native backends add no implicit filesystem or network authority. The
+CLI explicitly composes its typed macOS runtime baseline before validation,
+including the metadata lookup needed to resolve system path aliases.
+
+On Linux, preparation must run while the process is single-threaded. It pins
+paths, verifies exact policy representability, and compiles native rules before
+enforcement. Application enters private namespaces and a private filesystem
+view, then applies Landlock, removes capabilities, and installs seccomp. A
+preparation failure leaves the process unchanged. An enforcement failure may
+leave it partially restricted, so continuing is unsupported. The private view
+omits host procfs and the former host root. Unsupported policy combinations
+fail rather than receiving approximate enforcement. Landlock signal scoping
+prevents the restricted process from signaling processes outside its sandbox
+domain while preserving signals among its descendants.
 
 An explicitly selected user profile file is parsed through a narrower schema
 than embedded profiles. It can only add required filesystem grants, executable
@@ -82,7 +97,7 @@ includes environment values, memory, file descriptors, sockets, and other
 native handles. Existing threads are outside the portable contract, so callers
 must apply before creating them.
 
-- kernel, Seatbelt, or hardware vulnerabilities;
+- kernel, native sandbox mechanism, or hardware vulnerabilities;
 - VM-grade memory or kernel isolation;
 - side channels and denial of service;
 - data already present in inherited standard streams or explicitly opened file
@@ -197,8 +212,8 @@ read grant from an environment variable.
 ## Fail-closed requirements
 
 An unsupported platform, nested sandbox, malformed or oversized manifest,
-invalid path, profile compilation error, Seatbelt error, or explicitly required
-runtime-control integration failure must prevent target execution. A failure
+invalid path, profile compilation error, native enforcement error, or explicitly
+required runtime-control integration failure must prevent target execution. A failure
 while preserving an automatically detected optional integration contributes no
 runtime-control capabilities, emits a warning, and does not prevent standalone
 execution. Sandy never silently retries without enforcement or broadens policy

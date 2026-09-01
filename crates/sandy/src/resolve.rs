@@ -11,7 +11,29 @@ use sandy_core::{
 
 use crate::{ErrorKind, SandboxError};
 
-pub(crate) fn resolve(policy: SandboxPolicy) -> Result<ValidatedPolicy, SandboxError> {
+pub(crate) struct ResolvedPolicy {
+    policy: ValidatedPolicy,
+    #[cfg(target_os = "linux")]
+    working_directory: AbsolutePath,
+}
+
+impl ResolvedPolicy {
+    pub(crate) fn policy(&self) -> &ValidatedPolicy {
+        &self.policy
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn working_directory(&self) -> &AbsolutePath {
+        &self.working_directory
+    }
+
+    #[cfg(test)]
+    fn spec(&self) -> &sandy_core::PolicySpec {
+        self.policy.spec()
+    }
+}
+
+pub(crate) fn resolve(policy: SandboxPolicy) -> Result<ResolvedPolicy, SandboxError> {
     let working_directory = env::current_dir()
         .and_then(fs::canonicalize)
         .map_err(|_| SandboxError::new(ErrorKind::PreparationFailed))?;
@@ -75,9 +97,16 @@ pub(crate) fn resolve(policy: SandboxPolicy) -> Result<ValidatedPolicy, SandboxE
         draft.add_write_protection(protection);
     }
 
-    draft
+    let policy = draft
         .finish()
-        .map_err(|_| SandboxError::new(ErrorKind::InvalidPolicy))
+        .map_err(|_| SandboxError::new(ErrorKind::InvalidPolicy))?;
+    #[cfg(target_os = "linux")]
+    let working_directory = absolute(&working_directory)?;
+    Ok(ResolvedPolicy {
+        policy,
+        #[cfg(target_os = "linux")]
+        working_directory,
+    })
 }
 
 fn lexical_and_canonical(

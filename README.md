@@ -6,8 +6,8 @@
 [![Follow Sandy on LinkedIn](https://img.shields.io/badge/LinkedIn-Follow-0A66C2?logo=linkedin&logoColor=white)](https://www.linkedin.com/company/kontextdev)
 
 > [!WARNING]
-> Sandy `0.1.x` is experimental and has not completed an independent security
-> audit. See [Security and support](#security-and-support).
+> Sandy is experimental and has not completed an independent security audit.
+> See [Security and support](#security-and-support).
 
 Run AI coding agents in a sandbox.
 
@@ -56,7 +56,7 @@ no Sandy executable dependency and adds no application compatibility baseline.
 
 ```toml
 [dependencies]
-sandy = { package = "sandy-sandbox", version = "0.1" }
+sandy = { package = "sandy-sandbox", version = "0.2" }
 ```
 
 ```rust,no_run
@@ -92,8 +92,11 @@ policy to select `allow_subprocesses()`.
 
 `apply` is irreversible. Call it before creating threads, opening sensitive
 resources, or starting untrusted work. If native enforcement fails, terminate
-the process instead of continuing with a weaker boundary. The initial backend
-is macOS; other platforms return `ErrorKind::Unsupported`.
+the process instead of continuing with a weaker boundary. Starting with 0.2,
+the library has native macOS and Linux backends. Unsupported hosts and policy
+combinations return `ErrorKind::Unsupported` without weakening the requested
+boundary. On Linux the current working directory must be covered by an explicit
+filesystem grant.
 
 ## Run
 
@@ -278,9 +281,10 @@ Network access is allowed by default and can be blocked with `--block-net`.
 Known-agent profiles may grant access to agent state directories for
 compatibility.
 
-Sandy currently supports macOS. Version `0.1.x` is experimental, has not
-completed an independent security audit, and uses Apple's private, deprecated
-Seatbelt interface.
+The `sandy` CLI currently supports macOS; the Rust current-process library also
+supports Linux on hosts that satisfy its native requirements. Version `0.1.x`
+is experimental and has not completed an independent security audit. The
+macOS backend uses Apple's private, deprecated Seatbelt interface.
 
 Read [THREAT_MODEL.md](THREAT_MODEL.md) for the full security model and
 [SECURITY.md](SECURITY.md) for vulnerability reporting.

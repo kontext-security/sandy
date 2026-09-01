@@ -53,7 +53,7 @@
 #![warn(missing_docs)]
 
 mod error;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod resolve;
 
 pub use error::{ErrorKind, SandboxError};
@@ -70,6 +70,8 @@ pub use sandy_core::{AccessMode, NetworkPolicy, PathScope, PolicyDocumentError, 
 /// contract even on platforms that may restrict them as an implementation
 /// detail. Already-open file descriptors, sockets, memory, and environment
 /// values remain capabilities held by the process.
+/// On Linux, the current working directory must be covered by a filesystem
+/// grant because the backend constructs a private view from explicit grants.
 ///
 /// # Errors
 ///
@@ -84,8 +86,8 @@ pub fn apply(policy: SandboxPolicy) -> Result<(), SandboxError> {
 
 #[cfg(target_os = "macos")]
 fn apply_platform(policy: SandboxPolicy) -> Result<(), SandboxError> {
-    let validated = resolve::resolve(policy)?;
-    let compiled = sandy_seatbelt::compile(&validated).map_err(|error| match error {
+    let resolved = resolve::resolve(policy)?;
+    let compiled = sandy_seatbelt::compile(resolved.policy()).map_err(|error| match error {
         sandy_seatbelt::SeatbeltError::UnsupportedPlatform
         | sandy_seatbelt::SeatbeltError::UnsupportedPolicy => {
             SandboxError::new(ErrorKind::Unsupported)
@@ -101,7 +103,41 @@ fn apply_platform(policy: SandboxPolicy) -> Result<(), SandboxError> {
     })
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
+fn apply_platform(policy: SandboxPolicy) -> Result<(), SandboxError> {
+    let resolved = resolve::resolve(policy)?;
+    let plan = sandy_linux::plan(resolved.policy()).map_err(map_linux_preparation_error)?;
+    let prepared = sandy_linux::prepare(plan, resolved.working_directory())
+        .map_err(map_linux_preparation_error)?;
+    sandy_linux::apply(prepared).map_err(map_linux_enforcement_error)
+}
+
+#[cfg(target_os = "linux")]
+fn map_linux_preparation_error(error: sandy_linux::LinuxError) -> SandboxError {
+    let kind = match error.kind() {
+        sandy_linux::LinuxErrorKind::Unsupported => ErrorKind::Unsupported,
+        sandy_linux::LinuxErrorKind::PreparationFailed => ErrorKind::PreparationFailed,
+        sandy_linux::LinuxErrorKind::EnforcementFailed => ErrorKind::EnforcementFailed,
+    };
+    SandboxError::new(kind)
+}
+
+#[cfg(target_os = "linux")]
+fn map_linux_enforcement_error(error: sandy_linux::LinuxError) -> SandboxError {
+    // Once the irreversible transaction begins, no backend error may be
+    // classified as a safe pre-enforcement incompatibility. The exhaustive
+    // match makes every future internal error addition choose this mapping
+    // deliberately at compile time.
+    match error.kind() {
+        sandy_linux::LinuxErrorKind::Unsupported
+        | sandy_linux::LinuxErrorKind::PreparationFailed
+        | sandy_linux::LinuxErrorKind::EnforcementFailed => {
+            SandboxError::new(ErrorKind::EnforcementFailed)
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn apply_platform(_policy: SandboxPolicy) -> Result<(), SandboxError> {
     Err(SandboxError::new(ErrorKind::Unsupported))
 }

@@ -18,7 +18,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         br#"{"schema_version":1,"network":"block_all"}"#,
     )?;
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let error = sandy::apply(policy)
             .err()
@@ -28,7 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         let _policy = policy;
         let _apply: fn(SandboxPolicy) -> Result<(), sandy::SandboxError> = sandy::apply;

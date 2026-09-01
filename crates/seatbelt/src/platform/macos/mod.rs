@@ -5,9 +5,10 @@ mod ffi;
 
 use crate::{CompiledProfile, SeatbeltError};
 
-/// Irreversibly applies a compiled profile to the current bootstrap process.
+/// Irreversibly applies a compiled profile to the current process.
 ///
-/// The target is executed only after this succeeds, and descendants inherit the restriction.
+/// Future descendants inherit the restriction. CLI targets are executed only
+/// after this succeeds in the fresh bootstrap process.
 pub fn apply(profile: &CompiledProfile) -> Result<(), SeatbeltError> {
     ffi::apply(profile.source())
 }

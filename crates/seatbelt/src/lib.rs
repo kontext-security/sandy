@@ -2,8 +2,8 @@
 //!
 //! The crate accepts only [`sandy_core::ValidatedPolicy`]. It cannot inspect target arguments,
 //! environment variables, agent names, profiles, or runtime integrations. [`compile`] is pure and
-//! produces an opaque [`CompiledProfile`]; [`apply`] is the irreversible platform operation and is
-//! called only by Sandy's fresh bootstrap.
+//! produces an opaque [`CompiledProfile`]; [`apply`] is the irreversible platform operation used
+//! by Sandy's fresh CLI bootstrap and supported current-process facade.
 //!
 //! Apple's raw-profile interface is private and deprecated. Sandy probes it in a sacrificial
 //! process and fails closed when the host does not support the required behavior.
