@@ -324,9 +324,9 @@ env_key = "SANDY_CODEX_TEST_KEY"
         if let Err(error) = provider_result {
             return Err(error.into());
         }
+        let tool_output = fs::read_to_string(project.join("codex-tool.txt"))?;
         if !output.status.success()
-            || fs::read_to_string(project.join("codex-tool.txt")).as_deref()
-                != Ok("sandy-codex-tool")
+            || tool_output != "sandy-codex-tool"
             || fs::read_to_string(&outside)? != "protected"
         {
             return Err(format!(
