@@ -51,6 +51,12 @@ There is no implicit discovery, include, URL, fallback, or user-to-user
 inheritance. File I/O and ambient resolution remain in `sandy-cli`; lexical
 validation and deterministic additive composition remain in `sandy-core`.
 
+`sandy run --policy-file PATH` accepts the same complete `SandboxPolicy` JSON
+document as the Rust API. It replaces agent-policy contributions and disables
+automatic integration discovery. The CLI still adds its documented fixed
+launcher requirements, and explicit integration flags may add their verified
+typed capabilities. Every final contribution remains visible in dry-run output.
+
 Do not add detached sessions, a PTY proxy, domain filtering, credential
 brokering, dynamic grants, rollback, resource limits, raw Seatbelt input, or
 organization-managed Kontext support or outside-sandbox synchronous hook
@@ -153,6 +159,8 @@ These rules are release-blocking:
 - The CLI and profiles accept typed capabilities, never raw Seatbelt rules.
 - Facade JSON accepts only the public typed policy vocabulary. It has no
   discovery, inheritance, includes, interpolation, profiles, or raw rules.
+- CLI policy files use that same vocabulary and never receive implicit agent
+  policy. Loading, parsing, or composition failure prevents target execution.
 - User-authored profiles are additive and cannot remove an embedded base's
   grants, protections, or hook behavior. Missing required user paths fail the
   launch rather than being skipped.
@@ -264,6 +272,14 @@ sandy integrations setup kontext|numbat --agent claude|codex|opencode
 Both the absolute lexical source path and canonical target receive terminal
 subtree denials; these pathname rules do not eliminate replacement races or
 cover hard-link aliases.
+
+`--policy-file PATH` conflicts with profile selection and authority-modifying
+filesystem or network shortcuts. It requires `allow_subprocesses: true`
+because the sandboxed bootstrap must execute the target. Relative policy paths
+resolve against one working-directory snapshot. Positive grants must exist;
+denials preserve missing leaves through their nearest canonical existing
+ancestor. The policy source receives the same lexical and canonical terminal
+protection as other trusted launch configuration.
 
 `--read` and `--read-write` add only filesystem authority. On Linux,
 `--read-write` accepts existing directories and rejects non-directory paths

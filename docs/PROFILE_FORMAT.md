@@ -1,5 +1,9 @@
 # User profile files
 
+> Legacy authoring format. New configurations should use the complete
+> [`--policy-file`](POLICY_FILES.md) document shared with the Rust API. A later
+> stack change removes this additive format after the migration boundary.
+
 `sandy run --profile-file PATH -- COMMAND...` loads exactly one explicit JSON
 document for that invocation. Sandy never searches for profile files and does
 not support directories, includes, URLs, or fallback loading.

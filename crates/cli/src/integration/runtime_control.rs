@@ -9,6 +9,7 @@ use crate::error::AppError;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum IntegrationMode {
+    Disabled,
     Detect,
     Required,
 }
@@ -16,6 +17,10 @@ pub(crate) enum IntegrationMode {
 impl IntegrationMode {
     pub(crate) fn is_required(self) -> bool {
         self == Self::Required
+    }
+
+    pub(crate) fn is_disabled(self) -> bool {
+        self == Self::Disabled
     }
 }
 

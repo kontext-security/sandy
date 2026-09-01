@@ -12,15 +12,15 @@ use sandy_core::{
 use serde_json::json;
 use tempfile::Builder;
 
-const DRY_RUN_SCHEMA_VERSION: u32 = 6;
+const DRY_RUN_SCHEMA_VERSION: u32 = 7;
 
 use crate::{
     cli::RunArgs,
     error::AppError,
     integration::RuntimeControls,
-    profile,
+    policy_file, profile,
     resolve::{
-        default_ca_bundle, grant, resolve_command, resolve_paths, resolve_policy, runtime,
+        default_ca_bundle, grant, resolve_command, resolve_paths, resolve_policy_at, runtime,
         sanitized_environment,
     },
 };
@@ -45,32 +45,47 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
         ));
     }
     let command = resolve_command(&arguments.target)?;
+    let loaded_policy = arguments
+        .policy_file
+        .as_deref()
+        .map(policy_file::load)
+        .transpose()?;
+    let uses_policy_file = loaded_policy.is_some();
     let selected = match arguments.profile_file.as_deref() {
         Some(path) => profile::load_user(path)?,
         None => profile::select(arguments.profile.as_ref(), &command.requested_name)?,
     };
-    if selected.detected() {
+    if !uses_policy_file && selected.detected() {
         eprintln!(
             "sandy: applying detected agent profile '{}' (override with --profile)",
             selected.name()
         );
     }
-    let inherited_protected_templates = selected.inherited_protected_templates();
+    let inherited_protected_templates = if uses_policy_file {
+        Vec::new()
+    } else {
+        selected.inherited_protected_templates().into_owned()
+    };
     let mut paths = resolve_paths(&inherited_protected_templates)?;
-    selected.validate_user_paths(&paths.user)?;
-    let profile_protected_paths = selected.protected_paths(&paths.user)?;
-    if let Some(position) =
-        profile_protected_paths.user_entry_containing(paths.working_directory.as_path())
-    {
-        return Err(AppError::UserProfilePath {
-            section: "deny_subtrees",
-            position,
-            reason: "overlaps the working directory",
-        });
-    }
-    for protected in profile_protected_paths.paths() {
-        if !paths.user.protected.contains(protected) {
-            paths.user.protected.push(protected.clone());
+    let profile_protected_paths = if uses_policy_file {
+        None
+    } else {
+        selected.validate_user_paths(&paths.user)?;
+        Some(selected.protected_paths(&paths.user)?)
+    };
+    if let Some(protections) = &profile_protected_paths {
+        if let Some(position) = protections.user_entry_containing(paths.working_directory.as_path())
+        {
+            return Err(AppError::UserProfilePath {
+                section: "deny_subtrees",
+                position,
+                reason: "overlaps the working directory",
+            });
+        }
+        for protected in protections.paths() {
+            if !paths.user.protected.contains(protected) {
+                paths.user.protected.push(protected.clone());
+            }
         }
     }
     let session = Builder::new()
@@ -78,14 +93,31 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
         .tempdir()
         .map_err(|error| AppError::io("create private Sandy session", error))?;
 
-    let network = if arguments.block_net {
-        NetworkPolicy::BlockAll
-    } else {
-        NetworkPolicy::AllowAll
+    let (policy, policy_source_paths, network) = match loaded_policy {
+        Some(loaded) => {
+            let network = loaded.network();
+            let (policy, source_paths) = loaded.into_parts();
+            if !sandy_core::policy_allows_subprocesses(&policy) {
+                return Err(AppError::PolicyFile(
+                    "CLI execution requires allow_subprocesses to be true; use the Rust API for a current-process policy that disables execution"
+                        .to_owned(),
+                ));
+            }
+            (policy, source_paths, network)
+        }
+        None => {
+            let network = if arguments.block_net {
+                NetworkPolicy::BlockAll
+            } else {
+                NetworkPolicy::AllowAll
+            };
+            (
+                SandboxPolicy::new(network).allow_subprocesses(),
+                Vec::new(),
+                network,
+            )
+        }
     };
-    // Foreground launching and subprocess creation are independent policy
-    // capabilities. The default CLI contract deliberately selects both.
-    let policy = SandboxPolicy::new(network).allow_subprocesses();
     let mut intent = runtime::intent(policy);
     intent = intent.grant_file_and_execute(
         paths.working_directory.as_path(),
@@ -99,7 +131,7 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
     }
     intent =
         intent.grant_file_and_execute(session.path(), AccessMode::ReadWrite, PathScope::Subtree);
-    let ca_bundle = if arguments.block_net {
+    let ca_bundle = if network == NetworkPolicy::BlockAll {
         None
     } else {
         default_ca_bundle()
@@ -112,14 +144,19 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
                 PathScope::Exact,
                 &paths.user.protected,
             )
-            .map_err(|error| profile_protected_paths.redact_conflict(error))
+            .map_err(|error| match &profile_protected_paths {
+                Some(protections) => protections.redact_conflict(error),
+                None => error,
+            })
         })
         .transpose()?;
     if let Some(bundle) = &ca_bundle {
         intent = intent.grant_resolved_file(bundle.clone());
     }
-    intent = selected.contribute_grants(intent, &paths.user)?;
-    intent = selected.contribute_executable_grants(intent, &paths.user)?;
+    if !uses_policy_file {
+        intent = selected.contribute_grants(intent, &paths.user)?;
+        intent = selected.contribute_executable_grants(intent, &paths.user)?;
+    }
     for path in &arguments.read {
         intent = intent.grant_file(path, AccessMode::Read, grant_scope(path)?);
     }
@@ -134,17 +171,28 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
     let (mut intent, hook_source_protections, runtime_controls) = {
         let kontext_mode = if arguments.kontext {
             IntegrationMode::Required
+        } else if uses_policy_file {
+            IntegrationMode::Disabled
         } else {
             IntegrationMode::Detect
         };
         let numbat_mode = if arguments.numbat {
             IntegrationMode::Required
+        } else if uses_policy_file {
+            IntegrationMode::Disabled
         } else {
             IntegrationMode::Detect
         };
-        let hook_sources = selected.hook_sources(&paths.user)?;
-        let (next_intent, hook_source_protections) =
-            selected.contribute_hook_source_policy(intent, &hook_sources, &paths.user)?;
+        let hook_sources = if kontext_mode.is_disabled() && numbat_mode.is_disabled() {
+            Vec::new()
+        } else {
+            selected.hook_sources(&paths.user)?
+        };
+        let (next_intent, hook_source_protections) = if hook_sources.is_empty() {
+            (intent, Vec::new())
+        } else {
+            selected.contribute_hook_source_policy(intent, &hook_sources, &paths.user)?
+        };
         let mut controls = vec![
             kontext::resolve(&hook_sources, kontext_mode, &paths.user)?,
             numbat::resolve(&hook_sources, numbat_mode, &paths.user)?,
@@ -169,12 +217,22 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
             );
         }
     }
-    let mut write_protections = selected.protected_write_paths(&paths.user)?;
+    let mut write_protections = if uses_policy_file {
+        Vec::new()
+    } else {
+        selected.protected_write_paths(&paths.user)?
+    };
     write_protections.extend(hook_source_protections);
-    for path in profile_protected_paths.paths() {
-        intent = intent.deny_subtree(path.as_path());
+    if let Some(protections) = &profile_protected_paths {
+        for path in protections.paths() {
+            intent = intent.deny_resolved_subtree(path.clone());
+        }
     }
-    intent = selected.protect_source(intent);
+    if uses_policy_file {
+        intent = policy_file::protect_source(intent, &policy_source_paths);
+    } else {
+        intent = selected.protect_source(intent);
+    }
     for protection in write_protections {
         if protection.scope != PathScope::Exact {
             return Err(AppError::Launch(
@@ -183,8 +241,11 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
         }
         intent = intent.deny_resolved_write(protection);
     }
-    let draft = resolve_policy(intent, &paths.user.protected)
-        .map_err(|error| profile_protected_paths.redact_conflict(error))?;
+    let draft = resolve_policy_at(intent, &paths.user.protected, &paths.working_directory)
+        .map_err(|error| match &profile_protected_paths {
+            Some(protections) => protections.redact_conflict(error),
+            None => error,
+        })?;
     let draft = runtime_controls.contribute(draft)?;
     let policy = draft.finish()?.into_spec();
     #[cfg(target_os = "linux")]
@@ -231,17 +292,24 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
     let native_policy = json!({"backend": "unsupported"});
 
     if arguments.dry_run {
+        let agent_name = selected.base_name().unwrap_or_else(|| selected.name());
+        let policy_source = if uses_policy_file {
+            json!({ "kind": "policy_file" })
+        } else if selected.base_name().is_some() {
+            json!({ "kind": "legacy_profile_file" })
+        } else {
+            json!({ "kind": "agent_default" })
+        };
         let output = json!({
             "dry_run_schema_version": DRY_RUN_SCHEMA_VERSION,
             "command": command.program.to_string_lossy(),
             "arguments": command.arguments.iter().map(|value| value.to_string_lossy()).collect::<Vec<_>>(),
             "working_directory": validated.manifest().working_directory.as_str(),
-            "profile": {
-                "name": selected.name(),
+            "agent": {
+                "name": agent_name,
                 "detected": selected.detected(),
-                "source": selected.source_name(),
-                "base": selected.base_name(),
             },
+            "policy_source": policy_source,
             "network": validated.manifest().policy.network,
             "allow_subprocesses": validated.manifest().policy.allow_subprocesses,
             "file_metadata": validated.manifest().policy.file_metadata,

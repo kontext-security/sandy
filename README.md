@@ -129,8 +129,17 @@ subprocesses and tools below `./tools`, and keeps `settings.json` read-only:
 }
 ```
 
-Embed the document in a Rust binary and apply it without reading policy from
-the host at runtime:
+Use the same complete document with the CLI:
+
+```bash
+sandy run --policy-file sandbox.json -- my-command
+```
+
+CLI execution requires `allow_subprocesses: true` and adds its documented
+launcher/runtime requirements. It does not add an agent preset's policy.
+
+Or embed the document in a Rust binary and apply it without reading policy
+from the host at runtime:
 
 ```rust,no_run
 use sandy::SandboxPolicy;
@@ -143,13 +152,11 @@ run_untrusted_work();
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-Policy paths are resolved when `apply` runs and must already exist. File access
-does not imply executable access. Unknown fields, unsupported versions, and
-unrepresentable policy combinations are rejected rather than approximated.
-This complete library policy is not a CLI `--profile-file`: the CLI format is
-an additive extension of one built-in profile and cannot set network or process
-policy. See the [public Rust API](docs/PUBLIC_API.md) and [CLI profile
-format](docs/PROFILE_FORMAT.md) for the two contracts.
+Positive policy paths are resolved when execution is prepared and must already
+exist. File access does not imply executable access. Unknown fields,
+unsupported versions, and unrepresentable policy combinations are rejected
+rather than approximated. See the [CLI policy-file contract](docs/POLICY_FILES.md)
+and [public Rust API](docs/PUBLIC_API.md).
 
 ## Behavioral Security
 
@@ -191,6 +198,7 @@ use the sandbox.
 | CLI sandbox runner | ✅ | ✅ |
 | Rust library (`sandy::apply`) | ✅ | ✅ |
 | Versioned JSON library policies | ✅ | ✅ |
+| Complete CLI policy files | ✅ | ✅ |
 | CLI profile files | ✅ | ✅ |
 | Filesystem read, write, and execute policy | ✅ | ✅ |
 | Network allow/block | ✅ | ✅ |

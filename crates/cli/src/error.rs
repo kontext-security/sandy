@@ -26,6 +26,10 @@ pub(crate) enum AppError {
     InvalidPolicyPath(PathBuf),
     #[error("policy intent is invalid: {0}")]
     PolicyIntent(#[from] sandy_core::PolicyIntentError),
+    #[error("{0}")]
+    PolicyDocument(#[from] sandy_core::PolicyDocumentError),
+    #[error("sandbox policy file: {0}")]
+    PolicyFile(String),
     #[error("launch manifest is invalid: {0}")]
     Core(#[from] sandy_core::ValidationError),
     #[error("launch protocol failed: {0}")]
@@ -111,6 +115,8 @@ impl AppError {
             | Self::Wire(_)
             | Self::Core(_)
             | Self::PolicyIntent(_)
+            | Self::PolicyDocument(_)
+            | Self::PolicyFile(_)
             | Self::Launch(_) => 126,
             _ => 1,
         }

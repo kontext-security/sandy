@@ -142,6 +142,7 @@ impl SelectedProfile {
         matches!(self, Self::Embedded { detected: true, .. })
     }
 
+    #[cfg(test)]
     pub(crate) fn source_name(&self) -> &'static str {
         match self {
             Self::Embedded { .. } => "embedded",
@@ -175,7 +176,7 @@ impl SelectedProfile {
     pub(crate) fn protect_source(&self, mut intent: CliPolicyIntent) -> CliPolicyIntent {
         if let Self::UserFile { source_paths, .. } = self {
             for path in source_paths {
-                intent = intent.deny_subtree(path.as_path());
+                intent = intent.deny_resolved_subtree(path.clone());
             }
         }
         intent

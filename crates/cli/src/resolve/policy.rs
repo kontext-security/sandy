@@ -12,7 +12,9 @@ use sandy_core::{
 
 use crate::error::AppError;
 
-use super::{absolute_if_utf8, grant, scoped_write_protections};
+#[cfg(test)]
+use super::absolute_if_utf8;
+use super::{grant, scoped_write_protections};
 
 /// Unresolved CLI policy plus product-owned paths that intentionally require
 /// both ordinary file access and executable mapping.
@@ -25,6 +27,7 @@ pub(crate) struct CliPolicyIntent {
     policy: SandboxPolicy,
     file_and_executable_grants: Vec<FileAndExecutableGrant>,
     resolved_files: Vec<FileGrant>,
+    resolved_protected_paths: Vec<AbsolutePath>,
     resolved_write_protections: Vec<sandy_core::WriteProtection>,
     user_profile_files: Vec<UserProfileFile>,
     user_profile_executables: Vec<UserProfileExecutable>,
@@ -50,15 +53,25 @@ struct UserProfileExecutable {
 }
 
 struct GrantResolver<'a> {
+    working_directory: &'a AbsolutePath,
     protected: &'a [AbsolutePath],
     resolved: BTreeMap<PathBuf, AbsolutePath>,
 }
 
 impl<'a> GrantResolver<'a> {
-    fn new(protected: &'a [AbsolutePath]) -> Self {
+    fn new(working_directory: &'a AbsolutePath, protected: &'a [AbsolutePath]) -> Self {
         Self {
+            working_directory,
             protected,
             resolved: BTreeMap::new(),
+        }
+    }
+
+    fn candidate(&self, path: &Path) -> PathBuf {
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.working_directory.as_path().join(path)
         }
     }
 
@@ -68,7 +81,8 @@ impl<'a> GrantResolver<'a> {
         access: AccessMode,
         scope: PathScope,
     ) -> Result<FileGrant, AppError> {
-        if let Some(resolved) = self.resolved.get(path) {
+        let candidate = self.candidate(path);
+        if let Some(resolved) = self.resolved.get(&candidate) {
             if resolved.is_root() && (access != AccessMode::Read || scope != PathScope::Exact) {
                 return Err(AppError::UnsafeWorkingDirectory);
             }
@@ -78,9 +92,8 @@ impl<'a> GrantResolver<'a> {
                 scope,
             });
         }
-        let resolved = grant(path, access, scope, self.protected)?;
-        self.resolved
-            .insert(path.to_path_buf(), resolved.path.clone());
+        let resolved = grant(&candidate, access, scope, self.protected)?;
+        self.resolved.insert(candidate, resolved.path.clone());
         Ok(resolved)
     }
 }
@@ -91,6 +104,7 @@ impl CliPolicyIntent {
             policy,
             file_and_executable_grants: Vec::new(),
             resolved_files: Vec::new(),
+            resolved_protected_paths: Vec::new(),
             resolved_write_protections: Vec::new(),
             user_profile_files: Vec::new(),
             user_profile_executables: Vec::new(),
@@ -169,8 +183,9 @@ impl CliPolicyIntent {
         self
     }
 
-    pub(crate) fn deny_subtree(mut self, path: impl Into<PathBuf>) -> Self {
-        self.policy = self.policy.deny_subtree(path);
+    /// Adds one terminal protection already resolved by this product boundary.
+    pub(crate) fn deny_resolved_subtree(mut self, path: AbsolutePath) -> Self {
+        self.resolved_protected_paths.push(path);
         self
     }
 
@@ -180,14 +195,29 @@ impl CliPolicyIntent {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn resolve_policy(
     intent: CliPolicyIntent,
     protected: &[AbsolutePath],
+) -> Result<ResolvedPolicyDraft, AppError> {
+    let working_directory = std::env::current_dir()
+        .and_then(std::fs::canonicalize)
+        .map_err(|error| AppError::io("resolve policy working directory", error))?;
+    let working_directory = absolute_if_utf8(&working_directory)?;
+    resolve_policy_at(intent, protected, &working_directory)
+}
+
+/// Resolves one policy against the trusted launch working-directory snapshot.
+pub(crate) fn resolve_policy_at(
+    intent: CliPolicyIntent,
+    protected: &[AbsolutePath],
+    working_directory: &AbsolutePath,
 ) -> Result<ResolvedPolicyDraft, AppError> {
     let CliPolicyIntent {
         policy,
         file_and_executable_grants,
         resolved_files,
+        resolved_protected_paths,
         resolved_write_protections,
         user_profile_files,
         user_profile_executables,
@@ -205,7 +235,7 @@ pub(crate) fn resolve_policy(
             .ok_or(sandy_core::PolicyIntentError::TooManyExecutables)?,
     )?;
     let mut draft = ResolvedPolicyDraft::new(parts.network);
-    let mut resolver = GrantResolver::new(protected);
+    let mut resolver = GrantResolver::new(working_directory, protected);
     for unresolved in parts.grants {
         draft.add_file(resolver.resolve(&unresolved.path, unresolved.access, unresolved.scope)?);
     }
@@ -257,10 +287,15 @@ pub(crate) fn resolve_policy(
     }
 
     for path in parts.denied_subtrees {
-        if !path.is_absolute() || path == Path::new("/") {
-            return Err(AppError::InvalidPolicyPath(path));
+        let candidate = resolver.candidate(&path);
+        for protected_path in crate::resolve::protection_path_spellings([candidate])
+            .map_err(|_| AppError::InvalidPolicyPath(path.clone()))?
+        {
+            draft.add_protected_path(protected_path);
         }
-        draft.add_protected_path(absolute_if_utf8(&path)?);
+    }
+    for path in resolved_protected_paths {
+        draft.add_protected_path(path);
     }
 
     for unresolved in parts.executables {
@@ -276,7 +311,10 @@ pub(crate) fn resolve_policy(
     }
 
     for path in parts.write_denied_exact {
-        for protection in scoped_write_protections([path], PathScope::Exact)? {
+        let candidate = resolver.candidate(&path);
+        for protection in scoped_write_protections([candidate], PathScope::Exact)
+            .map_err(|_| AppError::InvalidPolicyPath(path.clone()))?
+        {
             draft.add_write_protection(protection);
         }
     }
@@ -383,7 +421,8 @@ mod tests {
         fs::create_dir(&second)?;
         symlink(&first, &alias)?;
 
-        let mut resolver = GrantResolver::new(&[]);
+        let working_directory = absolute_if_utf8(root.path())?;
+        let mut resolver = GrantResolver::new(&working_directory, &[]);
         let file = resolver.resolve(&alias, AccessMode::Read, PathScope::Subtree)?;
         fs::remove_file(&alias)?;
         symlink(&second, &alias)?;

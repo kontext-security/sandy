@@ -6,6 +6,7 @@ mod doctor;
 mod error;
 mod execution;
 mod integration;
+mod policy_file;
 mod profile;
 mod resolve;
 

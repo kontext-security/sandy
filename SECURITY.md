@@ -31,6 +31,12 @@ control its source and fail closed on every parse error. Diagnostics identify
 only the failure class and source position; reports must not include private
 document contents.
 
+The CLI accepts the same format only when explicitly selected with
+`--policy-file`. It never discovers or falls back to a policy file. The source
+must be a bounded regular file, and the document replaces agent-policy
+contributions rather than inheriting them. Treat dry-run output as sensitive
+because it contains the complete resolved capability paths.
+
 Security-sensitive changes require a positive compatibility test and a
 negative test proving adjacent access remains denied. Every live native sandbox
 test runs in a sacrificial subprocess because application is irreversible.

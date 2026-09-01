@@ -36,8 +36,10 @@ sandy::apply(policy)?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-JSON parsing performs no filesystem access. Paths are resolved and required to
-exist only when `apply` prepares the policy.
+JSON parsing performs no filesystem access. Positive grants are resolved and
+required to exist only when `apply` prepares the policy. Denials preserve a
+missing leaf through its lexical spelling and nearest canonical existing
+ancestor.
 
 Application is irreversible. Call `apply` before creating threads, opening
 sensitive resources, or starting untrusted work. Sandy has native macOS and

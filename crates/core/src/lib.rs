@@ -49,9 +49,10 @@ pub use profile::{
     UserProfileDocumentV1, UserProfileError,
 };
 pub use sandbox_policy::{
-    PolicyDocumentError, PolicyIntentError, SandboxPolicy, SandboxPolicyParts,
-    UnresolvedExecutable, UnresolvedGrant, allow_file_metadata, allow_foreground_cli_compatibility,
-    into_policy_parts,
+    MAX_POLICY_DOCUMENT_SOURCE_BYTES, PolicyDocumentError, PolicyIntentError, SandboxPolicy,
+    SandboxPolicyParts, UnresolvedExecutable, UnresolvedGrant, allow_file_metadata,
+    allow_foreground_cli_compatibility, into_policy_parts, policy_allows_subprocesses,
+    policy_network,
 };
 pub use validation::{ValidatedLaunch, ValidatedPolicy, ValidationError};
 pub use wire::{MAX_WIRE_BYTES, WireError, decode_launch, encode_launch};

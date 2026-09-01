@@ -40,6 +40,13 @@ builder. The format has no discovery, inheritance, includes, interpolation, or
 implicit authority. The embedding application owns loading and protecting the
 source bytes; Sandy retains neither their contents nor their source path.
 
+The CLI may load the same document explicitly through `--policy-file`. This
+replaces agent-policy contributions and disables automatic runtime-control
+discovery. The CLI remains responsible for fixed typed launcher capabilities,
+including the target, working directory, private session, and platform runtime;
+these appear in dry-run output and cannot silently override an authored deny.
+The CLI protects the policy source's absolute lexical and canonical pathnames.
+
 The facade's optional subprocess capability permits process creation,
 same-sandbox inspection and signals, and the platform runtime services needed
 to start ordinary descendants. On macOS this includes broad Mach lookup, which
@@ -111,6 +118,8 @@ must apply before creating them.
 - mutation between path canonicalization and later use;
 - replacement of a user-profile pathname after trusted preparation, and access
   through a hard-link alias not named by the lexical or canonical source path;
+- replacement of a CLI policy-file pathname after trusted preparation, and
+  access through an unnamed hard-link alias;
 - replacement of an explicitly granted Unix socket after the trusted parent
   verifies its path, type, and owner;
 - access to Kontext's exact Unix socket when the integration is active, even
