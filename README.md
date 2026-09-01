@@ -32,29 +32,6 @@ Verify that the native sandbox is available:
 sandy doctor
 ```
 
-Compatibility today:
-
-| Surface | macOS | Linux 0.2 | Notes |
-| --- | --- | --- | --- |
-| Generic commands and profile | Supported | Supported | The resolved policy must be representable by the native backend. |
-| Claude Code | Supported | Not yet supported | The native Linux release requires dynamic process paths omitted from Sandy's private root. |
-| Codex | Supported | Startup-qualified | CI checks a pinned native binary with `codex --version` on x86-64 and arm64. |
-| OpenCode | Supported | Not yet supported | The native Linux release requires dynamic process paths omitted from Sandy's private root. |
-| Filesystem and executable grants | Supported | Supported | Read and execute authority remain separate; unsupported policy shapes fail closed. |
-| Network allow/block | Supported | Supported | Linux `BlockAll` uses a private network namespace. |
-| CLI `--profile-file` | Supported | Supported | This is an additive extension of one built-in profile. |
-| Rust `sandy::apply` | Supported | Supported | The library restricts the calling process without a Sandy executable. |
-| Kontext integration | Supported | Not yet supported | Linux does not yet provide the required runtime discovery and exact external socket authority. |
-| Numbat integration | Supported | Not yet supported | Runtime discovery and integration setup are currently macOS-only. |
-
-Linux's private filesystem view intentionally omits `/proc/self/exe`,
-`/proc/self/fd`, `/dev/fd`, and `/dev/shm`. Claude Code and OpenCode currently
-depend on those dynamic interfaces. Mounting broad host process metadata would
-weaken Sandy's Linux isolation contract, so Sandy rejects those combinations
-instead of silently exposing more of the host. Codex does not need them for the
-tested startup path, but its TUI, configuration lifecycle, tool execution, and
-provider sessions are not yet qualified.
-
 Then run an agent from your project:
 
 ```bash
@@ -63,7 +40,7 @@ sandy run -- claude
 sandy run -- codex --sandbox danger-full-access
 sandy run -- opencode
 
-# Linux 0.2 (after the one-time setup below)
+# Linux v0.2 (after the one-time setup below)
 sandy run -- codex --sandbox danger-full-access
 ```
 
@@ -194,6 +171,42 @@ These controls reason about behavior and intent. Sandy remains the native
 boundary that limits what the process can physically access. On macOS, Sandy
 can preserve verified existing hooks for these tools; neither is required to
 use the sandbox.
+
+## Compatibility
+
+✅ Supported · ❌ Not supported
+
+### AI agents
+
+| Agent | macOS | Linux v0.2 |
+| --- | :---: | :---: |
+| Claude Code | ✅ | ❌ |
+| Codex | ✅ | ✅ |
+| OpenCode | ✅ | ❌ |
+
+### Sandbox interfaces
+
+| Interface | macOS | Linux v0.2 |
+| --- | :---: | :---: |
+| CLI sandbox runner | ✅ | ✅ |
+| Rust library (`sandy::apply`) | ✅ | ✅ |
+| Versioned JSON library policies | ✅ | ✅ |
+| CLI profile files | ✅ | ✅ |
+| Filesystem read, write, and execute policy | ✅ | ✅ |
+| Network allow/block | ✅ | ✅ |
+
+### Security integrations
+
+| Integration | macOS | Linux v0.2 |
+| --- | :---: | :---: |
+| Kontext | ✅ | ❌ |
+| Numbat | ✅ | ❌ |
+
+Linux CI executes a real pinned Codex binary on x86-64 and arm64. Codex
+completes a provider-backed agent turn, invokes its command tool, writes inside
+the granted project, and is denied when it tries to write outside it. Claude
+Code and OpenCode currently require dynamic process paths that Sandy's private
+Linux filesystem does not expose.
 
 ## Contributing
 
