@@ -64,6 +64,10 @@ Sandy exercises the namespace and modern mount setup in a sacrificial child
 during preparation and reports the backend as unsupported when the host denies
 it; it never falls back to weaker enforcement. Host administrators must make
 the namespace capability available through their normal system security policy.
+On Ubuntu, an administrator should authorize user namespaces for the installed
+Sandy executable through AppArmor. Disabling
+`kernel.apparmor_restrict_unprivileged_userns` is appropriate only for isolated
+CI runners because it weakens the restriction system-wide.
 
 System V shared memory, message queues, and semaphores are confined to the
 private IPC namespace. Descendants remain able to create and share new IPC
@@ -143,7 +147,10 @@ executable primary target. This lets that target identify or re-execute its own
 image without adding underlying file authority. Descendants see the primary
 target rather than a dynamic per-process link. Process entries,
 `/proc/self/fd`, `/dev/fd`, `/dev/shm`, magic links, and the host process tree
-remain absent.
+remain absent. Programs requiring procfs-backed descriptor paths, dynamic
+per-process executable identity, or filesystem-backed shared memory are outside
+the initial Linux compatibility contract. Ordinary child processes remain
+supported when the typed policy enables them.
 
 When the internal foreground-CLI compatibility capability is present, the
 backend recreates a bounded set of host runtime symlinks (`/bin`, `/sbin`,
@@ -196,7 +203,13 @@ directory.
 The release workflow verifies the packaged x86-64 and arm64 binaries with
 `doctor` and a real sandboxed launch on Ubuntu 24.04. The x86-64 artifact is
 built on Ubuntu 22.04; that build choice lowers its glibc floor but does not
-claim compatibility with every Linux distribution.
+claim compatibility with every Linux distribution. CI also runs real Node,
+Python, and subprocess fixtures. Common Rust toolchains can depend on the
+dynamic `/proc/self` paths omitted by the private root and are outside the
+initial Linux compatibility contract. Built-in agent profile tests prove
+policy and state boundaries with fixtures; third-party agent distributions are
+not installed or authenticated in release CI and therefore require separate
+version-specific qualification.
 
 ## Unsafe boundary
 

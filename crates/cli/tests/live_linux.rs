@@ -18,16 +18,22 @@ mod linux {
     const BLOCK_NET_CHILD: &str = "SANDY_CLI_BLOCK_NET_CHILD";
     const BLOCK_NET_ABSTRACT: &str = "SANDY_CLI_BLOCK_NET_ABSTRACT";
     const BLOCK_NET_SOCKET: &str = "SANDY_CLI_BLOCK_NET_SOCKET";
+    const PRIVATE_ROOT_CHILD: &str = "SANDY_CLI_PRIVATE_ROOT_CHILD";
     const SANDY: &str = env!("CARGO_BIN_EXE_sandy");
 
     pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         if std::env::var_os(BLOCK_NET_CHILD).is_some() {
             return block_net_child();
         }
+        if std::env::var_os(PRIVATE_ROOT_CHILD).is_some() {
+            return private_root_child();
+        }
         doctor_succeeds_on_supported_host()?;
         project_access_and_exit_behavior()?;
         blocked_network_reaches_the_bootstrap_policy()?;
         node_runtime_uses_only_the_explicit_baseline()?;
+        python_and_subprocesses_use_the_explicit_baseline()?;
+        private_root_limitations_are_stable()?;
         generic_user_profile_runs_without_exposing_its_source()?;
         built_in_agent_profiles_enforce_state_boundaries()?;
         inherited_terminal_remains_native()?;
@@ -262,6 +268,83 @@ childProcess.execFileSync('/bin/sh', ['-c', 'printf node > node-runtime.txt']);
         let status = status_with_timeout(&mut command)?;
         if !status.success() || fs::read_to_string(project.join("node-runtime.txt"))? != "node" {
             return Err("Node did not run inside the explicit Linux CLI baseline".into());
+        }
+        Ok(())
+    }
+
+    fn python_and_subprocesses_use_the_explicit_baseline() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let python = Path::new("/usr/bin/python3");
+        if !python.is_file() {
+            return Err(
+                "/usr/bin/python3 is required for the Linux compatibility smoke test".into(),
+            );
+        }
+        let root = tempfile::tempdir()?;
+        let home = root.path().join("home");
+        let project = root.path().join("project");
+        fs::create_dir(&home)?;
+        fs::create_dir(&project)?;
+        let script = r#"
+import pathlib
+import subprocess
+
+pathlib.Path("python-runtime.txt").write_text("python", encoding="utf-8")
+subprocess.run(["/bin/sh", "-c", "printf child > python-child.txt"], check=True)
+"#;
+        let mut command = Command::new(SANDY);
+        command.env("HOME", &home).current_dir(&project).args([
+            "run",
+            "--profile",
+            "generic",
+            "--",
+            "/usr/bin/python3",
+            "-c",
+            script,
+        ]);
+        let status = status_with_timeout(&mut command)?;
+        if !status.success()
+            || fs::read_to_string(project.join("python-runtime.txt"))? != "python"
+            || fs::read_to_string(project.join("python-child.txt"))? != "child"
+        {
+            return Err("Python or its subprocess failed inside the Linux baseline".into());
+        }
+        Ok(())
+    }
+
+    fn private_root_limitations_are_stable() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let home = root.path().join("home");
+        let project = root.path().join("project");
+        fs::create_dir(&home)?;
+        fs::create_dir(&project)?;
+        let mut command = Command::new(SANDY);
+        command
+            .env("HOME", &home)
+            .env(PRIVATE_ROOT_CHILD, "1")
+            .current_dir(&project)
+            .args(["run", "--profile", "generic", "--"])
+            .arg(std::env::current_exe()?);
+        let status = status_with_timeout(&mut command)?;
+        if !status.success() {
+            return Err("private-root compatibility contract changed".into());
+        }
+        Ok(())
+    }
+
+    fn private_root_child() -> Result<(), Box<dyn std::error::Error>> {
+        if std::env::current_exe().is_ok()
+            || Path::new("/proc/self/exe").exists()
+            || Path::new("/proc/self/fd").exists()
+            || Path::new("/dev/fd").exists()
+            || Path::new("/dev/shm").exists()
+        {
+            return Err("an intentionally absent process or shared-memory path was exposed".into());
+        }
+        let mut subprocess = Command::new("/bin/sh");
+        subprocess.args(["-c", "exit 0"]);
+        if !status_with_timeout(&mut subprocess)?.success() {
+            return Err("ordinary subprocess behavior was not preserved".into());
         }
         Ok(())
     }

@@ -39,10 +39,12 @@ apply()               irreversible native transition
 The backend uses private user, mount, and IPC namespaces, an optional network
 namespace for `BlockAll`, a descriptor-built private root, complete capability
 removal, and final seccomp filters. The fixed security baseline requires
-Landlock ABI 6 and always scopes signals to the sandbox domain. Exact external
-Unix-socket grants remain unsupported. Namespace support is exercised in a
-sacrificial child before enforcement. Unsupported host facilities and policy
-shapes fail without a weaker fallback.
+Linux 6.12 or a vendor kernel carrying Landlock ABI 6 and always scopes signals
+to the sandbox domain. The backend isolates System V IPC, replaces the inherited
+session keyring, and denies key-management syscalls. Exact external Unix-socket
+grants remain unsupported. Namespace support is exercised in a sacrificial
+child before enforcement. Unsupported host facilities and policy shapes fail
+without a weaker fallback.
 
 ### PR 2 — Current-process Linux facade
 

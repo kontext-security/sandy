@@ -33,9 +33,12 @@ pub(crate) fn run(arguments: DoctorArgs) -> Result<i32, AppError> {
         .status()
         .map_err(|error| AppError::io("run native sandbox support probe", error))?;
     if !status.success() {
-        return Err(AppError::Probe(
-            "the native runtime probe failed; Sandy cannot enforce a sandbox here".to_owned(),
-        ));
+        #[cfg(target_os = "linux")]
+        let message = linux_probe_failure_message();
+        #[cfg(not(target_os = "linux"))]
+        let message =
+            "the native runtime probe failed; Sandy cannot enforce a sandbox here".to_owned();
+        return Err(AppError::Probe(message));
     }
     #[cfg(target_os = "macos")]
     println!("macOS enforcement: available");
@@ -82,6 +85,19 @@ pub(crate) fn run(arguments: DoctorArgs) -> Result<i32, AppError> {
         println!("Numbat integration: not checked (optional)");
     }
     Ok(0)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_probe_failure_message() -> String {
+    let apparmor_restricts_user_namespaces =
+        std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+            .is_ok_and(|value| value.trim() == "1");
+    if apparmor_restricts_user_namespaces {
+        return "the native runtime probe failed because AppArmor restricts unprivileged user namespaces; ask the host administrator to authorize user namespaces for the Sandy executable (the CI-only fallback of setting kernel.apparmor_restrict_unprivileged_userns=0 weakens this restriction system-wide)"
+            .to_owned();
+    }
+    "the native runtime probe failed; Sandy requires Linux 6.12 or a vendor kernel with Landlock ABI 6, unprivileged user/mount/IPC namespaces, and the modern mount API"
+        .to_owned()
 }
 
 pub(crate) fn probe_child() -> Result<i32, AppError> {

@@ -2,10 +2,11 @@
 
 Sandy is experimental security software and has not completed an independent
 audit. Its macOS backend uses a private, deprecated Seatbelt interface; its
-Linux backend relies on user, mount, and IPC namespaces, Landlock ABI 6,
-capability removal, and seccomp. Linux hosts must permit the calling
-executable to configure those namespaces; Sandy reports unsupported rather
-than weakening enforcement when host security policy prevents it.
+Linux backend relies on Linux 6.12 or a vendor kernel carrying Landlock ABI 6,
+user, mount, and IPC namespaces, capability removal, and seccomp. Linux hosts
+must permit the calling executable to configure those namespaces; Sandy reports
+unsupported rather than weakening enforcement when host security policy
+prevents it.
 
 Please report vulnerabilities privately through GitHub's security advisory
 flow for `kontext-security/sandy`. Do not open a public issue for an unpatched

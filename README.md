@@ -5,58 +5,60 @@
 [![Follow Sandy on X](https://img.shields.io/badge/X-Follow-000000?logo=x&logoColor=white)](https://x.com/kontextsecurity)
 [![Follow Sandy on LinkedIn](https://img.shields.io/badge/LinkedIn-Follow-0A66C2?logo=linkedin&logoColor=white)](https://www.linkedin.com/company/kontextdev)
 
-> [!WARNING]
-> Sandy is experimental and has not completed an independent security audit.
-> See [Security and support](#security-and-support).
-
-Run AI coding agents in a sandbox.
+Kernel-enforced sandboxing for AI coding agents.
 
 Sandy gives an agent access to your project without giving it unrestricted
-access to your computer. The sandbox also applies to every command and tool the
-agent starts.
+access to your computer. The sandbox applies to the agent and every command it
+starts. If Sandy cannot enforce the requested policy, the agent does not run.
 
-```bash
-sandy run -- claude
-```
+Sandy is a foreground process sandbox, not a container, VM, daemon, or modified
+copy of the agent.
 
-The goal is simple: running an agent through Sandy should feel like running it
-directly, except its access is explicitly limited.
+## Quick Start
 
-## Design
-
-Sandy does one job: sandbox processes. Credential brokering, behavioral
-monitoring, approvals, and audit logs remain separate tools that can be used
-alongside it.
-
-All permissions are resolved before the agent starts. The agent cannot grant
-itself more access while it is running.
-
-If Sandy cannot validate or apply the sandbox, the agent does not run. There is
-no fallback to unrestricted execution.
-
-Sandy runs locally as a normal foreground command. It does not require a
-container, VM, background service, or modified copy of the agent.
-
-## Install
+Install Sandy on macOS with Homebrew:
 
 ```bash
 brew install kontext-security/tap/sandy
 ```
 
-Homebrew is the macOS distribution. Linux x86-64 and arm64 archives are
-attached to each GitHub release; unpack the archive and place `sandy` on your
-`PATH`.
+Linux x86-64 and arm64 archives and their SHA-256 checksums are available from
+[GitHub Releases](https://github.com/kontext-security/sandy/releases). Unpack
+the archive and place `sandy` on your `PATH`.
 
-Check that sandboxing works:
+Verify that the native sandbox is available:
 
 ```bash
 sandy doctor
 ```
 
-### Use from Rust
+Then run an agent from your project:
 
-The Rust package applies a typed policy directly to the calling process. It has
-no Sandy executable dependency and adds no application compatibility baseline.
+```bash
+sandy run -- claude
+sandy run -- codex --sandbox danger-full-access
+sandy run -- opencode
+```
+
+The current project is writable. Network access is allowed unless you block it
+explicitly:
+
+```bash
+sandy run --block-net -- claude
+```
+
+Grant additional filesystem access with Sandy options before `--`. Everything
+after `--` is passed to the target unchanged.
+
+```bash
+sandy run --read ../shared --read-write ~/Downloads/output -- claude
+sandy run --dry-run -- claude
+```
+
+## Use As a Library
+
+The Rust library restricts the calling process directly. It does not require
+the Sandy executable, a daemon, or a bootstrap hook.
 
 ```toml
 [dependencies]
@@ -74,271 +76,108 @@ let policy = SandboxPolicy::new(NetworkPolicy::BlockAll).grant(
 );
 
 sandy::apply(policy)?;
-// Start the restricted application here.
+run_untrusted_work();
+
+# fn run_untrusted_work() {}
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-Applications may instead load the same typed policy from strict, versioned
-JSON:
+`apply` is irreversible. Call it before starting threads, opening sensitive
+resources, or running untrusted work. The caller owns the complete policy;
+Sandy adds no implicit application baseline.
+
+## Customize
+
+Policies can live outside application code as strict, versioned JSON. This
+policy makes the current workspace writable, blocks network access, permits
+subprocesses and tools below `./tools`, and keeps `settings.json` read-only:
+
+```json
+{
+  "schema_version": 1,
+  "network": "block_all",
+  "allow_subprocesses": true,
+  "grants": [
+    {
+      "path": ".",
+      "access": "read_write",
+      "scope": "subtree"
+    }
+  ],
+  "executable_grants": [
+    {
+      "path": "./tools",
+      "scope": "subtree"
+    }
+  ],
+  "deny_write_exact": [
+    "./settings.json"
+  ]
+}
+```
+
+Embed the document in a Rust binary and apply it without reading policy from
+the host at runtime:
 
 ```rust,no_run
 use sandy::SandboxPolicy;
 
-let source = std::fs::read("sandbox.json")?;
-let policy = SandboxPolicy::from_json(&source)?;
+let policy = SandboxPolicy::from_json(include_bytes!("sandbox.json"))?;
 sandy::apply(policy)?;
+run_untrusted_work();
+
+# fn run_untrusted_work() {}
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-Reading a path does not make it executable. Chain `allow_execute(path, scope)`
-for programs, libraries, or generated code. Launching one also requires the
-policy to select `allow_subprocesses()`.
+Policy paths are resolved when `apply` runs and must already exist. File access
+does not imply executable access. Unknown fields, unsupported versions, and
+unrepresentable policy combinations are rejected rather than approximated.
+See the [public Rust API](docs/PUBLIC_API.md) and [CLI profile
+format](docs/PROFILE_FORMAT.md) for the complete contracts.
 
-`apply` is irreversible. Call it before creating threads, opening sensitive
-resources, or starting untrusted work. If native enforcement fails, terminate
-the process instead of continuing with a weaker boundary. Starting with 0.2,
-the library has native macOS and Linux backends. Unsupported hosts and policy
-combinations return `ErrorKind::Unsupported` without weakening the requested
-boundary. On Linux the current working directory must be covered by an explicit
-filesystem grant.
+## Behavioral Security
 
-## Run
+Kernel enforcement is foundational, but it cannot determine whether an
+otherwise permitted action is suspicious, whether a sequence of actions forms
+an attack, or which policy should govern a specific agent decision. Sandy
+therefore keeps behavioral detection and authorization separate and
+composable:
 
-On macOS, Sandy recognizes Claude Code, Codex, and OpenCode:
+- [Numbat](https://github.com/perplexityai/numbat) provides endpoint visibility,
+  on-device detection, optional pre-action blocking, and forensic
+  reconstruction across hooks, session artifacts, and telemetry from
+  OpenTelemetry exporters over OTLP/HTTP.
+- [Kontext](https://github.com/kontext-security/kontext) adds identity-aware,
+  pre-action authorization with Cedar policies at supported agent hooks and
+  records the decision and available outcome in an authorization ledger.
 
-```bash
-sandy run -- claude
-sandy run -- codex --sandbox danger-full-access
-sandy run -- opencode
-```
+These controls reason about behavior and intent. Sandy remains the native
+boundary that limits what the process can physically access. On macOS, Sandy
+can preserve verified existing hooks for these tools; neither is required to
+use the sandbox.
 
-Starting with 0.2, the Linux CLI accepts the same built-in profiles when their
-resolved paths exist and the native backend can represent the complete typed
-policy. Runtime-control discovery and setup remain macOS-only. Unsupported
-user-policy combinations fail before launch rather than weakening the policy.
+## Contributing
 
-```bash
-sandy run -- claude
-```
-
-Codex's internal sandbox cannot be nested reliably inside Sandy. The
-`danger-full-access` setting makes Sandy the single sandbox and does not disable
-Codex's approval flow.
-
-Other commands work too:
-
-```bash
-sandy run -- cargo test
-sandy run -- python script.py
-```
-
-The current project is read/write by default.
-
-Grant access to another directory:
-
-```bash
-sandy run --read ../shared-library -- claude
-sandy run --read-write ~/Downloads/output -- codex --sandbox danger-full-access
-```
-
-On Linux, `--read-write` accepts existing directories. To modify one file,
-grant its containing directory; Sandy rejects a writable regular-file grant
-before launching the target.
-
-File grants do not make content executable. Grant executable mapping and
-launch separately when a target must run programs or generated code from an
-additional path:
-
-```bash
-sandy run --read ../shared-tools --execute ../shared-tools -- \
-  /bin/sh -c '../shared-tools/build'
-```
-
-Block network access:
-
-```bash
-sandy run --block-net -- cargo test
-```
-
-Review the resolved sandbox without starting the command:
-
-```bash
-sandy run --dry-run -- claude
-```
-
-Dry-run output is a versioned JSON document. `dry_run_schema_version` identifies
-its public schema independently from the internal launch-manifest protocol.
-Schema version 6 reports a backend-neutral `native_policy` summary and
-identifies the selected profile's `source` as `embedded` or `user_file`;
-user-file selections also report their built-in `base` without placing the
-source path or document contents in profile metadata.
-The resolved policy includes the CLI's explicit runtime baseline and reports
-its filesystem metadata, executable, subprocess, and foreground compatibility
-behavior. On Linux, dry-run performs deterministic policy lowering but does not
-enter namespaces or probe the host; `sandy doctor` and an actual launch are the
-authoritative support checks.
-Optional host integrations are reported in the canonical `runtime_controls`
-array, with one object per resolved runtime control containing `service`,
-`enabled`, and nullable `version` fields.
-
-All Sandy options go before `--`. Everything after `--` is passed to the target
-unchanged.
-
-## Profiles
-
-Sandy uses built-in profiles to give supported agents access to the files they
-need while protecting sensitive configuration.
-
-Known agents are detected from the command name. Everything else uses the
-generic profile. You can also select a profile explicitly:
-
-```bash
-sandy run --profile codex -- my-codex-wrapper
-```
-
-Profiles are versioned documents built into Sandy. They use Sandy's supported
-permissions and cannot contain raw sandbox rules.
-
-For one explicit session policy, load a user-authored profile file:
-
-```bash
-sandy run --profile-file "$HOME/.config/sandy/project-sandbox.json" -- claude
-```
-
-The strict JSON document extends one selectable built-in profile and may add
-typed filesystem grants, executable grants, and terminal filesystem denials.
-Filesystem and executable authority are independent and must be requested
-separately. Sandy does not discover profile files automatically. See [User
-profile files](docs/PROFILE_FORMAT.md) for the complete format and security
-semantics. On Linux, keep the profile document outside every granted visible
-subtree so Sandy can make the source absent rather than approximating a nested
-confidential deny.
-
-## How it works
-
-Sandy resolves the command, paths, profile, environment, and permissions before
-launch.
-
-It then starts a small bootstrap process that validates the launch, applies the
-sandbox, and replaces itself with the target command. The original Sandy
-process waits outside the sandbox and returns the target's exit status.
-
-The target never runs before the sandbox is active. Every process it starts
-inherits the same restrictions.
-
-## Other security tools
-
-Sandy does not store credentials, inspect behavior, approve tool calls, or keep
-an audit ledger.
-
-Those functions can be provided by separate tools. Sandy can preserve supported
-hooks and local services without making them part of its sandboxing core.
-
-Current optional integrations can be required explicitly:
-
-These CLI integrations are currently available on macOS only.
-
-```bash
-sandy integrations setup kontext --agent claude
-sandy run --kontext -- claude
-
-sandy integrations setup numbat --agent codex
-sandy run --numbat -- codex --sandbox danger-full-access
-```
-
-For known agent profiles, Sandy automatically preserves verified existing
-Kontext hooks and ownership-marked Numbat registrations whose complete
-generated shape it recognizes. The explicit flag makes that integration
-mandatory; without it, a missing integration has no effect on standalone
-sandboxing.
-
-`sandy integrations setup` is the explicit host-configuration path. It first
-checks the selected agent's existing registration. A healthy integration is
-left untouched; an installed provider is configured with its official setup
-command; and a missing provider is installed before configuration. Kontext is
-installed through its Homebrew tap and continues to own authentication, daemon
-setup, and hook registration. For Kontext, `--agent` selects the registration
-Sandy must verify; the provider-wide `kontext setup` command may configure
-other supported agents as well. Numbat uses a versioned Sandy-managed executable
-whose public macOS release archive is bounded and verified against a SHA-256
-digest embedded in Sandy before it is published. Sandy then invokes Numbat's
-official idempotent hook installer in file-output mode.
-
-This command changes persistent host configuration and runs outside the
-sandbox. Ordinary `sandy run` and `sandy doctor` never install, update, or
-repair either provider. Existing installations on `PATH` are reused, and an
-already active registration is authoritative even if its executable is not on
-`PATH`.
-
-Numbat hooks currently run inside the same sandbox as the agent. Sandy keeps
-their registration, executable, and rule directories readable but immutable,
-while the hook's record output and sequence-state database remain writable.
-Direct HTTP delivery from a Numbat hook is not supported; use file output. See
-[RUNTIME_CONTROLS.md](RUNTIME_CONTROLS.md) for the architecture, trust boundary,
-and deferred outside-sandbox decision model.
-
-Hook discovery honors `CLAUDE_CONFIG_DIR`, `CODEX_HOME`,
-`OPENCODE_CONFIG_DIR`, and OpenCode's `XDG_CONFIG_HOME` fallback when those
-variables name absolute configuration roots.
-
-An operator can run Numbat's OTLP/HTTP collector outside Sandy and preserve
-only its default local-host port while all other networking is blocked:
-
-```bash
-numbat collect --addr 127.0.0.1:4318
-sandy run --block-net --numbat-collector -- codex --sandbox danger-full-access
-```
-
-`--numbat-collector=PORT` selects a different nonzero port and requires
-`--block-net`. This local-host TCP exception is currently macOS-only. Sandy
-does not start or probe the collector and does not configure the agent's
-telemetry exporter. On macOS it authorizes TCP connect to the selected port on
-IPv4 addresses belonging to the host, including loopback and other local
-interfaces; it does not authorize external addresses or other ports.
-
-## Security and support
-
-Sandy is a process sandbox, not a container or VM. It reduces what a process can
-access but does not provide a separate kernel, user account, or memory boundary.
-
-Network access is allowed by default and can be blocked with `--block-net`.
-On macOS, known-agent profiles may grant access to agent state directories for
-compatibility.
-
-The `sandy` CLI and Rust current-process library support macOS and Linux.
-Linux requires Landlock ABI 6, user, mount, and IPC namespaces, the modern mount
-API, and a host security policy that permits the calling executable to configure
-those namespaces. Some distributions restrict unprivileged user namespaces by
-default; `sandy doctor` detects this and Sandy never falls back to weaker
-enforcement.
-
-Release archives are exercised end to end on Ubuntu 24.04 for x86-64 and
-arm64. The x86-64 archive is built on Ubuntu 22.04 to avoid requiring a newer
-glibc than the verified runtime host.
-
-The initial Linux private filesystem intentionally omits the host process tree,
-`/sys`, and broad `/run` and `/dev` contents. The CLI names only its required
-runtime devices and public proc files; adjacent devices and process entries
-remain absent. Policies that require nested confidential denies,
-absent write-protected files, or local-host-only TCP are rejected before target
-execution. See
-[the Linux security model](docs/LINUX_SECURITY_MODEL.md) for the exact support
-contract.
-
-Version `0.1.x` is experimental and has not completed an independent security
-audit. The macOS backend uses Apple's private, deprecated Seatbelt interface.
-
-Read [THREAT_MODEL.md](THREAT_MODEL.md) for the full security model and
-[SECURITY.md](SECURITY.md) for vulnerability reporting.
-
-## Development
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. Changes
+to enforcement must update behavior, tests, and documentation together.
 
 ```bash
 make check
 ```
 
-See [AGENTS.md](AGENTS.md) and [CONTRIBUTING.md](CONTRIBUTING.md) before changing
-enforcement code.
+## Security
+
+Sandy is experimental security software and has not completed an independent
+audit. It is a process sandbox, not a separate kernel, user account, or memory
+boundary. The macOS backend uses Apple's private, deprecated Seatbelt
+interface. Linux has an explicit host and compatibility contract documented in
+the [Linux security model](docs/LINUX_SECURITY_MODEL.md).
+
+Read the [threat model](THREAT_MODEL.md) before relying on Sandy for a security
+boundary. Report vulnerabilities privately as described in
+[SECURITY.md](SECURITY.md); do not open a public issue for an unpatched
+vulnerability.
 
 ## License
 
