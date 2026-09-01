@@ -319,6 +319,7 @@ mod linux {
         let data_true = AbsolutePath::new(format!("{}/data-true", workspace.as_str()))?;
         let system_libraries = absolute(std::path::Path::new("/usr/lib"))?;
         let loader = absolute(&fs::canonicalize(dynamic_loader())?)?;
+        let primary_executable = absolute(&env::current_exe()?)?;
         let host_ipc = env::var(HOST_IPC_ID)?.parse::<i32>()?;
         let host_key = env::var(HOST_KEY_ID)?.parse::<i32>()?;
         if !sandy_linux::live_test_support::message_queue_is_visible(host_ipc)? {
@@ -341,6 +342,11 @@ mod linux {
                 path: system_libraries.clone(),
                 access: AccessMode::Read,
                 scope: PathScope::Subtree,
+            },
+            FileGrant {
+                path: primary_executable.clone(),
+                access: AccessMode::Read,
+                scope: PathScope::Exact,
             },
         ];
         if let Ok(cache) = fs::canonicalize("/etc/ld.so.cache") {
@@ -365,6 +371,10 @@ mod linux {
                     path: allowed_sleep.clone(),
                     scope: PathScope::Exact,
                 },
+                ExecutableGrant {
+                    path: primary_executable.clone(),
+                    scope: PathScope::Exact,
+                },
             ],
             write_protections: vec![WriteProtection {
                 path: locked,
@@ -376,8 +386,20 @@ mod linux {
             ..PolicySpec::default()
         })?;
 
-        let prepared = sandy_linux::prepare(sandy_linux::plan(&policy)?, &workspace)?;
+        let prepared = sandy_linux::prepare_foreground_launch(
+            sandy_linux::plan(&policy)?,
+            &workspace,
+            &primary_executable,
+        )?;
         sandy_linux::apply(prepared)?;
+
+        if env::current_exe()? != primary_executable.as_path()
+            || !std::path::Path::new("/proc/self/exe").exists()
+            || std::path::Path::new("/proc/self/fd").exists()
+            || std::path::Path::new("/proc/1").exists()
+        {
+            return Err("bounded primary executable alias was not preserved".into());
+        }
 
         if sandy_linux::live_test_support::message_queue_is_visible(host_ipc)? {
             return Err("host System V IPC remained visible after enforcement".into());

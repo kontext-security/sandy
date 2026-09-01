@@ -134,9 +134,13 @@ weakened:
 - global metadata compatibility;
 - local-host-only TCP exceptions.
 
-The private root deliberately omits procfs. Product compatibility grants and
-any future selective procfs design belong to the CLI boundary and require live
-positive and negative tests before shipping.
+The private root never mounts procfs. Process entries, descriptor magic links,
+and the host process tree remain absent. A foreground CLI launch recreates
+`/proc/self/exe` as a static symlink to the already-visible, executable primary
+target. This lets that target identify or re-execute its own image without
+adding underlying file authority. Descendants see the primary target rather
+than a dynamic per-process link. `/proc/self/fd`, `/dev/fd`, and `/dev/shm`
+remain unavailable.
 
 When the internal foreground-CLI compatibility capability is present, the
 backend recreates a bounded set of host runtime symlinks (`/bin`, `/sbin`,

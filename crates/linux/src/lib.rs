@@ -33,7 +33,7 @@ pub use apply::apply;
 pub use error::{LinuxError, LinuxErrorKind};
 pub use plan::{LinuxPolicyPlan, plan};
 #[cfg(target_os = "linux")]
-pub use prepare::{PreparedLinuxSandbox, prepare};
+pub use prepare::{PreparedLinuxSandbox, prepare, prepare_foreground_launch};
 
 /// Native helpers used only by Sandy's sacrificial Linux enforcement tests.
 #[cfg(all(target_os = "linux", feature = "live-tests"))]

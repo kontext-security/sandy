@@ -75,9 +75,32 @@ pub fn prepare(
     plan: LinuxPolicyPlan,
     working_directory: &AbsolutePath,
 ) -> Result<PreparedLinuxSandbox, LinuxError> {
+    prepare_with_primary_executable(plan, working_directory, None)
+}
+
+/// Prepares the Linux sandbox for a foreground CLI launch.
+///
+/// `primary_executable` is already part of the caller's explicit executable
+/// policy. Sandy uses it only to recreate the bounded `/proc/self/exe`
+/// spelling needed by programs that identify or re-execute their own image;
+/// procfs itself remains unmounted.
+#[doc(hidden)]
+pub fn prepare_foreground_launch(
+    plan: LinuxPolicyPlan,
+    working_directory: &AbsolutePath,
+    primary_executable: &AbsolutePath,
+) -> Result<PreparedLinuxSandbox, LinuxError> {
+    prepare_with_primary_executable(plan, working_directory, Some(primary_executable))
+}
+
+fn prepare_with_primary_executable(
+    plan: LinuxPolicyPlan,
+    working_directory: &AbsolutePath,
+    primary_executable: Option<&AbsolutePath>,
+) -> Result<PreparedLinuxSandbox, LinuxError> {
     let block_network = plan.blocks_network();
     let namespace = namespace::prepare(block_network)?;
-    let mount = prepare_mounts(&plan, working_directory)?;
+    let mount = prepare_mounts(&plan, working_directory, primary_executable)?;
     let landlock = landlock::prepare(plan.policy.spec(), &mount.pinned)?;
     let seccomp = seccomp::compile(plan.allows_subprocesses(), block_network)?;
     Ok(PreparedLinuxSandbox {
@@ -92,6 +115,7 @@ pub fn prepare(
 fn prepare_mounts(
     plan: &LinuxPolicyPlan,
     working_directory: &AbsolutePath,
+    primary_executable: Option<&AbsolutePath>,
 ) -> Result<MountPreparation, LinuxError> {
     let spec = plan.policy.spec();
     let mut requested = BTreeMap::<AbsolutePath, MountRequirement>::new();
@@ -233,6 +257,7 @@ fn prepare_mounts(
         spec.runtime_compatibility,
         &effective,
         &spec.protected_paths,
+        primary_executable,
     )?;
 
     Ok(MountPreparation {
@@ -271,6 +296,7 @@ fn prepare_runtime_aliases(
     compatibility: RuntimeCompatibility,
     mounts: &[MountRequirement],
     protected_paths: &[AbsolutePath],
+    primary_executable: Option<&AbsolutePath>,
 ) -> Result<Vec<RuntimeAlias>, LinuxError> {
     if compatibility != RuntimeCompatibility::ForegroundCli {
         return Ok(Vec::new());
@@ -312,7 +338,42 @@ fn prepare_runtime_aliases(
             std::fs::read_link(requested).map_err(|_| preparation("runtime alias resolution"))?;
         aliases.push(RuntimeAlias { path, target });
     }
+    if let Some(alias) =
+        prepare_primary_executable_alias(primary_executable, mounts, protected_paths)?
+    {
+        aliases.push(alias);
+    }
     Ok(aliases)
+}
+
+fn prepare_primary_executable_alias(
+    primary_executable: Option<&AbsolutePath>,
+    mounts: &[MountRequirement],
+    protected_paths: &[AbsolutePath],
+) -> Result<Option<RuntimeAlias>, LinuxError> {
+    let Some(primary_executable) = primary_executable else {
+        return Ok(None);
+    };
+    let path = AbsolutePath::new("/proc/self/exe".to_owned())
+        .map_err(|_| preparation("primary executable alias"))?;
+    if denied(&path, protected_paths)
+        || visible(&path, mounts.iter())
+        || !visible(primary_executable, mounts.iter())
+        || !mounts.iter().any(|mount| {
+            mount.executable
+                && (primary_executable == &mount.path
+                    || (mount.recursive
+                        && primary_executable
+                            .as_path()
+                            .starts_with(mount.path.as_path())))
+        })
+    {
+        return Err(unsupported("primary executable alias"));
+    }
+    Ok(Some(RuntimeAlias {
+        path,
+        target: primary_executable.as_path().to_path_buf(),
+    }))
 }
 
 fn should_materialize_runtime_alias(
@@ -454,6 +515,43 @@ mod tests {
             &mounts,
             std::slice::from_ref(&alias),
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn primary_executable_alias_requires_existing_execute_authority()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let executable = path("/opt/agent/bin/codex")?;
+        let executable_mount = MountRequirement {
+            path: path("/opt/agent/bin")?,
+            recursive: true,
+            writable: false,
+            executable: true,
+        };
+        let data_mount = MountRequirement {
+            path: path("/opt/agent/bin")?,
+            recursive: true,
+            writable: false,
+            executable: false,
+        };
+
+        let alias = prepare_primary_executable_alias(
+            Some(&executable),
+            std::slice::from_ref(&executable_mount),
+            &[],
+        )?
+        .ok_or("missing primary executable alias")?;
+        assert_eq!(alias.path.as_str(), "/proc/self/exe");
+        assert_eq!(alias.target, executable.as_path());
+        assert!(prepare_primary_executable_alias(Some(&executable), &[data_mount], &[]).is_err());
+        assert!(
+            prepare_primary_executable_alias(
+                Some(&executable),
+                &[executable_mount],
+                &[path("/proc")?],
+            )
+            .is_err()
+        );
         Ok(())
     }
 }
