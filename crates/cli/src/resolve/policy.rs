@@ -29,27 +29,12 @@ pub(crate) struct CliPolicyIntent {
     resolved_files: Vec<FileGrant>,
     resolved_protected_paths: Vec<AbsolutePath>,
     resolved_write_protections: Vec<sandy_core::WriteProtection>,
-    user_profile_files: Vec<UserProfileFile>,
-    user_profile_executables: Vec<UserProfileExecutable>,
 }
 
 struct FileAndExecutableGrant {
     path: PathBuf,
     access: AccessMode,
     scope: PathScope,
-}
-
-struct UserProfileFile {
-    path: PathBuf,
-    access: AccessMode,
-    scope: PathScope,
-    position: usize,
-}
-
-struct UserProfileExecutable {
-    path: PathBuf,
-    scope: PathScope,
-    position: usize,
 }
 
 struct GrantResolver<'a> {
@@ -106,8 +91,6 @@ impl CliPolicyIntent {
             resolved_files: Vec::new(),
             resolved_protected_paths: Vec::new(),
             resolved_write_protections: Vec::new(),
-            user_profile_files: Vec::new(),
-            user_profile_executables: Vec::new(),
         }
     }
 
@@ -138,38 +121,8 @@ impl CliPolicyIntent {
         self
     }
 
-    pub(crate) fn grant_user_profile_file(
-        mut self,
-        path: impl Into<PathBuf>,
-        access: AccessMode,
-        scope: PathScope,
-        position: usize,
-    ) -> Self {
-        self.user_profile_files.push(UserProfileFile {
-            path: path.into(),
-            access,
-            scope,
-            position,
-        });
-        self
-    }
-
     pub(crate) fn allow_execute(mut self, path: impl Into<PathBuf>, scope: PathScope) -> Self {
         self.policy = self.policy.allow_execute(path, scope);
-        self
-    }
-
-    pub(crate) fn allow_user_profile_execute(
-        mut self,
-        path: impl Into<PathBuf>,
-        scope: PathScope,
-        position: usize,
-    ) -> Self {
-        self.user_profile_executables.push(UserProfileExecutable {
-            path: path.into(),
-            scope,
-            position,
-        });
         self
     }
 
@@ -219,20 +172,14 @@ pub(crate) fn resolve_policy_at(
         resolved_files,
         resolved_protected_paths,
         resolved_write_protections,
-        user_profile_files,
-        user_profile_executables,
     } = intent;
     let parts = into_policy_parts(policy)?;
     parts.check_additional_bounds(
         file_and_executable_grants
             .len()
             .checked_add(resolved_files.len())
-            .and_then(|count| count.checked_add(user_profile_files.len()))
             .ok_or(sandy_core::PolicyIntentError::TooManyGrants)?,
-        file_and_executable_grants
-            .len()
-            .checked_add(user_profile_executables.len())
-            .ok_or(sandy_core::PolicyIntentError::TooManyExecutables)?,
+        file_and_executable_grants.len(),
     )?;
     let mut draft = ResolvedPolicyDraft::new(parts.network);
     let mut resolver = GrantResolver::new(working_directory, protected);
@@ -253,37 +200,6 @@ pub(crate) fn resolve_policy_at(
 
     for resolved in resolved_files {
         draft.add_file(resolved);
-    }
-
-    for unresolved in user_profile_files {
-        let resolved = resolver
-            .resolve(&unresolved.path, unresolved.access, unresolved.scope)
-            .map_err(|error| AppError::UserProfileGrant {
-                position: unresolved.position,
-                reason: redacted_path_error(&error),
-            })?;
-        draft.add_file(resolved);
-    }
-
-    for unresolved in user_profile_executables {
-        let resolved = resolver
-            .resolve(&unresolved.path, AccessMode::Read, unresolved.scope)
-            .map_err(|error| AppError::UserProfilePath {
-                section: "executable_grants",
-                position: unresolved.position,
-                reason: redacted_path_error(&error),
-            })?;
-        if resolved.path.is_root() {
-            return Err(AppError::UserProfilePath {
-                section: "executable_grants",
-                position: unresolved.position,
-                reason: "cannot be the filesystem root",
-            });
-        }
-        draft.add_executable(ExecutableGrant {
-            path: resolved.path,
-            scope: resolved.scope,
-        });
     }
 
     for path in parts.denied_subtrees {
@@ -326,14 +242,6 @@ pub(crate) fn resolve_policy_at(
     draft.set_allow_subprocesses(parts.allow_subprocesses);
     draft.set_runtime_compatibility(parts.runtime_compatibility);
     Ok(draft)
-}
-
-fn redacted_path_error(error: &AppError) -> &'static str {
-    match error {
-        AppError::MissingPath(_) | AppError::Io { .. } => "is unavailable",
-        AppError::ProtectedPath(_) => "overlaps protected data",
-        _ => "is invalid",
-    }
 }
 
 #[cfg(test)]
@@ -430,31 +338,6 @@ mod tests {
 
         assert_eq!(file.path, executable.path);
         assert_eq!(file.path.as_path(), fs::canonicalize(first)?);
-        Ok(())
-    }
-
-    #[test]
-    fn user_executable_root_alias_is_rejected_with_positioned_error()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let root = tempfile::tempdir()?;
-        let alias = root.path().join("root-alias");
-        symlink("/", &alias)?;
-
-        let error = resolve_policy(
-            CliPolicyIntent::new(SandboxPolicy::new(NetworkPolicy::BlockAll))
-                .allow_user_profile_execute(alias, PathScope::Exact, 2),
-            &[],
-        )
-        .err()
-        .ok_or("root executable grant should fail")?;
-        assert!(matches!(
-            error,
-            AppError::UserProfilePath {
-                section: "executable_grants",
-                position: 2,
-                reason: "cannot be the filesystem root",
-            }
-        ));
         Ok(())
     }
 

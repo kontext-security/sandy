@@ -7,7 +7,7 @@ use std::{
 
 use sandy_core::{
     AccessMode, CommandSpec, LaunchManifestV2, MANIFEST_SCHEMA_V2, NetworkPolicy, OsValue,
-    PathScope, SandboxPolicy, ValidatedLaunch, encode_launch,
+    PathScope, ValidatedLaunch, encode_launch,
 };
 use serde_json::json;
 use tempfile::Builder;
@@ -15,10 +15,11 @@ use tempfile::Builder;
 const DRY_RUN_SCHEMA_VERSION: u32 = 7;
 
 use crate::{
+    agent,
     cli::RunArgs,
     error::AppError,
     integration::RuntimeControls,
-    policy_file, profile,
+    policy_file,
     resolve::{
         default_ca_bundle, grant, resolve_command, resolve_paths, resolve_policy_at, runtime,
         sanitized_environment,
@@ -45,47 +46,33 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
         ));
     }
     let command = resolve_command(&arguments.target)?;
-    let loaded_policy = arguments
-        .policy_file
-        .as_deref()
-        .map(policy_file::load)
-        .transpose()?;
-    let uses_policy_file = loaded_policy.is_some();
-    let selected = match arguments.profile_file.as_deref() {
-        Some(path) => profile::load_user(path)?,
-        None => profile::select(arguments.profile.as_ref(), &command.requested_name)?,
-    };
+    let uses_policy_file = arguments.policy_file.is_some();
+    let selected = agent::select(arguments.agent.as_deref(), &command.requested_name)?;
     if !uses_policy_file && selected.detected() {
         eprintln!(
-            "sandy: applying detected agent profile '{}' (override with --profile)",
+            "sandy: applying detected agent preset '{}' (override with --agent)",
             selected.name()
         );
     }
-    let inherited_protected_templates = if uses_policy_file {
+    let protected_templates = if uses_policy_file {
+        &[]
+    } else {
+        selected.protected_templates()
+    };
+    let mut paths = resolve_paths(protected_templates)?;
+    let loaded_policy = arguments
+        .policy_file
+        .as_deref()
+        .map(|path| policy_file::load(path, paths.working_directory.as_path()))
+        .transpose()?;
+    let preset_protected_paths = if uses_policy_file {
         Vec::new()
     } else {
-        selected.inherited_protected_templates().into_owned()
+        selected.protected_paths(&paths.user)?
     };
-    let mut paths = resolve_paths(&inherited_protected_templates)?;
-    let profile_protected_paths = if uses_policy_file {
-        None
-    } else {
-        selected.validate_user_paths(&paths.user)?;
-        Some(selected.protected_paths(&paths.user)?)
-    };
-    if let Some(protections) = &profile_protected_paths {
-        if let Some(position) = protections.user_entry_containing(paths.working_directory.as_path())
-        {
-            return Err(AppError::UserProfilePath {
-                section: "deny_subtrees",
-                position,
-                reason: "overlaps the working directory",
-            });
-        }
-        for protected in protections.paths() {
-            if !paths.user.protected.contains(protected) {
-                paths.user.protected.push(protected.clone());
-            }
+    for protected in preset_protected_paths {
+        if !paths.user.protected.contains(&protected) {
+            paths.user.protected.push(protected);
         }
     }
     let session = Builder::new()
@@ -111,11 +98,7 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
             } else {
                 NetworkPolicy::AllowAll
             };
-            (
-                SandboxPolicy::new(network).allow_subprocesses(),
-                Vec::new(),
-                network,
-            )
+            (selected.policy(network, &paths.user)?, Vec::new(), network)
         }
     };
     let mut intent = runtime::intent(policy);
@@ -144,18 +127,10 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
                 PathScope::Exact,
                 &paths.user.protected,
             )
-            .map_err(|error| match &profile_protected_paths {
-                Some(protections) => protections.redact_conflict(error),
-                None => error,
-            })
         })
         .transpose()?;
     if let Some(bundle) = &ca_bundle {
         intent = intent.grant_resolved_file(bundle.clone());
-    }
-    if !uses_policy_file {
-        intent = selected.contribute_grants(intent, &paths.user)?;
-        intent = selected.contribute_executable_grants(intent, &paths.user)?;
     }
     for path in &arguments.read {
         intent = intent.grant_file(path, AccessMode::Read, grant_scope(path)?);
@@ -207,8 +182,11 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
         )
     };
     #[cfg(not(target_os = "macos"))]
-    let (mut intent, hook_source_protections, runtime_controls) =
-        (intent, Vec::new(), RuntimeControls::default());
+    let (mut intent, hook_source_protections, runtime_controls) = (
+        intent,
+        Vec::<sandy_core::WriteProtection>::new(),
+        RuntimeControls::default(),
+    );
     for control in runtime_controls.iter() {
         if let Some(reason) = control.unavailable_reason() {
             eprintln!(
@@ -217,23 +195,10 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
             );
         }
     }
-    let mut write_protections = if uses_policy_file {
-        Vec::new()
-    } else {
-        selected.protected_write_paths(&paths.user)?
-    };
-    write_protections.extend(hook_source_protections);
-    if let Some(protections) = &profile_protected_paths {
-        for path in protections.paths() {
-            intent = intent.deny_resolved_subtree(path.clone());
-        }
-    }
     if uses_policy_file {
         intent = policy_file::protect_source(intent, &policy_source_paths);
-    } else {
-        intent = selected.protect_source(intent);
     }
-    for protection in write_protections {
+    for protection in hook_source_protections {
         if protection.scope != PathScope::Exact {
             return Err(AppError::Launch(
                 "base policy contains an unsupported recursive write protection".to_owned(),
@@ -241,11 +206,7 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
         }
         intent = intent.deny_resolved_write(protection);
     }
-    let draft = resolve_policy_at(intent, &paths.user.protected, &paths.working_directory)
-        .map_err(|error| match &profile_protected_paths {
-            Some(protections) => protections.redact_conflict(error),
-            None => error,
-        })?;
+    let draft = resolve_policy_at(intent, &paths.user.protected, &paths.working_directory)?;
     let draft = runtime_controls.contribute(draft)?;
     let policy = draft.finish()?.into_spec();
     #[cfg(target_os = "linux")]
@@ -292,11 +253,8 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
     let native_policy = json!({"backend": "unsupported"});
 
     if arguments.dry_run {
-        let agent_name = selected.base_name().unwrap_or_else(|| selected.name());
         let policy_source = if uses_policy_file {
             json!({ "kind": "policy_file" })
-        } else if selected.base_name().is_some() {
-            json!({ "kind": "legacy_profile_file" })
         } else {
             json!({ "kind": "agent_default" })
         };
@@ -306,7 +264,7 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
             "arguments": command.arguments.iter().map(|value| value.to_string_lossy()).collect::<Vec<_>>(),
             "working_directory": validated.manifest().working_directory.as_str(),
             "agent": {
-                "name": agent_name,
+                "name": selected.name(),
                 "detected": selected.detected(),
             },
             "policy_source": policy_source,
@@ -396,7 +354,7 @@ fn read_write_grant_scope(path: &std::path::Path) -> Result<PathScope, AppError>
 #[cfg(target_os = "linux")]
 fn validate_linux_write_protections(
     policy: &sandy_core::ValidatedPolicy,
-    profile_name: &str,
+    agent_name: &str,
 ) -> Result<(), AppError> {
     let spec = policy.spec();
     for protection in &spec.write_protections {
@@ -413,12 +371,12 @@ fn validate_linux_write_protections(
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Err(AppError::Launch(format!(
-                    "Linux profile {profile_name:?} requires its write-protected files to exist before launch; initialize the profile configuration outside Sandy and retry"
+                    "Linux agent preset {agent_name:?} requires its write-protected files to exist before launch; initialize the agent configuration outside Sandy and retry"
                 )));
             }
             Err(error) => {
                 return Err(AppError::io(
-                    "inspect Linux write-protected profile path",
+                    "inspect Linux write-protected agent path",
                     error,
                 ));
             }

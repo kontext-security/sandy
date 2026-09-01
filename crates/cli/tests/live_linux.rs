@@ -40,8 +40,8 @@ mod linux {
         node_runtime_uses_only_the_explicit_baseline()?;
         python_and_subprocesses_use_the_explicit_baseline()?;
         private_root_limitations_are_stable()?;
-        generic_user_profile_runs_without_exposing_its_source()?;
-        built_in_agent_profiles_enforce_state_boundaries()?;
+        policy_file_runs_without_exposing_its_source()?;
+        built_in_agent_presets_enforce_state_boundaries()?;
         installed_codex_binary_starts()?;
         installed_codex_executes_a_tool()?;
         timeout_terminates_the_managed_process_group()?;
@@ -80,7 +80,7 @@ mod linux {
             .env(BLOCK_NET_SOCKET, &socket)
             .env(BLOCK_NET_ABSTRACT, &abstract_name)
             .current_dir(&project)
-            .args(["run", "--profile", "generic", "--block-net", "--"])
+            .args(["run", "--agent", "generic", "--block-net", "--"])
             .arg(std::env::current_exe()?);
         let status = status_with_timeout(&mut command)?;
         if !status.success() {
@@ -127,7 +127,7 @@ mod linux {
             .current_dir(&project)
             .args([
                 "run",
-                "--profile",
+                "--agent",
                 "generic",
                 "--",
                 "/bin/sh",
@@ -164,16 +164,15 @@ mod linux {
         Ok(())
     }
 
-    fn built_in_agent_profiles_enforce_state_boundaries() -> Result<(), Box<dyn std::error::Error>>
-    {
-        for profile in ["claude", "codex", "opencode"] {
+    fn built_in_agent_presets_enforce_state_boundaries() -> Result<(), Box<dyn std::error::Error>> {
+        for agent in ["claude", "codex", "opencode"] {
             let root = tempfile::tempdir()?;
             let home = root.path().join("home");
             let project = root.path().join("project");
             fs::create_dir(&home)?;
             fs::create_dir(&project)?;
 
-            let (protected, mutable) = match profile {
+            let (protected, mutable) = match agent {
                 "claude" => {
                     fs::create_dir(home.join(".claude"))?;
                     fs::write(home.join(".claude/settings.json"), "protected")?;
@@ -202,7 +201,7 @@ mod linux {
                         home.join(".local/share/opencode/state.txt"),
                     )
                 }
-                _ => return Err("unexpected built-in profile fixture".into()),
+                _ => return Err("unexpected built-in agent fixture".into()),
             };
 
             let mut command = Command::new(SANDY);
@@ -211,8 +210,8 @@ mod linux {
                 .current_dir(&project)
                 .args([
                     "run",
-                    "--profile",
-                    profile,
+                    "--agent",
+                    agent,
                     "--",
                     "/bin/sh",
                     "-c",
@@ -226,7 +225,7 @@ mod linux {
                 || fs::read_to_string(&protected)? != "protected"
                 || fs::read_to_string(&mutable)? != "state"
             {
-                return Err(format!("Linux {profile} profile boundary failed").into());
+                return Err(format!("Linux {agent} preset boundary failed").into());
             }
         }
         Ok(())
@@ -252,7 +251,7 @@ mod linux {
             .env("HOME", &home)
             .env("CI", "1")
             .current_dir(&project)
-            .args(["run", "--profile", "codex", "--block-net", "--"])
+            .args(["run", "--agent", "codex", "--block-net", "--"])
             .arg(executable)
             .arg("--version");
         let output = output_with_timeout(&mut command)?;
@@ -309,7 +308,7 @@ env_key = "SANDY_CODEX_TEST_KEY"
             .env("CI", "1")
             .env("SANDY_CODEX_TEST_KEY", "test-only")
             .current_dir(&project)
-            .args(["run", "--profile", "codex", "--"])
+            .args(["run", "--agent", "codex", "--"])
             .arg(executable)
             .args([
                 "exec",
@@ -563,15 +562,10 @@ if (fs.existsSync('/usr/bin/getent')) {
 childProcess.execFileSync('/bin/sh', ['-c', 'printf node > node-runtime.txt']);
 "#;
         let mut command = Command::new(SANDY);
-        command.env("HOME", &home).current_dir(&project).args([
-            "run",
-            "--profile",
-            "generic",
-            "--",
-            node,
-            "-e",
-            script,
-        ]);
+        command
+            .env("HOME", &home)
+            .current_dir(&project)
+            .args(["run", "--agent", "generic", "--", node, "-e", script]);
         let status = status_with_timeout(&mut command)?;
         if !status.success() || fs::read_to_string(project.join("node-runtime.txt"))? != "node" {
             return Err("Node did not run inside the explicit Linux CLI baseline".into());
@@ -602,7 +596,7 @@ subprocess.run(["/bin/sh", "-c", "printf child > python-child.txt"], check=True)
         let mut command = Command::new(SANDY);
         command.env("HOME", &home).current_dir(&project).args([
             "run",
-            "--profile",
+            "--agent",
             "generic",
             "--",
             "/usr/bin/python3",
@@ -630,7 +624,7 @@ subprocess.run(["/bin/sh", "-c", "printf child > python-child.txt"], check=True)
             .env("HOME", &home)
             .env(PRIVATE_ROOT_CHILD, "1")
             .current_dir(&project)
-            .args(["run", "--profile", "generic", "--"])
+            .args(["run", "--agent", "generic", "--"])
             .arg(std::env::current_exe()?);
         let status = status_with_timeout(&mut command)?;
         if !status.success() {
@@ -657,36 +651,35 @@ subprocess.run(["/bin/sh", "-c", "printf child > python-child.txt"], check=True)
         Ok(())
     }
 
-    fn generic_user_profile_runs_without_exposing_its_source()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn policy_file_runs_without_exposing_its_source() -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
         let home = root.path().join("home");
         let project = root.path().join("project");
-        let profile = root.path().join("profile.json");
+        let policy = root.path().join("policy.json");
         fs::create_dir(&home)?;
         fs::create_dir(&project)?;
         fs::write(
-            &profile,
-            r#"{"schema_version":1,"name":"linux-session","extends":"generic"}"#,
+            &policy,
+            r#"{"schema_version":1,"network":"block_all","allow_subprocesses":true}"#,
         )?;
 
         let mut command = Command::new(SANDY);
         command
             .env("HOME", &home)
             .current_dir(&project)
-            .args(["run", "--profile-file"])
-            .arg(&profile)
+            .args(["run", "--policy-file"])
+            .arg(&policy)
             .args([
                 "--",
                 "/bin/sh",
                 "-c",
-                "if test -e \"$1\"; then exit 91; fi; printf user > user-profile.txt",
+                "if test -e \"$1\"; then exit 91; fi; printf policy > policy-file.txt",
                 "sandy-live",
             ])
-            .arg(&profile);
+            .arg(&policy);
         let status = status_with_timeout(&mut command)?;
-        if !status.success() || fs::read_to_string(project.join("user-profile.txt"))? != "user" {
-            return Err("generic-based Linux user profile failed".into());
+        if !status.success() || fs::read_to_string(project.join("policy-file.txt"))? != "policy" {
+            return Err("complete Linux policy-file boundary failed".into());
         }
         Ok(())
     }
@@ -699,7 +692,7 @@ subprocess.run(["/bin/sh", "-c", "printf child > python-child.txt"], check=True)
         fs::create_dir(&home)?;
         fs::create_dir(&project)?;
         let command = format!(
-            "{SANDY} run --profile generic -- /bin/sh -c 'test -t 0 && exec 3<>/dev/tty && test -t 3'"
+            "{SANDY} run --agent generic -- /bin/sh -c 'test -t 0 && exec 3<>/dev/tty && test -t 3'"
         );
         let mut terminal = Command::new("/usr/bin/script");
         terminal
@@ -722,15 +715,10 @@ subprocess.run(["/bin/sh", "-c", "printf child > python-child.txt"], check=True)
         expected: i32,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut command = Command::new(SANDY);
-        command.env("HOME", home).current_dir(project).args([
-            "run",
-            "--profile",
-            "generic",
-            "--",
-            "/bin/sh",
-            "-c",
-            script,
-        ]);
+        command
+            .env("HOME", home)
+            .current_dir(project)
+            .args(["run", "--agent", "generic", "--", "/bin/sh", "-c", script]);
         let status = status_with_timeout(&mut command)?;
         if status.code() != Some(expected) {
             return Err(format!("expected exit {expected}, got {status:?}").into());

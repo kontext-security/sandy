@@ -10,7 +10,7 @@ flowchart LR
     Operator[Operator] --> Setup[sandy integrations setup]
     Setup --> HostInstall[Provider install and hook configuration]
     HostInstall --> Sources
-    Profile[Typed agent profile] --> Sources[Bounded hook sources]
+    Preset[Built-in agent preset] --> Sources[Bounded hook sources]
     Sources --> Resolvers[Integration resolvers]
     Parent[Trusted Sandy parent] --> Resolvers
     Resolvers --> Controls[Resolved runtime controls]

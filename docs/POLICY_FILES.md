@@ -57,8 +57,8 @@ with a required launcher capability fails before target execution. The CLI
 never retries with a weaker policy.
 
 Because the document is complete caller policy, `--policy-file` conflicts with
-agent selection, the legacy profile-file option, `--read`, `--read-write`,
-`--execute`, `--block-net`, and the collector shortcut. Explicit `--kontext`
+agent selection, `--read`, `--read-write`, `--execute`, `--block-net`, and the
+collector shortcut. Explicit `--kontext`
 or `--numbat` remains available because selecting either option is itself an
 explicit request for its verified capabilities.
 

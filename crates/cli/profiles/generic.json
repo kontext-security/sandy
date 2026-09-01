@@ -1,5 +1,0 @@
-{
-  "schema_version": 4,
-  "name": "generic",
-  "extends": ["base"]
-}

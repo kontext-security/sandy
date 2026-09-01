@@ -21,8 +21,8 @@ narrowly.
 
 The version `0.1.x` CLI supports macOS and one foreground `run` mode. Starting
 with `0.2.x`, the CLI also supports Linux. macOS supports Claude Code, Codex,
-OpenCode, and generic profiles. Linux `0.2.x` supports pinned native Codex on
-x86-64 and arm64 plus the generic profile; CI executes a deterministic
+OpenCode, and a generic agent preset. Linux `0.2.x` supports pinned native Codex on
+x86-64 and arm64 plus the generic preset; CI executes a deterministic
 provider-backed agent turn and command tool inside the sandbox. Native Claude
 Code and OpenCode are outside its initial compatibility contract. Both
 platforms support explicit filesystem and executable grants, network
@@ -37,19 +37,11 @@ Its public model is platform-neutral; `0.1.x` has the macOS backend and `0.2.x`
 adds Linux. Unsupported hosts or policy combinations return `Unsupported`
 rather than receiving a weakened contract.
 
-Agent presets are versioned, strictly typed profile documents embedded in the
-CLI at compile time. Profiles resolve through deterministic inheritance in
-`sandy-core` and may express only existing typed capabilities. Adding an agent
-requires a profile document, an embedded registry entry, and tests; it must not
-require renderer or bootstrap changes.
-
-`sandy run --profile-file PATH` accepts one explicit, bounded, strict UTF-8 JSON
-user profile. Its narrow schema extends exactly one selectable embedded profile
-and may add only required filesystem grants, executable grants, and terminal
-filesystem denials.
-There is no implicit discovery, include, URL, fallback, or user-to-user
-inheritance. File I/O and ambient resolution remain in `sandy-cli`; lexical
-validation and deterministic additive composition remain in `sandy-core`.
+Agent presets are small, typed Rust definitions compiled into `sandy-cli`.
+They select Sandy's default policy and known hook locations; they are not a
+user-authored policy language and do not use schemas, inheritance, or a
+registry. Adding an agent requires one preset definition and tests, and must
+not require core, renderer, or bootstrap changes.
 
 `sandy run --policy-file PATH` accepts the same complete `SandboxPolicy` JSON
 document as the Rust API. It replaces agent-policy contributions and disables
@@ -110,7 +102,7 @@ resolves paths and validates the policy.
 
 The enforcement backend adds no implicit filesystem or network capabilities.
 The CLI owns explicit typed platform runtime baselines and composes them through
-the same policy model as profiles and command-line grants. Profiles, CLI
+the same policy model as agent presets and command-line grants. Presets, CLI
 options, runtime resources, and optional integrations must all contribute
 typed capabilities before the trusted parent finishes `ValidatedPolicy`.
 Product code must not mutate the resulting wire policy after validation.
@@ -156,14 +148,11 @@ These rules are release-blocking:
 - Unsupported and incompatible nested-sandbox environments fail closed.
 - Sandy never falls back to unrestricted execution.
 - Restrictions are inherited by every target descendant.
-- The CLI and profiles accept typed capabilities, never raw Seatbelt rules.
+- The CLI and agent presets accept typed capabilities, never raw Seatbelt rules.
 - Facade JSON accepts only the public typed policy vocabulary. It has no
-  discovery, inheritance, includes, interpolation, profiles, or raw rules.
+  discovery, inheritance, includes, interpolation, preset selection, or raw rules.
 - CLI policy files use that same vocabulary and never receive implicit agent
   policy. Loading, parsing, or composition failure prevents target execution.
-- User-authored profiles are additive and cannot remove an embedded base's
-  grants, protections, or hook behavior. Missing required user paths fail the
-  launch rather than being skipped.
 - The renderer adds no implicit filesystem or network capabilities. Product
   compatibility baselines must be explicit typed policy input.
 - File reads never imply executable mapping. Executable paths and subprocess
@@ -190,7 +179,7 @@ These rules are release-blocking:
 - A local-host TCP exception names one nonzero port and connect operation on
   IPv4 addresses belonging to the Mac. Never translate it into blanket
   networking, bind, DNS, IPv6, another port, or external-address access.
-- Network-enabled profiles may reach same-user local services as well as the
+- Network-enabled policies may reach same-user local services as well as the
   Internet; treat that as an explicit compatibility tradeoff.
 
 Treat the Seatbelt raw-profile interface as private, deprecated macOS SPI.
@@ -267,13 +256,7 @@ sandy run [SANDY OPTIONS] -- COMMAND [ARGUMENTS...]
 sandy integrations setup kontext|numbat --agent claude|codex|opencode
 ```
 
-`--profile-file PATH` is an explicit `run` option and conflicts with
-`--profile`. Its source is a bounded existing regular strict-UTF-8 JSON file.
-Both the absolute lexical source path and canonical target receive terminal
-subtree denials; these pathname rules do not eliminate replacement races or
-cover hard-link aliases.
-
-`--policy-file PATH` conflicts with profile selection and authority-modifying
+`--policy-file PATH` conflicts with agent selection and authority-modifying
 filesystem or network shortcuts. It requires `allow_subprocesses: true`
 because the sandboxed bootstrap must execute the target. Relative policy paths
 resolve against one working-directory snapshot. Positive grants must exist;

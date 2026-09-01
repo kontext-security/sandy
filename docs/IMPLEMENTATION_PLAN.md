@@ -50,7 +50,7 @@ without a weaker fallback.
 
 Dispatch `sandy::apply()` to the Linux backend without changing the public
 surface or adding an executable dependency. The facade still adds no runtime
-paths, profiles, environment changes, or helper process. Sacrificial tests
+paths, agent presets, environment changes, or helper process. Sacrificial tests
 cover policy application, inheritance, network denial, and fail-closed cases.
 
 ### PR 3 — Linux CLI and distribution
@@ -76,7 +76,7 @@ shapes are documented in `LINUX_SECURITY_MODEL.md`.
 - `apply` irreversibly restricts the calling process. The consumer owns its
   process and worker architecture.
 - The CLI remains the safe launcher for unmodified commands. It owns bootstrap,
-  supervision, environment filtering, profiles, and its typed runtime
+  supervision, environment filtering, agent presets, and its typed runtime
   baseline.
 - Both entry points lower the same `SandboxPolicy` intent through validation and
   the native backend. The renderer never adds hidden filesystem or network
@@ -87,12 +87,9 @@ shapes are documented in `LINUX_SECURITY_MODEL.md`.
 - The CLI may load that same complete caller-controlled document explicitly.
   It adds only documented fixed launcher capabilities and disables automatic
   integration discovery for that invocation.
-- The CLI may load one explicit narrow user profile file. Deterministic schema
-  validation and additive base composition of independent filesystem,
-  executable, and terminal-deny capabilities live in `sandy-core`; bounded
-  file loading, template expansion, canonicalization, diagnostics, and
-  source-path protection remain in `sandy-cli`. No additional package boundary
-  is needed.
+- Built-in agent presets remain small typed definitions in `sandy-cli`. They
+  select default policy and known hook locations, but are not an authoring
+  format and do not introduce schemas, inheritance, or a registry.
 
 ## PR 1: make the CLI baseline explicit
 

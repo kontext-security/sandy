@@ -10,8 +10,8 @@ use std::{
 };
 
 use sandy_core::{
-    AbsolutePath, AccessMode, FileGrant, HookProtocol, PathScope, UnixSocketGrant,
-    UnixSocketOperation, WriteProtection,
+    AbsolutePath, AccessMode, FileGrant, PathScope, UnixSocketGrant, UnixSocketOperation,
+    WriteProtection,
 };
 use serde::Deserialize;
 
@@ -20,8 +20,8 @@ use super::{
     hook_source::{JsonHookInvocation, json_documents, json_hook_commands, shell_words},
 };
 use crate::{
+    agent::{HookProtocol, ResolvedHookSource},
     error::AppError,
-    profile::ResolvedHookSource,
     resolve::{
         ResolvedCommand, ResolvedUserPaths, absolute_if_utf8, grant, resolve_command,
         write_protections,
@@ -515,10 +515,10 @@ fn error(message: impl Into<String>) -> AppError {
 mod tests {
     use std::os::unix::fs::PermissionsExt as _;
 
-    use sandy_core::HookSourceScope;
     use serde_json::Value;
 
     use super::*;
+    use crate::agent::HookSourceScope;
 
     const HEALTHY_DOCTOR_REPORT: &str = r#"{"healthy":true,"configured":true,"self_serve":true,"daemon_running":true,"active_profile":"test","legacy_install":false,"mode":"observe"}"#;
 

@@ -1,8 +1,6 @@
 use std::{collections::BTreeSet, ffi::OsString, fs, path::Path};
 
-use sandy_core::{
-    AccessMode, FileGrant, HookProtocol, HookSourceScope, PathScope, WriteProtection,
-};
+use sandy_core::{AccessMode, FileGrant, PathScope, WriteProtection};
 #[cfg(any(target_os = "macos", test))]
 use sandy_core::{LocalHostTcpGrant, LocalHostTcpOperation, TcpPort};
 
@@ -11,8 +9,8 @@ use super::{
     hook_source::{JsonHookInvocation, json_documents, json_hook_commands, read_optional_bounded},
 };
 use crate::{
+    agent::{HookProtocol, HookSourceScope, ResolvedHookSource},
     error::AppError,
-    profile::ResolvedHookSource,
     resolve::{ResolvedUserPaths, resolve_command, scoped_write_protections, write_protections},
 };
 
@@ -155,7 +153,7 @@ fn discover(sources: &[ResolvedHookSource]) -> Result<Vec<ConfiguredSource>, App
             (HookProtocol::CodexRequirements, HookSourceScope::Directory)
             | (HookProtocol::OpenCodePlugin, HookSourceScope::File) => {
                 return Err(error(
-                    "agent profile declares an incompatible hook-source scope",
+                    "agent preset declares an incompatible hook-source scope",
                 ));
             }
             (HookProtocol::ClaudeSettings | HookProtocol::CodexHooks, _) => {}
@@ -457,10 +455,10 @@ fn error(message: impl Into<String>) -> AppError {
 mod tests {
     use std::{os::unix::fs::PermissionsExt as _, path::PathBuf};
 
-    use sandy_core::{AbsolutePath, HookSourceScope};
+    use sandy_core::AbsolutePath;
 
     use super::*;
-    use crate::resolve::absolute_if_utf8;
+    use crate::{agent::HookSourceScope, resolve::absolute_if_utf8};
 
     fn executable(root: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
         let binary = root.join("numbat-renamed");

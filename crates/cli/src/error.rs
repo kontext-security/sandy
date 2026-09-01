@@ -58,25 +58,12 @@ pub(crate) enum AppError {
     Probe(String),
     #[error("launch preparation failed: {0}")]
     Launch(String),
-    #[error("agent profile failed: {0}")]
-    Profile(String),
-    #[error("user profile failed: {0}")]
-    UserProfile(String),
-    #[error("user profile grant {position} {reason}")]
-    UserProfileGrant {
-        position: usize,
-        reason: &'static str,
-    },
-    #[error("user profile {section} entry {position} {reason}")]
-    UserProfilePath {
-        section: &'static str,
-        position: usize,
-        reason: &'static str,
-    },
-    #[error("unknown agent profile {name:?}; available profiles: {}", available.join(", "))]
-    UnknownProfile {
+    #[error("agent preset failed: {0}")]
+    AgentPreset(String),
+    #[error("unknown agent {name:?}; available agents: {}", available.join(", "))]
+    UnknownAgent {
         name: String,
-        available: Vec<String>,
+        available: Vec<&'static str>,
     },
     #[error("target command could not be executed: {0}")]
     Exec(io::Error),

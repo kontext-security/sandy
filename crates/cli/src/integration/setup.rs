@@ -10,9 +10,9 @@ use std::{
 };
 
 use crate::{
+    agent::{self, ResolvedHookSource},
     cli::{IntegrationCommand, IntegrationProvider, IntegrationsArgs, SupportedAgent},
     error::AppError,
-    profile::{self, ResolvedHookSource},
     resolve::{ResolvedUserPaths, resolve_command, resolve_user_paths},
 };
 
@@ -30,10 +30,9 @@ pub(super) struct SetupContext {
 
 impl SetupContext {
     fn resolve(agent: SupportedAgent) -> Result<Self, AppError> {
-        let profile_name = agent.profile_name().to_owned();
-        let selected = profile::select(Some(&profile_name), OsStr::new(&profile_name))?;
-        let protected_templates = selected.inherited_protected_templates();
-        let paths = resolve_user_paths(&protected_templates)?;
+        let preset_name = agent.preset_name();
+        let selected = agent::select(Some(preset_name), OsStr::new(preset_name))?;
+        let paths = resolve_user_paths(selected.protected_templates())?;
         let hook_sources = selected.hook_sources(&paths)?;
         Ok(Self {
             agent,
@@ -137,7 +136,7 @@ pub(crate) fn run(arguments: IntegrationsArgs) -> Result<i32, AppError> {
     };
     println!(
         "{provider} {status}. Sandy verified the {} registration's runtime capabilities.",
-        context.agent.profile_name()
+        context.agent.preset_name()
     );
     Ok(0)
 }

@@ -199,7 +199,7 @@ use the sandbox.
 | Rust library (`sandy::apply`) | ✅ | ✅ |
 | Versioned JSON library policies | ✅ | ✅ |
 | Complete CLI policy files | ✅ | ✅ |
-| CLI profile files | ✅ | ✅ |
+| Built-in agent presets | ✅ | ✅ |
 | Filesystem read, write, and execute policy | ✅ | ✅ |
 | Network allow/block | ✅ | ✅ |
 

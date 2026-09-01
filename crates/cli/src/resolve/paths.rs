@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use sandy_core::{AbsolutePath, AccessMode, FileGrant, PathScope, TemplatePath, WriteProtection};
+use sandy_core::{AbsolutePath, AccessMode, FileGrant, PathScope, WriteProtection};
 
 use crate::error::AppError;
 
@@ -23,16 +23,16 @@ pub(crate) struct ResolvedPaths {
 }
 
 pub(crate) fn resolve_user_paths(
-    protected_templates: &[TemplatePath],
+    protected_templates: &[&str],
 ) -> Result<ResolvedUserPaths, AppError> {
     let home = env::var_os("HOME")
         .map(PathBuf::from)
         .and_then(|path| fs::canonicalize(path).ok());
     let mut protected = Vec::new();
     for template in protected_templates {
-        let candidate = match template.as_str().strip_prefix("~/") {
+        let candidate = match template.strip_prefix("~/") {
             Some(rest) => home.as_deref().map(|home| home.join(rest)),
-            None => Some(PathBuf::from(template.as_str())),
+            None => Some(PathBuf::from(template)),
         };
         let Some(candidate) = candidate else {
             continue;
@@ -46,9 +46,7 @@ pub(crate) fn resolve_user_paths(
     Ok(ResolvedUserPaths { home, protected })
 }
 
-pub(crate) fn resolve_paths(
-    protected_templates: &[TemplatePath],
-) -> Result<ResolvedPaths, AppError> {
+pub(crate) fn resolve_paths(protected_templates: &[&str]) -> Result<ResolvedPaths, AppError> {
     let working_directory = fs::canonicalize(
         env::current_dir().map_err(|error| AppError::io("read working directory", error))?,
     )

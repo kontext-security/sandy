@@ -4,10 +4,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use sandy_core::{HookProtocol, HookSourceScope};
 use serde_json::Value;
 
-use crate::{error::AppError, profile::ResolvedHookSource};
+use crate::{
+    agent::{HookProtocol, HookSourceScope, ResolvedHookSource},
+    error::AppError,
+};
 
 const MAX_HOOK_DOCUMENT_BYTES: u64 = 1024 * 1024;
 const MAX_HOOK_DOCUMENTS: usize = 128;
