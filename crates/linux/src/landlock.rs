@@ -4,7 +4,7 @@ use landlock::{
     ABI, Access, AccessFs, BitFlags, CompatLevel, Compatible, PathBeneath, Ruleset, RulesetAttr,
     RulesetCreated, RulesetCreatedAttr, RulesetStatus, Scope,
 };
-use sandy_core::{AccessMode, PathScope, PolicySpec};
+use sandy_core::{AccessMode, PolicySpec};
 
 use crate::{
     LinuxError, LinuxErrorKind,
@@ -52,9 +52,8 @@ pub(crate) fn prepare(
         ruleset = add_rule(ruleset, file, AccessFs::Execute.into())?;
     }
     // The shape checks in preparation ensure all directory rules are subtree
-    // rules. PathBeneath is therefore an exact rule for files and a recursive
-    // rule only where the typed policy requested one.
-    let _ = PathScope::Subtree;
+    // rules. PathBeneath is therefore exact for files and recursive only for
+    // directory grants already validated as subtrees.
     Ok(PreparedLandlock { ruleset })
 }
 

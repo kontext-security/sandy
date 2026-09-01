@@ -2,12 +2,9 @@ use std::{error::Error, fmt};
 
 /// Stable high-level classification for a Linux backend failure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[non_exhaustive]
 pub enum LinuxErrorKind {
     /// The host or requested policy cannot provide the required semantics.
     Unsupported,
-    /// The validated policy still contains a Linux-incompatible combination.
-    InvalidPolicy,
     /// Ambient resources could not be pinned before enforcement.
     PreparationFailed,
     /// An irreversible native enforcement step failed.

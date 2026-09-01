@@ -31,7 +31,8 @@ Application then:
 1. enters private user, mount, and IPC namespaces, plus a network namespace
    for `BlockAll`;
 2. installs same-ID, one-entry UID and GID maps and makes mount propagation
-   private;
+   private, then replaces the inherited session keyring with a fresh anonymous
+   keyring;
 3. reopens every grant in the new mount namespace and verifies its device,
    inode, and type against the original pinned object;
 4. constructs a private tmpfs root from the verified grants;
@@ -47,7 +48,8 @@ its target.
 
 ## Fixed native semantics
 
-Sandy's fixed filesystem and signal-isolation baseline requires Landlock ABI 6.
+Sandy's fixed filesystem and signal-isolation baseline requires Linux 6.12 or
+a vendor kernel carrying Landlock ABI 6.
 Every accepted policy scopes signal delivery: a sandboxed process may signal
 same-domain descendants but cannot signal an unsandboxed parent, sibling, or
 other host process. The requirement is hard: a host never receives a weakened
@@ -65,7 +67,16 @@ the namespace capability available through their normal system security policy.
 
 System V shared memory, message queues, and semaphores are confined to the
 private IPC namespace. Descendants remain able to create and share new IPC
-objects inside the sandbox domain; host IPC objects are not visible.
+objects inside the sandbox domain; host IPC objects are not visible. Live tests
+create a host message queue before application and prove that its identifier is
+unusable afterward.
+
+Kernel keyrings are not isolated by an IPC namespace. Sandy therefore replaces
+the inherited session keyring with a fresh anonymous ring before hiding the host
+filesystem, then permanently denies `add_key`, `request_key`, and `keyctl` with
+seccomp. A live test proves a key inherited before application is unreadable
+afterward. Key payloads already copied into process memory remain part of the
+public current-process residual-risk contract.
 
 Read authority never includes execute authority. The private filesystem marks
 non-executable mounts `noexec`; an executable nested below a readable subtree
@@ -137,5 +148,7 @@ working directory to the private root.
 ## Unsafe boundary
 
 All Linux unsafe code and raw native calls are confined to
-`crates/linux/src/ffi.rs`. It exposes owned descriptors and safe functions. Raw
-pointers, native structures, and unsafe functions do not escape that module.
+`crates/linux/src/ffi.rs`. It exposes owned descriptors, lifetime-bound
+`BorrowedFd` inputs, and safe functions. Raw pointers, native structures,
+unvalidated descriptor integers, and unsafe functions do not escape that
+module.

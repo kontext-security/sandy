@@ -22,7 +22,10 @@ mod linux {
     const PROCESS_CHILD: &str = "SANDY_LINUX_PROCESS_CHILD";
     const REPLACEMENT_CHILD: &str = "SANDY_LINUX_REPLACEMENT_CHILD";
     const EXPECT_UNSUPPORTED: &str = "SANDY_LINUX_EXPECT_UNSUPPORTED";
+    const HOST_IPC_ID: &str = "SANDY_LINUX_HOST_IPC_ID";
+    const HOST_KEY_ID: &str = "SANDY_LINUX_HOST_KEY_ID";
     const WORKSPACE: &str = "SANDY_LINUX_LIVE_WORKSPACE";
+    const TEST_KEY_PAYLOAD: &[u8] = b"host-session-key";
 
     pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         if env::var_os(CHILD_MODE).is_some() {
@@ -67,9 +70,18 @@ mod linux {
         }
         fs::write(root.path().join("outside.txt"), "hidden")?;
 
+        let host_ipc = sandy_linux::live_test_support::create_private_message_queue()?;
+        let host_key = sandy_linux::live_test_support::create_session_test_key(TEST_KEY_PAYLOAD)?;
         let mut command = Command::new(env::current_exe()?);
-        command.env(CHILD_MODE, "1").env(WORKSPACE, &workspace);
-        let status = status_with_timeout(&mut command)?;
+        command
+            .env(CHILD_MODE, "1")
+            .env(WORKSPACE, &workspace)
+            .env(HOST_IPC_ID, host_ipc.to_string())
+            .env(HOST_KEY_ID, host_key.to_string());
+        let status = status_with_timeout(&mut command);
+        let cleanup = sandy_linux::live_test_support::remove_message_queue(host_ipc);
+        let status = status?;
+        cleanup?;
         if !status.success() {
             return Err("sacrificial sandbox child failed".into());
         }
@@ -307,6 +319,14 @@ mod linux {
         let data_true = AbsolutePath::new(format!("{}/data-true", workspace.as_str()))?;
         let system_libraries = absolute(std::path::Path::new("/usr/lib"))?;
         let loader = absolute(&fs::canonicalize(dynamic_loader())?)?;
+        let host_ipc = env::var(HOST_IPC_ID)?.parse::<i32>()?;
+        let host_key = env::var(HOST_KEY_ID)?.parse::<i32>()?;
+        if !sandy_linux::live_test_support::message_queue_is_visible(host_ipc)? {
+            return Err("host IPC fixture was not inherited before enforcement".into());
+        }
+        if sandy_linux::live_test_support::read_test_key(host_key)? != TEST_KEY_PAYLOAD {
+            return Err("host session key fixture was not inherited before enforcement".into());
+        }
         // This child starts before Landlock creates the sandbox signal domain.
         // It therefore represents an unrelated host process even though this
         // sacrificial process owns the handle needed for deterministic cleanup.
@@ -358,6 +378,15 @@ mod linux {
 
         let prepared = sandy_linux::prepare(sandy_linux::plan(&policy)?, &workspace)?;
         sandy_linux::apply(prepared)?;
+
+        if sandy_linux::live_test_support::message_queue_is_visible(host_ipc)? {
+            return Err("host System V IPC remained visible after enforcement".into());
+        }
+        match sandy_linux::live_test_support::read_test_key(host_key) {
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {}
+            Ok(_) => return Err("inherited host session key remained readable".into()),
+            Err(error) => return Err(error.into()),
+        }
 
         match outside_signal_target.kill() {
             Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {}

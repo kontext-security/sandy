@@ -1,7 +1,7 @@
 use std::{
     fs::{self, OpenOptions},
     os::{
-        fd::AsRawFd,
+        fd::AsFd,
         unix::fs::{OpenOptionsExt, PermissionsExt},
     },
     path::{Path, PathBuf},
@@ -49,10 +49,12 @@ pub(crate) fn construct_and_enter(preparation: &MountPreparation) -> Result<(), 
             &root,
             &requirement.path,
             &source.file,
-            requirement.recursive,
-            !requirement.writable,
-            source.kind == PinnedKind::Device,
-            requirement.executable,
+            ffi::MountRestrictions {
+                recursive: requirement.recursive,
+                read_only: !requirement.writable,
+                allow_device: source.kind == PinnedKind::Device,
+                allow_execute: requirement.executable,
+            },
         )?;
     }
     for protection in &preparation.protections {
@@ -64,10 +66,12 @@ pub(crate) fn construct_and_enter(preparation: &MountPreparation) -> Result<(), 
             &root,
             &protection.path,
             &source.file,
-            protection.recursive,
-            protection.read_only,
-            source.kind == PinnedKind::Device,
-            protection.executable,
+            ffi::MountRestrictions {
+                recursive: protection.recursive,
+                read_only: true,
+                allow_device: source.kind == PinnedKind::Device,
+                allow_execute: protection.executable,
+            },
         )?;
     }
     for alias in &preparation.aliases {
@@ -119,27 +123,17 @@ fn attach(
     root: &std::fs::File,
     path: &AbsolutePath,
     source: &std::fs::File,
-    recursive: bool,
-    read_only: bool,
-    allow_device: bool,
-    allow_execute: bool,
+    restrictions: ffi::MountRestrictions,
 ) -> Result<(), LinuxError> {
     let relative = path.as_str().strip_prefix('/').unwrap_or(path.as_str());
     let relative = ffi::c_string(relative).map_err(|_| enforcement("mount target pinning"))?;
-    let target = ffi::open_path_at(root.as_raw_fd(), &relative)
+    let target = ffi::open_path_at(root.as_fd(), &relative)
         .map_err(|_| enforcement("mount target pinning"))?;
-    let detached = ffi::clone_mount(source.as_raw_fd(), recursive)
+    let detached = ffi::clone_mount(source.as_fd(), restrictions.recursive)
         .map_err(|_| enforcement("detached mount creation"))?;
-    ffi::restrict_mount(
-        detached.as_raw_fd(),
-        recursive,
-        read_only,
-        allow_device,
-        allow_execute,
-    )
-    .map_err(|_| enforcement("detached mount restriction"))?;
-    ffi::attach_mount(detached.as_raw_fd(), target.as_raw_fd())
-        .map_err(|_| enforcement("mount attachment"))
+    ffi::restrict_mount(detached.as_fd(), restrictions)
+        .map_err(|_| enforcement("detached mount restriction"))?;
+    ffi::attach_mount(detached.as_fd(), target.as_fd()).map_err(|_| enforcement("mount attachment"))
 }
 
 fn target_path(path: &AbsolutePath) -> PathBuf {

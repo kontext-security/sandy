@@ -41,6 +41,9 @@ pub(crate) fn compile(
         (libc::SYS_fsconfig, Vec::new()),
         (libc::SYS_fsmount, Vec::new()),
         (libc::SYS_fspick, Vec::new()),
+        (libc::SYS_add_key, Vec::new()),
+        (libc::SYS_request_key, Vec::new()),
+        (libc::SYS_keyctl, Vec::new()),
     ]);
 
     let namespace_flags = [
@@ -111,6 +114,8 @@ pub(crate) fn apply(programs: &SeccompPrograms) -> Result<(), LinuxError> {
     crate::ffi::verify_clone3_blocked()
         .map_err(|_| LinuxError::new(LinuxErrorKind::EnforcementFailed, "seccomp postcondition"))?;
     crate::ffi::verify_namespace_change_blocked()
+        .map_err(|_| LinuxError::new(LinuxErrorKind::EnforcementFailed, "seccomp postcondition"))?;
+    crate::ffi::verify_keyring_operations_blocked()
         .map_err(|_| LinuxError::new(LinuxErrorKind::EnforcementFailed, "seccomp postcondition"))?;
     if !programs.allow_subprocesses {
         crate::ffi::verify_fork_blocked().map_err(|_| {

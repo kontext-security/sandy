@@ -71,7 +71,8 @@ pub(crate) fn enter(
     )
     .map_err(|_| enforcement("group mapping"))?;
 
-    ffi::make_mounts_private().map_err(|_| enforcement("mount propagation"))
+    ffi::make_mounts_private().map_err(|_| enforcement("mount propagation"))?;
+    ffi::isolate_session_keyring().map_err(|_| enforcement("session keyring isolation"))
 }
 
 fn ensure_single_threaded() -> Result<(), LinuxError> {

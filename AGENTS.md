@@ -218,9 +218,10 @@ The Linux backend separates deterministic `LinuxPolicyPlan`, ambient
 `PreparedLinuxSandbox`, and irreversible `apply()` states. It requires a
 single-threaded caller, private user, mount, and IPC namespaces, fixed Landlock
 ABI 6 semantics with signal scoping, complete capability removal, and final
-seccomp enforcement. It never clears an inherited host `noexec` restriction.
-Unsupported policy combinations fail before enforcement; there is no weaker
-fallback.
+seccomp enforcement. It replaces the inherited session keyring with an
+anonymous ring and denies key-management syscalls before untrusted work. It
+never clears an inherited host `noexec` restriction. Unsupported policy
+combinations fail before enforcement; there is no weaker fallback.
 
 Adding a native operation requires documenting its declaration, availability,
 deprecation status, cleanup contract, and live coverage on every supported

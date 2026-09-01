@@ -2,7 +2,7 @@ use std::{
     collections::BTreeMap,
     fs::{File, OpenOptions},
     os::{
-        fd::AsRawFd,
+        fd::AsFd,
         unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt},
     },
     path::PathBuf,
@@ -39,7 +39,6 @@ pub(crate) struct MountRequirement {
 pub(crate) struct ProtectionRequirement {
     pub(crate) path: AbsolutePath,
     pub(crate) recursive: bool,
-    pub(crate) read_only: bool,
     pub(crate) executable: bool,
 }
 
@@ -61,7 +60,7 @@ pub(crate) struct RuntimeAlias {
 /// This value owns all pinned path descriptors, the already-created Landlock
 /// ruleset, compiled seccomp programs, and namespace inputs. Dropping it before
 /// [`crate::apply`] leaves the process unrestricted.
-#[must_use]
+#[must_use = "a prepared sandbox must be applied or deliberately dropped before untrusted work"]
 pub struct PreparedLinuxSandbox {
     pub(crate) mount: MountPreparation,
     pub(crate) landlock: landlock::PreparedLandlock,
@@ -208,7 +207,6 @@ fn prepare_mounts(
             Ok(ProtectionRequirement {
                 path: protection.path.clone(),
                 recursive: protection.scope == PathScope::Subtree,
-                read_only: true,
                 executable: executable(&protection.path, &spec.executables),
             })
         })
@@ -249,7 +247,7 @@ fn reject_host_noexec(
     let source = pinned
         .get(path)
         .ok_or_else(|| preparation("executable mount lookup"))?;
-    if crate::ffi::mount_is_noexec(source.file.as_raw_fd())
+    if crate::ffi::mount_is_noexec(source.file.as_fd())
         .map_err(|_| preparation("host mount inspection"))?
     {
         return Err(unsupported("host noexec restriction"));
@@ -321,7 +319,7 @@ fn pin(path: &AbsolutePath) -> Result<PinnedPath, LinuxError> {
     let relative = path.as_str().strip_prefix('/').unwrap_or(path.as_str());
     let relative = if relative.is_empty() { "." } else { relative };
     let relative = crate::ffi::c_string(relative).map_err(|_| preparation("path pinning"))?;
-    let owned = crate::ffi::open_path_at(std::os::fd::AsRawFd::as_raw_fd(&root), &relative)
+    let owned = crate::ffi::open_path_at(root.as_fd(), &relative)
         .map_err(|_| preparation("path pinning"))?;
     let file = crate::ffi::file_from_owned(owned);
     let metadata = file
@@ -349,7 +347,7 @@ pub(crate) fn repin_after_namespace(preparation: &mut MountPreparation) -> Resul
         let relative = if relative.is_empty() { "." } else { relative };
         let relative =
             crate::ffi::c_string(relative).map_err(|_| enforcement("mount source repinning"))?;
-        let owned = crate::ffi::open_path_at(root.as_raw_fd(), &relative)
+        let owned = crate::ffi::open_path_at(root.as_fd(), &relative)
             .map_err(|_| enforcement("mount source repinning"))?;
         let file = crate::ffi::file_from_owned(owned);
         let metadata = file

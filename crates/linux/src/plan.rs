@@ -42,7 +42,7 @@ impl LinuxPolicyPlan {
 ///
 /// Unsupported combinations are rejected here whenever their incompatibility
 /// is independent of the ambient filesystem. File-type-dependent checks occur
-/// during [`crate::prepare`].
+/// during the target-specific `prepare` phase.
 pub fn plan(policy: &ValidatedPolicy) -> Result<LinuxPolicyPlan, LinuxError> {
     let spec = policy.spec();
 
