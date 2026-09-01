@@ -14,7 +14,7 @@ pub(crate) enum AppError {
     CommandNotFound(PathBuf),
     #[error("path does not exist: {0}")]
     MissingPath(PathBuf),
-    #[error("path cannot be represented safely in a Seatbelt profile: {0}")]
+    #[error("path cannot be represented safely in a native policy: {0}")]
     NonUtf8Path(PathBuf),
     #[error("refusing to sandbox the filesystem root or home directory")]
     UnsafeWorkingDirectory,
@@ -33,8 +33,13 @@ pub(crate) enum AppError {
     #[cfg(target_os = "macos")]
     #[error("macOS sandbox enforcement failed: {0}")]
     Seatbelt(#[from] sandy_seatbelt::SeatbeltError),
-    #[error("Sandy enforcement is currently supported only on macOS")]
+    #[cfg(target_os = "linux")]
+    #[error("Linux sandbox enforcement failed: {0}")]
+    Linux(#[from] sandy_linux::LinuxError),
+    #[error("Sandy enforcement is unsupported on this platform")]
     UnsupportedPlatform,
+    #[error("integration setup is currently supported only on macOS")]
+    UnsupportedIntegrationSetup,
     #[error("{service} runtime control failed: {message}")]
     RuntimeControl {
         service: &'static str,
@@ -98,8 +103,11 @@ impl AppError {
     #[must_use]
     pub(crate) fn exit_code(&self) -> i32 {
         match self {
-            Self::Seatbelt(_)
-            | Self::UnsupportedPlatform
+            #[cfg(target_os = "macos")]
+            Self::Seatbelt(_) => 126,
+            #[cfg(target_os = "linux")]
+            Self::Linux(_) => 126,
+            Self::UnsupportedPlatform
             | Self::Wire(_)
             | Self::Core(_)
             | Self::PolicyIntent(_)

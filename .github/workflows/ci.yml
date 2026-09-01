@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check:
     name: macOS ${{ matrix.macos }}
@@ -16,6 +20,7 @@ jobs:
       matrix:
         macos: [macos-15, macos-26]
     runs-on: ${{ matrix.macos }}
+    timeout-minutes: 20
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -29,6 +34,11 @@ jobs:
         run: cargo fmt --all --check
       - name: Lint
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Check documentation
+        if: matrix.macos == 'macos-15'
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps --lib --locked
       - name: Test workspace
         run: cargo test --workspace --locked
       - name: Install cargo-deny
@@ -40,37 +50,75 @@ jobs:
       - name: Test Seatbelt enforcement
         run: make test-live
 
-  linux-substrate:
-    name: Linux enforcement substrate (${{ matrix.runner }})
+  linux:
+    name: Linux (${{ matrix.runner }})
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+        include:
+          - runner: ubuntu-24.04
+            codex_target: x86_64-unknown-linux-musl
+            codex_sha256: 05f942d3d3c5b5acd9edad56ce2797b6fe72dbb1462b24e5c9bf7dcec9a28a11
+          - runner: ubuntu-24.04-arm
+            codex_target: aarch64-unknown-linux-musl
+            codex_sha256: 37da6b486503c8a42cc4604d2a3d80d388df896dd251e9225f4f3d49b08c2e8c
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
       - name: Install Rust toolchain
-        run: rustup toolchain install 1.91.1 --profile minimal --component clippy
-      - name: Lint Linux backend
-        run: cargo clippy -p sandy-linux --all-targets --all-features --locked -- -D warnings
+        run: rustup toolchain install 1.91.1 --profile minimal --component clippy,rustfmt
+      - name: Check release version metadata
+        run: make release-version-check
+      - name: Check formatting
+        run: cargo fmt --all --check
       - name: Verify restricted user namespaces fail closed
-        env:
-          SANDY_LINUX_EXPECT_UNSUPPORTED: "1"
         run: |
-          if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = "1" ]; then
-            cargo test -p sandy-linux --test live_linux --features live-tests --locked
+          if test "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true)" = "1"; then
+            SANDY_LINUX_EXPECT_UNSUPPORTED=1 cargo test -p sandy-linux --test live_linux --features live-tests --locked
           fi
       - name: Enable user namespaces for positive enforcement tests
         run: |
-          if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+          if sysctl -n kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
-      - name: Test Linux backend
+      - name: Lint workspace
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Check documentation
+        if: matrix.runner == 'ubuntu-24.04'
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps --lib --locked
+      - name: Test workspace
+        run: cargo test --workspace --locked
+      - name: Install pinned Codex fixture
+        env:
+          CODEX_VERSION: 0.152.0
+          CODEX_TARGET: ${{ matrix.codex_target }}
+          CODEX_SHA256: ${{ matrix.codex_sha256 }}
+        run: |
+          fixture_dir="$RUNNER_TEMP/sandy-real-codex"
+          archive_dir="$(mktemp -d)"
+          trap 'rm -rf "$archive_dir"' EXIT
+          mkdir -p "$fixture_dir"
+
+          codex_archive="$archive_dir/codex.tar.gz"
+          curl --proto '=https' --tlsv1.2 --fail --location --retry 3 \
+            --output "$codex_archive" \
+            "https://github.com/openai/codex/releases/download/rust-v${CODEX_VERSION}/codex-${CODEX_TARGET}.tar.gz"
+          test "$(sha256sum "$codex_archive" | awk '{print $1}')" = "$CODEX_SHA256"
+          tar -C "$archive_dir" -xzf "$codex_archive"
+          install -m 0755 "$archive_dir/codex-${CODEX_TARGET}" "$fixture_dir/codex"
+      - name: Test Linux enforcement
+        env:
+          SANDY_REQUIRE_NODE: "1"
+          SANDY_REQUIRE_REAL_CODEX: "1"
+          SANDY_REAL_CODEX: ${{ runner.temp }}/sandy-real-codex/codex
         run: make test-live-linux
-      - name: Preserve unsupported facade contract
+      - name: Test packaged facade consumer
         run: |
           cargo check -p sandy-sandbox --all-targets --all-features --locked
           cargo run --manifest-path tests/package-consumer/Cargo.toml --locked

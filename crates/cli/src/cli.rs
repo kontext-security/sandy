@@ -6,7 +6,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 #[command(
     name = "sandy",
     version,
-    about = "Native macOS sandboxing for AI coding agents"
+    about = "Native process sandboxing for AI coding agents"
 )]
 pub(crate) struct Cli {
     #[command(subcommand)]
@@ -15,7 +15,7 @@ pub(crate) struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
-    /// Run a command inside a macOS sandbox.
+    /// Run a command inside a native process sandbox.
     Run(RunArgs),
     /// Check whether Sandy can enforce a sandbox on this machine.
     Doctor(DoctorArgs),
@@ -90,7 +90,7 @@ pub(crate) struct RunArgs {
     #[arg(long, value_name = "PATH")]
     pub(crate) read: Vec<PathBuf>,
 
-    /// Grant read/write access to an existing path.
+    /// Grant read/write access to an existing path. Linux requires a directory.
     #[arg(long = "read-write", value_name = "PATH")]
     pub(crate) read_write: Vec<PathBuf>,
 
@@ -100,8 +100,8 @@ pub(crate) struct RunArgs {
     #[arg(long, value_name = "PATH")]
     pub(crate) execute: Vec<PathBuf>,
 
-    /// Block IP networking and ungranted Unix-socket connections. An active
-    /// Kontext integration retains its exact verified socket connection.
+    /// Block IP networking and ungranted Unix-socket connections. On macOS, an
+    /// active Kontext integration retains its exact verified socket connection.
     #[arg(long)]
     pub(crate) block_net: bool,
 
@@ -109,16 +109,17 @@ pub(crate) struct RunArgs {
     #[arg(long)]
     pub(crate) dry_run: bool,
 
-    /// Require an existing healthy Kontext installation.
+    /// Require an existing healthy Kontext installation. macOS only.
     #[arg(long)]
     pub(crate) kontext: bool,
 
-    /// Require an existing supported Numbat hook installation.
+    /// Require an existing supported Numbat hook installation. macOS only.
     #[arg(long)]
     pub(crate) numbat: bool,
 
     /// With --block-net, allow one IPv4 TCP port on this Mac for an
-    /// operator-started Numbat OTLP/HTTP collector. PORT defaults to 4318.
+    /// operator-started Numbat OTLP/HTTP collector. Unsupported on Linux.
+    /// PORT defaults to 4318.
     #[arg(
         long,
         value_name = "PORT",
@@ -135,11 +136,11 @@ pub(crate) struct RunArgs {
 
 #[derive(Debug, Args)]
 pub(crate) struct DoctorArgs {
-    /// Also require and validate an existing Kontext installation.
+    /// Also require and validate an existing Kontext installation. macOS only.
     #[arg(long)]
     pub(crate) kontext: bool,
 
-    /// Also require and validate an existing Numbat hook installation.
+    /// Also require and validate an existing Numbat hook installation. macOS only.
     #[arg(long)]
     pub(crate) numbat: bool,
 }

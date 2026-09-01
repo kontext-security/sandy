@@ -1,8 +1,73 @@
-# Rust sandbox primitive implementation plan
+# Implementation plan
 
-This plan introduces an embeddable current-process sandbox while preserving the
-existing `sandy` command. The work is intentionally split into four reviewable
-pull requests.
+The original four-PR Rust facade plan below is complete. Linux support is the
+current three-PR stack and preserves the same public policy surface.
+
+## Linux stack
+
+```text
+                         sandy-core
+                    validated semantics
+                      /           \
+             sandy-seatbelt     sandy-linux
+                  macOS            Linux
+                      \           /
+                   sandy-sandbox facade
+
+                       sandy-cli
+                           |
+                  selected native backend
+```
+
+### PR 1 — Linux enforcement substrate
+
+Add `sandy-linux` as a separately reviewable security boundary:
+
+```text
+ValidatedPolicy
+      |
+      v
+LinuxPolicyPlan       pure and deterministic
+      |
+      v
+PreparedLinuxSandbox  pins paths and prepares rules
+      |
+      v
+apply()               irreversible native transition
+```
+
+The backend uses private user, mount, and IPC namespaces, an optional network
+namespace for `BlockAll`, a descriptor-built private root, complete capability
+removal, and final seccomp filters. The fixed security baseline requires
+Linux 6.12 or a vendor kernel carrying Landlock ABI 6 and always scopes signals
+to the sandbox domain. The backend isolates System V IPC, replaces the inherited
+session keyring, and denies key-management syscalls. Exact external Unix-socket
+grants remain unsupported. Namespace support is exercised in a sacrificial
+child before enforcement. Unsupported host facilities and policy shapes fail
+without a weaker fallback.
+
+### PR 2 — Current-process Linux facade
+
+Dispatch `sandy::apply()` to the Linux backend without changing the public
+surface or adding an executable dependency. The facade still adds no runtime
+paths, profiles, environment changes, or helper process. Sacrificial tests
+cover policy application, inheritance, network denial, and fail-closed cases.
+
+### PR 3 — Linux CLI and distribution
+
+Wire the existing same-executable bootstrap to `sandy-linux`. Add the explicit
+Linux runtime baseline, backend-neutral dry-run and doctor output, full Linux
+workspace and live CI, and native GNU/Linux archives for x86-64 and arm64.
+Publish packages in dependency order:
+
+```text
+sandy-core -> sandy-seatbelt -> sandy-linux -> sandy-sandbox
+```
+
+Homebrew remains macOS-only. The Linux release contract and unsupported policy
+shapes are documented in `LINUX_SECURITY_MODEL.md`.
+
+## Completed Rust facade plan
 
 ## Product boundary
 
@@ -11,7 +76,7 @@ pull requests.
 - `apply` irreversibly restricts the calling process. The consumer owns its
   process and worker architecture.
 - The CLI remains the safe launcher for unmodified commands. It owns bootstrap,
-  supervision, environment filtering, profiles, and its typed macOS runtime
+  supervision, environment filtering, profiles, and its typed runtime
   baseline.
 - Both entry points lower the same `SandboxPolicy` intent through validation and
   the native backend. The renderer never adds hidden filesystem or network
@@ -61,7 +126,7 @@ Review gates:
 - grants and terminal denies have positive and adjacent-negative tests;
 - descendants inherit restrictions in a sacrificial process test;
 - errors do not disclose caller paths or backend policy contents;
-- non-macOS targets compile and report unsupported enforcement.
+- unsupported targets compile and report unsupported enforcement.
 
 ## PR 3: package and release safely
 
@@ -75,8 +140,8 @@ Review gates:
 
 - packaged sources build without workspace-only files;
 - the documented dependency alias imports as `sandy`;
-- registry publication order is `sandy-core`, `sandy-seatbelt`, then
-  `sandy-sandbox`;
+- registry publication order follows backend dependencies and publishes the
+  supported `sandy-sandbox` facade last;
 - release tags and workspace versions remain coordinated;
 - the existing CLI archive and package-manager update remain unchanged after
   crate publication succeeds.

@@ -1,4 +1,7 @@
-use std::{fs, os::unix::fs::PermissionsExt as _, sync::mpsc, thread, time::Duration};
+use std::{fs, sync::mpsc, thread, time::Duration};
+
+#[cfg(target_os = "macos")]
+use std::os::unix::fs::PermissionsExt as _;
 
 use assert_cmd::Command;
 use predicates::prelude::*;
@@ -26,11 +29,35 @@ fn run_help_documents_explicit_user_profile_files() -> Result<(), Box<dyn std::e
         .success()
         .stdout(predicate::str::contains("--profile-file <PATH>"))
         .stdout(predicate::str::contains("--execute <PATH>"))
-        .stdout(predicate::str::contains("built-in profile"));
+        .stdout(predicate::str::contains("built-in profile"))
+        .stdout(predicate::str::contains("macOS only"));
     Ok(())
 }
 
 #[test]
+#[cfg(target_os = "linux")]
+fn linux_rejects_explicit_runtime_control_flags_before_launch()
+-> Result<(), Box<dyn std::error::Error>> {
+    for arguments in [
+        &["run", "--kontext", "--", "/bin/echo"][..],
+        &["run", "--numbat", "--", "/bin/echo"][..],
+        &["doctor", "--kontext"][..],
+        &["doctor", "--numbat"][..],
+    ] {
+        let mut command = Command::cargo_bin("sandy")?;
+        command
+            .args(arguments)
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains(
+                "runtime-control integrations are not supported by the Linux CLI",
+            ));
+    }
+    Ok(())
+}
+
+#[test]
+#[cfg(target_os = "macos")]
 fn integration_setup_does_not_mutate_an_active_numbat_installation()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
@@ -69,6 +96,7 @@ fn integration_setup_does_not_mutate_an_active_numbat_installation()
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn integration_setup_configures_an_existing_numbat_binary() -> Result<(), Box<dyn std::error::Error>>
 {
     let directory = tempfile::tempdir()?;
@@ -116,14 +144,36 @@ fn integration_setup_configures_an_existing_numbat_binary() -> Result<(), Box<dy
 }
 
 #[test]
-fn dry_run_does_not_require_kontext() -> Result<(), Box<dyn std::error::Error>> {
+#[cfg(target_os = "linux")]
+fn integration_setup_is_explicitly_unsupported_on_linux() -> Result<(), Box<dyn std::error::Error>>
+{
     let mut command = Command::cargo_bin("sandy")?;
     command
+        .args(["integrations", "setup", "numbat", "--agent", "codex"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "integration setup is currently supported only on macOS",
+        ));
+    Ok(())
+}
+
+#[test]
+fn dry_run_does_not_require_optional_runtime_controls() -> Result<(), Box<dyn std::error::Error>> {
+    let expected_command = fs::canonicalize("/bin/echo")?;
+    let expected_command = expected_command
+        .to_str()
+        .ok_or("canonical command path must be UTF-8")?;
+    let mut command = Command::cargo_bin("sandy")?;
+    let assertion = command
         .args(["run", "--dry-run", "--", "/bin/echo", "hello"])
         .assert()
-        .success()
-        .stdout(predicate::str::contains(r#""enabled": false"#))
-        .stdout(predicate::str::contains(r#""command": "/bin/echo""#));
+        .success();
+    #[cfg(target_os = "macos")]
+    let assertion = assertion.stdout(predicate::str::contains(r#""enabled": false"#));
+    assertion.stdout(predicate::str::contains(format!(
+        r#""command": "{expected_command}""#
+    )));
     Ok(())
 }
 
@@ -137,7 +187,7 @@ fn dry_run_json_has_a_versioned_runtime_control_schema() -> Result<(), Box<dyn s
     assert!(output.status.success());
 
     let document: serde_json::Value = serde_json::from_slice(&output.stdout)?;
-    assert_eq!(document["dry_run_schema_version"], 5);
+    assert_eq!(document["dry_run_schema_version"], 6);
     assert!(document.get("schema_version").is_none());
 
     let keys = document
@@ -161,7 +211,7 @@ fn dry_run_json_has_a_versioned_runtime_control_schema() -> Result<(), Box<dyn s
             "profile",
             "runtime_controls",
             "runtime_compatibility",
-            "seatbelt_profile",
+            "native_policy",
             "unix_socket_grants",
             "working_directory",
         ])
@@ -170,37 +220,61 @@ fn dry_run_json_has_a_versioned_runtime_control_schema() -> Result<(), Box<dyn s
     let controls = document["runtime_controls"]
         .as_array()
         .ok_or("runtime_controls must be an array")?;
-    assert_eq!(controls.len(), 2);
-    for control in controls {
-        let control_keys = control
-            .as_object()
-            .ok_or("runtime control must be a JSON object")?
-            .keys()
-            .map(String::as_str)
-            .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(
-            control_keys,
-            std::collections::BTreeSet::from(["enabled", "service", "version"])
-        );
-        assert_eq!(control["enabled"], false);
-        assert!(control["version"].is_null());
+    #[cfg(target_os = "macos")]
+    {
+        assert_eq!(controls.len(), 2);
+        for control in controls {
+            let control_keys = control
+                .as_object()
+                .ok_or("runtime control must be a JSON object")?
+                .keys()
+                .map(String::as_str)
+                .collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(
+                control_keys,
+                std::collections::BTreeSet::from(["enabled", "service", "version"])
+            );
+            assert_eq!(control["enabled"], false);
+            assert!(control["version"].is_null());
+        }
+        assert_eq!(controls[0]["service"], "Kontext");
+        assert_eq!(controls[1]["service"], "Numbat");
     }
-    assert_eq!(controls[0]["service"], "Kontext");
-    assert_eq!(controls[1]["service"], "Numbat");
+    #[cfg(target_os = "linux")]
+    assert!(controls.is_empty());
 
     let grants = document["file_grants"]
         .as_array()
         .ok_or("file_grants must be an array")?;
+    #[cfg(target_os = "macos")]
     assert!(grants.iter().any(|grant| {
         grant["path"] == "/" && grant["access"] == "read" && grant["scope"] == "exact"
     }));
+    let runtime_bin = fs::canonicalize("/bin")?;
+    let runtime_bin = runtime_bin
+        .to_str()
+        .ok_or("canonical runtime path must be UTF-8")?;
     assert!(grants.iter().any(|grant| {
-        grant["path"] == "/bin" && grant["access"] == "read" && grant["scope"] == "subtree"
+        grant["path"] == runtime_bin && grant["access"] == "read" && grant["scope"] == "subtree"
     }));
-    assert!(grants.iter().any(|grant| {
-        grant["path"] == "/dev/null" && grant["access"] == "read_write" && grant["scope"] == "exact"
-    }));
-    assert_eq!(document["file_metadata"], "allow");
+    #[cfg(target_os = "macos")]
+    {
+        assert!(grants.iter().any(|grant| {
+            grant["path"] == "/dev/null"
+                && grant["access"] == "read_write"
+                && grant["scope"] == "exact"
+        }));
+        assert_eq!(document["file_metadata"], "allow");
+    }
+    #[cfg(target_os = "linux")]
+    {
+        assert!(grants.iter().any(|grant| {
+            grant["path"] == "/dev/null"
+                && grant["access"] == "read_write"
+                && grant["scope"] == "exact"
+        }));
+        assert_eq!(document["file_metadata"], "deny");
+    }
     assert_eq!(document["allow_subprocesses"], true);
     assert_eq!(document["runtime_compatibility"], "foreground_cli");
     assert!(
@@ -221,12 +295,22 @@ fn dry_run_json_has_a_versioned_runtime_control_schema() -> Result<(), Box<dyn s
         }));
         assert!(!executables.iter().any(|grant| grant["path"] == ca_bundle));
     }
-    assert!(
-        document["seatbelt_profile"]
-            .as_str()
-            .ok_or("seatbelt_profile must be a string")?
-            .contains("file-read-metadata")
-    );
+    #[cfg(target_os = "macos")]
+    {
+        assert_eq!(document["native_policy"]["backend"], "seatbelt");
+        assert!(
+            document["native_policy"]["details"]
+                .as_str()
+                .ok_or("native policy details must be a string")?
+                .contains("file-read-metadata")
+        );
+    }
+    #[cfg(target_os = "linux")]
+    {
+        assert_eq!(document["native_policy"]["backend"], "linux");
+        assert_eq!(document["native_policy"]["landlock_abi"], 6);
+        assert!(document["native_policy"].get("details").is_none());
+    }
     Ok(())
 }
 
@@ -237,27 +321,40 @@ fn cli_file_and_executable_grants_are_independent() -> Result<(), Box<dyn std::e
     let readable = directory.path().join("readable");
     let writable = directory.path().join("writable");
     let executable = directory.path().join("executable");
+    let readable_file = directory.path().join("readable.txt");
+    #[cfg(target_os = "macos")]
+    let writable_file = directory.path().join("writable.txt");
+    let executable_file = directory.path().join("executable-file");
     fs::create_dir(&home)?;
     fs::create_dir(&readable)?;
     fs::create_dir(&writable)?;
     fs::create_dir(&executable)?;
+    fs::write(&readable_file, "readable")?;
+    #[cfg(target_os = "macos")]
+    fs::write(&writable_file, "writable")?;
+    fs::write(&executable_file, "executable")?;
 
     let mut command = Command::cargo_bin("sandy")?;
-    let output = command
-        .env("HOME", home)
-        .args([
-            "run",
-            "--dry-run",
-            "--read",
-            readable.to_str().ok_or("test path must be UTF-8")?,
-            "--read-write",
-            writable.to_str().ok_or("test path must be UTF-8")?,
-            "--execute",
-            executable.to_str().ok_or("test path must be UTF-8")?,
-            "--",
-            "/bin/echo",
-        ])
-        .output()?;
+    command.env("HOME", home).args([
+        "run",
+        "--dry-run",
+        "--read",
+        readable.to_str().ok_or("test path must be UTF-8")?,
+        "--read-write",
+        writable.to_str().ok_or("test path must be UTF-8")?,
+        "--execute",
+        executable.to_str().ok_or("test path must be UTF-8")?,
+        "--read",
+        readable_file.to_str().ok_or("test path must be UTF-8")?,
+        "--execute",
+        executable_file.to_str().ok_or("test path must be UTF-8")?,
+    ]);
+    #[cfg(target_os = "macos")]
+    command.args([
+        "--read-write",
+        writable_file.to_str().ok_or("test path must be UTF-8")?,
+    ]);
+    let output = command.args(["--", "/bin/echo"]).output()?;
     assert!(output.status.success());
 
     let document: serde_json::Value = serde_json::from_slice(&output.stdout)?;
@@ -287,6 +384,119 @@ fn cli_file_and_executable_grants_are_independent() -> Result<(), Box<dyn std::e
             .any(|grant| { grant["path"] == executable && grant["scope"] == "subtree" })
     );
     assert!(!files.iter().any(|grant| grant["path"] == executable));
+    let readable_file = fs::canonicalize(readable_file)?;
+    let readable_file = readable_file
+        .to_str()
+        .ok_or("canonical test path must be UTF-8")?;
+    assert!(files.iter().any(|grant| {
+        grant["path"] == readable_file && grant["access"] == "read" && grant["scope"] == "exact"
+    }));
+    assert!(
+        !executables
+            .iter()
+            .any(|grant| grant["path"] == readable_file)
+    );
+    #[cfg(target_os = "macos")]
+    {
+        let writable_file = fs::canonicalize(writable_file)?;
+        let writable_file = writable_file
+            .to_str()
+            .ok_or("canonical test path must be UTF-8")?;
+        assert!(files.iter().any(|grant| {
+            grant["path"] == writable_file
+                && grant["access"] == "read_write"
+                && grant["scope"] == "exact"
+        }));
+        assert!(
+            !executables
+                .iter()
+                .any(|grant| grant["path"] == writable_file)
+        );
+    }
+    let executable_file = fs::canonicalize(executable_file)?;
+    let executable_file = executable_file
+        .to_str()
+        .ok_or("canonical test path must be UTF-8")?;
+    assert!(
+        executables
+            .iter()
+            .any(|grant| { grant["path"] == executable_file && grant["scope"] == "exact" })
+    );
+    assert!(!files.iter().any(|grant| grant["path"] == executable_file));
+    Ok(())
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn linux_rejects_read_write_regular_files_before_launch() -> Result<(), Box<dyn std::error::Error>>
+{
+    let directory = tempfile::tempdir()?;
+    let home = directory.path().join("home");
+    let project = directory.path().join("project");
+    let writable_file = directory.path().join("one-file");
+    let marker = directory.path().join("target-ran");
+    fs::create_dir(&home)?;
+    fs::create_dir(&project)?;
+    fs::write(&writable_file, "unchanged")?;
+
+    let mut command = Command::cargo_bin("sandy")?;
+    command
+        .env("HOME", &home)
+        .env("SANDY_TEST_MARKER", &marker)
+        .current_dir(&project)
+        .args(["run", "--profile", "generic", "--read-write"])
+        .arg(&writable_file)
+        .args([
+            "--",
+            "/bin/sh",
+            "-c",
+            "printf ran > \"$SANDY_TEST_MARKER\"",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--read-write on Linux requires an existing directory; grant the containing directory instead",
+        ));
+    assert!(!marker.exists());
+    assert_eq!(fs::read_to_string(writable_file)?, "unchanged");
+    Ok(())
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn linux_rejects_missing_codex_protected_files_before_launch()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let home = directory.path().join("home");
+    let project = directory.path().join("project");
+    let marker = directory.path().join("target-ran");
+    fs::create_dir(&home)?;
+    fs::create_dir(&project)?;
+    fs::create_dir(home.join(".codex"))?;
+
+    let mut command = Command::cargo_bin("sandy")?;
+    command
+        .env("HOME", &home)
+        .env("SANDY_TEST_MARKER", &marker)
+        .current_dir(&project)
+        .args([
+            "run",
+            "--profile",
+            "codex",
+            "--",
+            "/bin/sh",
+            "-c",
+            "printf ran > \"$SANDY_TEST_MARKER\"",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "Linux profile \"codex\" requires its write-protected files to exist before launch",
+        ));
+
+    assert!(!home.join(".codex/config.toml").exists());
+    assert!(!home.join(".codex/hooks.json").exists());
+    assert!(!marker.exists());
     Ok(())
 }
 
@@ -305,6 +515,7 @@ fn blocked_network_dry_run_has_no_implicit_socket_authority()
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn numbat_collector_grants_only_the_selected_local_host_port()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut default_port = Command::cargo_bin("sandy")?;
@@ -366,6 +577,28 @@ fn numbat_collector_grants_only_the_selected_local_host_port()
             "the following required arguments were not provided",
         ))
         .stderr(predicate::str::contains("--block-net"));
+    Ok(())
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn linux_rejects_local_host_tcp_exceptions_before_launch() -> Result<(), Box<dyn std::error::Error>>
+{
+    let mut command = Command::cargo_bin("sandy")?;
+    command
+        .args([
+            "run",
+            "--dry-run",
+            "--block-net",
+            "--numbat-collector",
+            "--",
+            "/bin/echo",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "local-host TCP exceptions are not supported by the Linux backend",
+        ));
     Ok(())
 }
 
@@ -497,7 +730,7 @@ fn user_profile_composes_with_one_embedded_base_and_reports_safe_source()
     assert!(output.status.success());
     let document: serde_json::Value = serde_json::from_slice(&output.stdout)?;
 
-    assert_eq!(document["dry_run_schema_version"], 5);
+    assert_eq!(document["dry_run_schema_version"], 6);
     assert_eq!(document["profile"]["name"], "team-session");
     assert_eq!(document["profile"]["source"], "user_file");
     assert_eq!(document["profile"]["base"], "generic");
@@ -533,12 +766,17 @@ fn user_profile_composes_with_one_embedded_base_and_reports_safe_source()
             .any(|grant| { grant["path"] == executable.to_string_lossy().as_ref() })
     );
 
-    let rendered = document["seatbelt_profile"]
-        .as_str()
-        .ok_or("seatbelt_profile must be a string")?;
-    for denied in [&profile, &protected, &immutable] {
-        assert!(rendered.contains(denied.to_string_lossy().as_ref()));
+    #[cfg(target_os = "macos")]
+    {
+        let rendered = document["native_policy"]["details"]
+            .as_str()
+            .ok_or("native policy details must be a string")?;
+        for denied in [&profile, &protected, &immutable] {
+            assert!(rendered.contains(denied.to_string_lossy().as_ref()));
+        }
     }
+    #[cfg(target_os = "linux")]
+    assert_eq!(document["native_policy"]["backend"], "linux");
     Ok(())
 }
 
@@ -684,7 +922,7 @@ fn user_protected_target_error_is_positioned_and_redacted() -> Result<(), Box<dy
 }
 
 #[test]
-fn embedded_profile_dry_run_reports_version_five_source_metadata()
+fn embedded_profile_dry_run_reports_version_six_source_metadata()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut command = Command::cargo_bin("sandy")?;
     let output = command
@@ -692,7 +930,7 @@ fn embedded_profile_dry_run_reports_version_five_source_metadata()
         .output()?;
     assert!(output.status.success());
     let document: serde_json::Value = serde_json::from_slice(&output.stdout)?;
-    assert_eq!(document["dry_run_schema_version"], 5);
+    assert_eq!(document["dry_run_schema_version"], 6);
     assert_eq!(document["profile"]["source"], "embedded");
     assert!(document["profile"]["base"].is_null());
     assert_eq!(sandy_core::MANIFEST_SCHEMA_V2, 2);
@@ -1055,12 +1293,14 @@ fn user_profile_rejects_unknown_abstract_and_colliding_embedded_names()
 fn user_profiles_are_never_discovered_implicitly() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let home = directory.path().join("home");
+    let project = directory.path().join("project");
     fs::create_dir(&home)?;
-    fs::write(directory.path().join("sandy-profile.json"), "not JSON")?;
+    fs::create_dir(&project)?;
+    fs::write(project.join("sandy-profile.json"), "not JSON")?;
 
     let mut command = Command::cargo_bin("sandy")?;
     command
-        .current_dir(directory.path())
+        .current_dir(project)
         .env("HOME", home)
         .args(["run", "--dry-run", "--", "/bin/echo"])
         .assert()
@@ -1126,6 +1366,7 @@ fn inheritance_only_profile_cannot_be_selected() -> Result<(), Box<dyn std::erro
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn detected_agent_profile_is_announced() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let home = directory.path().join("home");
@@ -1147,6 +1388,7 @@ fn detected_agent_profile_is_announced() -> Result<(), Box<dyn std::error::Error
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn detected_kontext_failure_does_not_make_codex_depend_on_kontext()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
@@ -1194,6 +1436,7 @@ fn detected_kontext_failure_does_not_make_codex_depend_on_kontext()
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn malformed_detected_hook_configuration_still_fails_closed()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
@@ -1215,6 +1458,7 @@ fn malformed_detected_hook_configuration_still_fails_closed()
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn required_numbat_hooks_must_be_installed() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let home = directory.path().join("home");
@@ -1241,6 +1485,7 @@ fn required_numbat_hooks_must_be_installed() -> Result<(), Box<dyn std::error::E
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn configured_numbat_hooks_contribute_only_when_present() -> Result<(), Box<dyn std::error::Error>>
 {
     let directory = tempfile::tempdir()?;
@@ -1283,6 +1528,7 @@ fn configured_numbat_hooks_contribute_only_when_present() -> Result<(), Box<dyn 
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn unsupported_numbat_delivery_is_optional_unless_required()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;

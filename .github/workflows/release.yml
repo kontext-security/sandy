@@ -86,9 +86,19 @@ jobs:
           - runner: macos-26
             target: aarch64-apple-darwin
             archive_arch: arm64
+            asset_os: darwin
           - runner: macos-26-intel
             target: x86_64-apple-darwin
             archive_arch: amd64
+            asset_os: darwin
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            archive_arch: arm64
+            asset_os: linux
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            archive_arch: amd64
+            asset_os: linux
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: write
@@ -111,26 +121,75 @@ jobs:
           TAG_NAME: ${{ inputs.tag_name }}
           TARGET: ${{ matrix.target }}
           ARCH: ${{ matrix.archive_arch }}
+          ASSET_OS: ${{ matrix.asset_os }}
         run: |
           version="${TAG_NAME#v}"
-          asset="sandy_${version}_darwin_${ARCH}"
+          asset="sandy_${version}_${ASSET_OS}_${ARCH}"
           mkdir -p "dist/${asset}"
           install -m 0755 "target/${TARGET}/release/sandy" "dist/${asset}/sandy"
           cp LICENSE README.md "dist/${asset}/"
           COPYFILE_DISABLE=1 tar -C "dist/${asset}" -czf "dist/${asset}.tar.gz" sandy LICENSE README.md
-          shasum -a 256 "dist/${asset}.tar.gz" | awk '{print $1}' > "dist/${asset}.tar.gz.sha256"
+          if command -v shasum >/dev/null 2>&1; then
+            digest="$(shasum -a 256 "dist/${asset}.tar.gz" | awk '{print $1}')"
+          else
+            digest="$(sha256sum "dist/${asset}.tar.gz" | awk '{print $1}')"
+          fi
+          printf '%s\n' "$digest" > "dist/${asset}.tar.gz.sha256"
       - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ inputs.tag_name }}
+          ARCH: ${{ matrix.archive_arch }}
+          ASSET_OS: ${{ matrix.asset_os }}
+        run: |
+          version="${TAG_NAME#v}"
+          asset="sandy_${version}_${ASSET_OS}_${ARCH}.tar.gz"
+          gh release upload "$TAG_NAME" "dist/$asset" "dist/${asset}.sha256" --repo "$GITHUB_REPOSITORY" --clobber
+
+  verify-linux:
+    needs: [prepare, build]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            archive_arch: amd64
+          - runner: ubuntu-24.04-arm
+            archive_arch: arm64
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    steps:
+      - name: Download the packaged Linux artifact
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ inputs.tag_name }}
           ARCH: ${{ matrix.archive_arch }}
         run: |
           version="${TAG_NAME#v}"
-          asset="sandy_${version}_darwin_${ARCH}.tar.gz"
-          gh release upload "$TAG_NAME" "dist/$asset" "dist/${asset}.sha256" --repo "$GITHUB_REPOSITORY" --clobber
+          asset="sandy_${version}_linux_${ARCH}.tar.gz"
+          mkdir -p dist/unpacked
+          gh release download "$TAG_NAME" --repo "$GITHUB_REPOSITORY" --pattern "$asset" --dir dist
+          gh release download "$TAG_NAME" --repo "$GITHUB_REPOSITORY" --pattern "${asset}.sha256" --dir dist
+          expected="$(tr -d '[:space:]' < "dist/${asset}.sha256")"
+          actual="$(sha256sum "dist/$asset" | awk '{print $1}')"
+          test "$actual" = "$expected"
+          tar -C dist/unpacked -xzf "dist/$asset"
+      - name: Verify the packaged binary on the supported host
+        run: |
+          if sysctl -n kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          sandy="$(pwd)/dist/unpacked/sandy"
+          "$sandy" doctor
+          workspace="$(mktemp -d)"
+          trap 'rm -rf "$workspace"' EXIT
+          cd "$workspace"
+          "$sandy" run --profile generic -- /bin/sh -c 'printf verified > release-smoke.txt'
+          test "$(cat release-smoke.txt)" = verified
 
   publish-crates:
-    needs: [prepare, build]
+    needs: [prepare, build, verify-linux]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

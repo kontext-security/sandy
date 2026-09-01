@@ -117,7 +117,7 @@ enum SetupOutcome {
 
 pub(crate) fn run(arguments: IntegrationsArgs) -> Result<i32, AppError> {
     if !cfg!(target_os = "macos") {
-        return Err(AppError::UnsupportedPlatform);
+        return Err(AppError::UnsupportedIntegrationSetup);
     }
 
     let IntegrationCommand::Setup(arguments) = arguments.command;

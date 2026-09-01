@@ -44,7 +44,8 @@ sensitive resources, or starting untrusted work. Sandy has native macOS and
 Linux backends; unsupported hosts and policy combinations return
 `ErrorKind::Unsupported` rather than falling back to weaker enforcement. The
 Linux backend requires Linux 6.12 or a vendor kernel carrying Landlock ABI 6,
-plus user, mount, and IPC namespaces. The current working directory must be
+plus user, mount, and IPC namespaces, the modern mount API, and host security
+policy that permits namespace setup. The current working directory must be
 covered by an explicit filesystem grant. Linux also replaces the inherited
 session keyring with an anonymous ring and denies key-management syscalls;
 descendant System V IPC remains available inside the private IPC namespace.

@@ -19,12 +19,17 @@ Sandy is a native process sandbox for AI coding agents.
 Sandy is a process sandbox, not a container or VM. Describe its guarantees
 narrowly.
 
-The version `0.1.x` CLI is limited to macOS, one foreground `run` mode, Claude Code,
-Codex, OpenCode, and generic profiles, explicit filesystem and executable
-grants, network allow/block with exact runtime Unix-socket and IPv4 local-host TCP exceptions,
-dry-run output, and optional self-serve Kontext and host-installed Numbat hook
-compatibility. It also includes an explicit foreground integration setup
-command for Kontext and Numbat. Setup is not part of sandbox launch.
+The version `0.1.x` CLI supports macOS and one foreground `run` mode. Starting
+with `0.2.x`, the CLI also supports Linux. macOS supports Claude Code, Codex,
+OpenCode, and generic profiles. Linux `0.2.x` supports pinned native Codex on
+x86-64 and arm64 plus the generic profile; CI executes a deterministic
+provider-backed agent turn and command tool inside the sandbox. Native Claude
+Code and OpenCode are outside its initial compatibility contract. Both
+platforms support explicit filesystem and executable grants, network
+allow/block, and dry-run output when the complete resolved policy is
+representable by the native backend. Exact local-host TCP exceptions,
+runtime-control discovery, and
+integration setup remain macOS-only. Setup is not part of sandbox launch.
 
 The `sandy-sandbox` package provides the supported `sandy` Rust library. It is
 a caller-policy-only, current-process primitive with no executable dependency.
@@ -98,7 +103,7 @@ versioned JSON parser. Both paths converge before the owning product boundary
 resolves paths and validates the policy.
 
 The enforcement backend adds no implicit filesystem or network capabilities.
-The CLI owns an explicit typed macOS runtime baseline and composes it through
+The CLI owns explicit typed platform runtime baselines and composes them through
 the same policy model as profiles and command-line grants. Profiles, CLI
 options, runtime resources, and optional integrations must all contribute
 typed capabilities before the trusted parent finishes `ValidatedPolicy`.
@@ -111,8 +116,9 @@ private session directory, and spawns the same executable in a hidden bootstrap
 mode through `std::process::Command`.
 
 The fresh bootstrap validates and removes a bounded, versioned manifest,
-applies Seatbelt, and replaces itself with the target only after the sandbox
-succeeds. Failures are reported on standard error without executing the target.
+applies the selected native backend, and replaces itself with the target only
+after the sandbox succeeds. Failures are reported on standard error without
+executing the target.
 
 Do not use Rust `pre_exec` callbacks or run general Rust code in a
 fork-after-threads child. The hidden bootstrap must not appear in normal CLI
@@ -135,8 +141,8 @@ same-user local services even when IP networking is blocked.
 
 These rules are release-blocking:
 
-- The target never runs when resolution, validation, probing, rendering, or
-  Seatbelt application fails.
+- The target never runs when resolution, validation, probing, rendering,
+  preparation, or native application fails.
 - Unsupported and incompatible nested-sandbox environments fail closed.
 - Sandy never falls back to unrestricted execution.
 - Restrictions are inherited by every target descendant.
@@ -150,7 +156,8 @@ These rules are release-blocking:
   compatibility baselines must be explicit typed policy input.
 - File reads never imply executable mapping. Executable paths and subprocess
   compatibility are separate typed capabilities.
-- One centralized renderer validates and escapes every value used in policy.
+- Each native compiler validates every value used at its boundary; raw native
+  policy is never accepted from a caller.
 - Paths are absolute, canonicalized, bounded, and compared as `Path`
   components rather than string prefixes.
 - Canonicalization does not remove time-of-check/time-of-use risk; symlink and
@@ -238,7 +245,7 @@ Bound every bootstrap manifest and error frame. Reject unknown protocol
 versions. Protocol changes require a version decision and malformed-input
 tests.
 
-Canonicalize existing grants, handle macOS aliases deliberately, and reject
+Canonicalize existing grants, handle platform aliases deliberately, and reject
 nonexistent grants in `v0.1.x`.
 
 The public interface is:
@@ -254,9 +261,10 @@ Both the absolute lexical source path and canonical target receive terminal
 subtree denials; these pathname rules do not eliminate replacement races or
 cover hard-link aliases.
 
-`--read` and `--read-write` add only filesystem authority. `--execute` adds
-only executable mapping and launch authority. A path requiring both must be
-named through both capability types.
+`--read` and `--read-write` add only filesystem authority. On Linux,
+`--read-write` accepts existing directories and rejects non-directory paths
+before bootstrap. `--execute` adds only executable mapping and launch authority.
+A path requiring both must be named through both capability types.
 
 All Sandy options precede `--`. Everything after `--` is opaque target data
 and must pass through unchanged. Do not add ambiguous shorthand.
@@ -391,7 +399,7 @@ remove unused code or test the intended behavior.
 Keep pure unit tests beside resolution, manifest, escaping, and renderer code.
 Use black-box integration tests for CLI, process, signal, and sandbox behavior.
 
-Applying Seatbelt is irreversible. Every live sandbox test runs in a
+Applying a native sandbox is irreversible. Every live sandbox test runs in a
 sacrificial subprocess, never inside the unit-test process.
 
 Tests modifying process-wide environment variables use a restoring guard and
@@ -399,8 +407,8 @@ serialization. Fixtures contain no developer paths, usernames, credentials,
 installation identifiers, or real socket locations.
 
 Every security fix and policy change includes a regression test. Release CI
-runs live Seatbelt tests on supported macOS 15 and 26 runners and builds both
-Apple Silicon and Intel artifacts.
+runs live Seatbelt tests on supported macOS 15 and 26 runners and live Linux
+tests on the declared host configuration.
 
 ## Development process
 
@@ -426,16 +434,16 @@ cargo test --workspace --locked
 cargo deny check
 ```
 
-Security-sensitive renderer, FFI, bootstrap, process, capability, or
-runtime-integration changes also run the dedicated live macOS test target.
+Security-sensitive compiler, FFI, bootstrap, process, capability, or
+runtime-integration changes also run the relevant live native test target.
 
 CI uses minimal permissions, disables persisted checkout credentials, pins
 third-party actions to full commit SHAs, and uses locked Cargo commands.
 
 Release tags must match the workspace version. The release workflow verifies
-all publishable sources, builds native arm64 and x86_64 macOS archives,
-publishes `sandy-core`, `sandy-seatbelt`, and then the supported
-`sandy-sandbox` facade, publishes checksums, and updates only
+all publishable sources, builds native arm64 and x86_64 macOS and Linux
+archives, publishes `sandy-core`, `sandy-seatbelt`, `sandy-linux`, and then the
+supported `sandy-sandbox` facade, publishes checksums, and updates only
 `Formula/sandy.rb` in `kontext-security/homebrew-tap`. Crate publication uses
 the pinned `cargo-release` configuration and Cargo's registry-index readiness
 checks. Sandy has no package dependency on Kontext and must not modify the

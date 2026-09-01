@@ -1,9 +1,10 @@
 use std::{collections::BTreeSet, ffi::OsString, fs, path::Path};
 
 use sandy_core::{
-    AccessMode, FileGrant, HookProtocol, HookSourceScope, LocalHostTcpGrant, LocalHostTcpOperation,
-    PathScope, TcpPort, WriteProtection,
+    AccessMode, FileGrant, HookProtocol, HookSourceScope, PathScope, WriteProtection,
 };
+#[cfg(any(target_os = "macos", test))]
+use sandy_core::{LocalHostTcpGrant, LocalHostTcpOperation, TcpPort};
 
 use super::{
     ImmutableExecutable, IntegrationMode, ResolvedRuntimeControl, RuntimeControlCapabilities,
@@ -31,6 +32,7 @@ const OPENCODE_PLUGIN_SENTINELS: &[&str] = &[
     "export default NumbatPlugin;",
 ];
 
+#[cfg(any(target_os = "macos", test))]
 const COLLECTOR_SERVICE: &str = "Numbat collector";
 
 mod protocol;
@@ -67,6 +69,7 @@ pub(crate) fn resolve(
 /// Resolves one IPv4 TCP port on the local Mac for an operator-managed
 /// collector. This capability is independent from hook discovery: it neither
 /// starts a process nor implies that Numbat hooks are installed.
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn collector(port: u16) -> Result<ResolvedRuntimeControl, AppError> {
     let port = TcpPort::new(port).ok_or_else(|| {
         AppError::runtime_control(

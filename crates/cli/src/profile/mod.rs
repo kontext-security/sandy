@@ -9,10 +9,12 @@ use std::{
 };
 
 use sandy_core::{
-    AbsolutePath, AccessMode, GENERIC_PROFILE_NAME, HookProtocol, HookSourceLocation,
-    HookSourceScope, HookSourceTemplate, MAX_USER_PROFILE_SOURCE_BYTES, PathScope, ProfileError,
-    ProfileRegistry, ResolvedProfile, ResolvedUserProfile, TemplatePath, UserProfileDocumentV1,
+    AbsolutePath, GENERIC_PROFILE_NAME, HookProtocol, HookSourceLocation, HookSourceScope,
+    HookSourceTemplate, MAX_USER_PROFILE_SOURCE_BYTES, ProfileError, ProfileRegistry,
+    ResolvedProfile, ResolvedUserProfile, TemplatePath, UserProfileDocumentV1,
 };
+#[cfg(any(target_os = "macos", test))]
+use sandy_core::{AccessMode, PathScope};
 
 use crate::{
     error::AppError,
@@ -373,6 +375,7 @@ impl SelectedProfile {
 
     /// Grants configured agent roots and protects user-controlled hook leaves
     /// before any runtime-control resolver inspects their contents.
+    #[cfg(any(target_os = "macos", test))]
     pub(crate) fn contribute_hook_source_policy(
         &self,
         mut intent: CliPolicyIntent,

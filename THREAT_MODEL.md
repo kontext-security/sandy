@@ -1,20 +1,19 @@
 # Threat model
 
 Sandy reduces the filesystem, network, credential, and local-service access of
-a process tree. The CLI supports macOS; the current-process Rust facade has
-native macOS and Linux backends. The protected subject is the host user's data
-outside explicit grants. The target command, its dependencies, generated code,
-and all descendants are untrusted.
+a process tree. The CLI and current-process Rust facade have native macOS and
+Linux backends. The protected subject is the host user's data outside explicit
+grants. The target command, its dependencies, generated code, and all
+descendants are untrusted.
 
 ## Trusted computing base
 
 The trusted base is `sandy-core` validation, the selected native backend, and
 the host kernel. CLI launches additionally trust the Sandy parent and bootstrap.
-macOS trusts the Seatbelt compiler and native wrapper. Linux facade application
-trusts the namespace and mount preparation, Landlock, capability removal, and
-seccomp implementation. The selected executable and agent hooks are inside the
-sandbox and untrusted. An optional Kontext daemon remains a separate host
-service.
+macOS trusts the Seatbelt compiler and native wrapper. Linux application trusts
+namespace and mount preparation, Landlock, capability removal, and seccomp.
+The selected executable and agent hooks are inside the sandbox and untrusted.
+An optional Kontext daemon remains a separate host service.
 
 The explicit `sandy integrations setup` command is a trusted host
 administration operation, not part of sandbox launch. It executes Homebrew and
@@ -25,9 +24,9 @@ and `doctor` paths do not have this authority.
 ## Security boundaries
 
 Sandy validates and canonicalizes an entire launch before applying policy. A
-fresh bootstrap removes its manifest, applies Seatbelt, and only then executes
-the target. Any failure terminates without running the target. Descendants
-inherit the resulting restrictions.
+fresh bootstrap removes its manifest, applies the selected native backend, and
+only then executes the target. Any failure terminates without running the
+target. Descendants inherit the resulting restrictions.
 
 The Rust facade instead applies policy directly to its calling process. The
 embedding application is responsible for invoking `apply` before it creates
@@ -41,27 +40,29 @@ builder. The format has no discovery, inheritance, includes, interpolation, or
 implicit authority. The embedding application owns loading and protecting the
 source bytes; Sandy retains neither their contents nor their source path.
 
-The facade's optional subprocess capability permits ordinary descendant
-creation and same-sandbox signals. It does not promise portable process
-inspection. On macOS the compatibility class includes broad Mach lookup, which
+The facade's optional subprocess capability permits process creation,
+same-sandbox inspection and signals, and the platform runtime services needed
+to start ordinary descendants. On macOS this includes broad Mach lookup, which
 may reach same-user local services even when IP networking is blocked.
 
 Typed capabilities are the only input to policy compilation. Raw native policy
 source is not accepted. Unsafe Rust is confined to each backend's private native
 wrapper. Native backends add no implicit filesystem or network authority. The
-CLI explicitly composes its typed macOS runtime baseline before validation,
-including the metadata lookup needed to resolve system path aliases.
+CLI explicitly composes its typed platform runtime baseline before validation.
 
 On Linux, preparation must run while the process is single-threaded. It pins
-paths, verifies exact policy representability, and compiles native rules before
-enforcement. Application enters private namespaces and a private filesystem
-view, then applies Landlock, removes capabilities, and installs seccomp. A
-preparation failure leaves the process unchanged. An enforcement failure may
-leave it partially restricted, so continuing is unsupported. The private view
-omits host procfs and the former host root. Unsupported policy combinations
-fail rather than receiving approximate enforcement. Landlock signal scoping
-prevents the restricted process from signaling processes outside its sandbox
-domain while preserving signals among its descendants.
+paths, verifies exact policy representability, exercises namespace setup in a
+sacrificial child, and compiles native rules before enforcement. Application
+enters private user, mount, and IPC namespaces and a private filesystem view,
+then applies Landlock, removes capabilities, and installs seccomp. A preparation
+failure leaves the process unchanged. An enforcement failure may leave it
+partially restricted, so continuing is unsupported. The private view omits the
+host process tree, `/sys`, broad `/run` and `/dev` contents, and the former host
+root. The CLI grants only named runtime devices and public proc files. Existing
+descriptors remain capabilities. Unsupported hosts and policy combinations fail
+rather than receiving approximate enforcement. Landlock signal scoping prevents
+the restricted process from signaling processes outside its sandbox domain
+while preserving signals among its descendants.
 
 An explicitly selected user profile file is parsed through a narrower schema
 than embedded profiles. It can only add required filesystem grants, executable
@@ -86,7 +87,7 @@ prevent a target from altering a writable source before a later launch.
 - symlink and policy-string injection at launch;
 - mutation, removal, or replacement of configured agent control hooks while a
   sandboxed session is running;
-- execution before successful validation and Seatbelt application; and
+- execution before successful validation and native application; and
 - restriction inheritance by child processes.
 
 ## Out of scope and residual risks
@@ -102,7 +103,9 @@ must apply before creating them.
 - side channels and denial of service;
 - data already present in inherited standard streams or explicitly opened file
   descriptors;
-- terminal-control ioctls on inherited macOS TTY and PTY descriptors;
+- terminal-control ioctls on inherited TTY and PTY descriptors;
+- native operations, including applicable ioctls, on explicitly granted device
+  files;
 - all confused-deputy behavior through allowed Mach/XPC services;
 - outbound data disclosure while network is enabled;
 - mutation between path canonicalization and later use;
@@ -202,12 +205,11 @@ Agent state directories may contain credentials and are granted for compatible
 known-agent profiles. This is a deliberate usability tradeoff and must not be
 described as credential isolation.
 
-For network-enabled launches, Sandy supplies the macOS public PEM root bundle
+For network-enabled launches, Sandy supplies a platform public PEM root bundle
 through `SSL_CERT_FILE` when the caller did not select another certificate
-source. This lets Rust TLS clients validate ordinary provider certificates
-without querying user trust settings through Keychain services. A caller-set
-bundle remains subject to the normal filesystem policy; Sandy does not infer a
-read grant from an environment variable.
+source. This avoids broader credential-store access. A caller-set bundle
+remains subject to the normal filesystem policy; Sandy does not infer a read
+grant from an environment variable.
 
 ## Fail-closed requirements
 
