@@ -31,8 +31,8 @@ pub(super) fn apply(source: &str) -> Result<(), SeatbeltError> {
     // the call. error_buffer points to writable storage for one pointer. With
     // raw-profile flags set to zero, sandbox_init either leaves it null or
     // returns an Apple-owned allocation released by sandbox_free_error.
-    // Zero selects the private raw-profile mode. The sacrificial probe establishes support before
-    // a normal launch reaches this bootstrap call.
+    // Zero selects the private raw-profile mode. Sacrificial live tests cover
+    // host support; every application call still reports native rejection.
     let status = unsafe { sandbox_init(profile.as_ptr(), 0, &mut error_buffer) };
     if status == 0 {
         return Ok(());
