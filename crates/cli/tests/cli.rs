@@ -21,12 +21,13 @@ fn help_exposes_only_public_commands() -> Result<(), Box<dyn std::error::Error>>
 }
 
 #[test]
-fn run_help_documents_explicit_user_profile_files() -> Result<(), Box<dyn std::error::Error>> {
+fn run_help_documents_complete_policy_files() -> Result<(), Box<dyn std::error::Error>> {
     let mut command = Command::cargo_bin("sandy")?;
     command
         .args(["run", "--help"])
         .assert()
         .success()
+        .stdout(predicate::str::contains("--policy-file <PATH>"))
         .stdout(predicate::str::contains("--profile-file <PATH>"))
         .stdout(predicate::str::contains("--execute <PATH>"))
         .stdout(predicate::str::contains("built-in profile"))
@@ -187,7 +188,7 @@ fn dry_run_json_has_a_versioned_runtime_control_schema() -> Result<(), Box<dyn s
     assert!(output.status.success());
 
     let document: serde_json::Value = serde_json::from_slice(&output.stdout)?;
-    assert_eq!(document["dry_run_schema_version"], 6);
+    assert_eq!(document["dry_run_schema_version"], 7);
     assert!(document.get("schema_version").is_none());
 
     let keys = document
@@ -199,6 +200,7 @@ fn dry_run_json_has_a_versioned_runtime_control_schema() -> Result<(), Box<dyn s
     assert_eq!(
         keys,
         std::collections::BTreeSet::from([
+            "agent",
             "allow_subprocesses",
             "arguments",
             "command",
@@ -208,7 +210,7 @@ fn dry_run_json_has_a_versioned_runtime_control_schema() -> Result<(), Box<dyn s
             "file_metadata",
             "local_host_tcp_grants",
             "network",
-            "profile",
+            "policy_source",
             "runtime_controls",
             "runtime_compatibility",
             "native_policy",
@@ -675,6 +677,140 @@ fn profile_file_may_be_supplied_only_once() -> Result<(), Box<dyn std::error::Er
 }
 
 #[test]
+fn complete_policy_file_replaces_agent_policy_and_resolves_relative_paths()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let project = directory.path().join("project");
+    let readable = directory.path().join("readable");
+    let policy = directory.path().join("sandbox.json");
+    fs::create_dir(&project)?;
+    fs::create_dir(&readable)?;
+    fs::write(
+        &policy,
+        r#"{
+            "schema_version": 1,
+            "network": "block_all",
+            "allow_subprocesses": true,
+            "grants": [
+                {"path": "../readable", "access": "read", "scope": "subtree"}
+            ]
+        }"#,
+    )?;
+
+    let mut command = Command::cargo_bin("sandy")?;
+    let output = command
+        .current_dir(&project)
+        .args([
+            "run",
+            "--dry-run",
+            "--policy-file",
+            policy.to_str().ok_or("policy path must be UTF-8")?,
+            "--",
+            "/bin/echo",
+        ])
+        .output()?;
+    assert!(output.status.success());
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+
+    assert_eq!(document["dry_run_schema_version"], 7);
+    assert_eq!(document["policy_source"]["kind"], "policy_file");
+    assert_eq!(document["agent"]["name"], "generic");
+    assert_eq!(document["network"], "block_all");
+    assert_eq!(document["allow_subprocesses"], true);
+    assert!(
+        !document["policy_source"]
+            .to_string()
+            .contains(policy.to_string_lossy().as_ref())
+    );
+    let readable = fs::canonicalize(readable)?;
+    assert!(document["file_grants"].as_array().is_some_and(|grants| {
+        grants.iter().any(|grant| {
+            grant["path"] == readable.to_string_lossy().as_ref()
+                && grant["access"] == "read"
+                && grant["scope"] == "subtree"
+        })
+    }));
+    Ok(())
+}
+
+#[test]
+fn policy_file_rejects_non_executable_cli_policy_and_authority_modifiers()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let policy = directory.path().join("sandbox.json");
+    fs::write(&policy, r#"{"schema_version":1,"network":"block_all"}"#)?;
+
+    let mut command = Command::cargo_bin("sandy")?;
+    command
+        .args([
+            "run",
+            "--policy-file",
+            policy.to_str().ok_or("policy path must be UTF-8")?,
+            "--",
+            "/bin/echo",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "CLI execution requires allow_subprocesses to be true",
+        ));
+
+    let mut conflict = Command::cargo_bin("sandy")?;
+    conflict
+        .args([
+            "run",
+            "--policy-file",
+            policy.to_str().ok_or("policy path must be UTF-8")?,
+            "--read",
+            directory.path().to_str().ok_or("test path must be UTF-8")?,
+            "--",
+            "/bin/echo",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be used with"));
+    Ok(())
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn policy_file_disables_automatic_integration_discovery() -> Result<(), Box<dyn std::error::Error>>
+{
+    let directory = tempfile::tempdir()?;
+    let home = directory.path().join("home");
+    let codex_home = home.join(".codex");
+    let project = directory.path().join("project");
+    let target = directory.path().join("codex");
+    let policy = directory.path().join("sandbox.json");
+    fs::create_dir_all(&codex_home)?;
+    fs::create_dir(&project)?;
+    fs::write(codex_home.join("hooks.json"), "not json")?;
+    fs::write(&target, "#!/bin/sh\nexit 0\n")?;
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o700))?;
+    fs::write(
+        &policy,
+        r#"{"schema_version":1,"network":"block_all","allow_subprocesses":true}"#,
+    )?;
+
+    let mut command = Command::cargo_bin("sandy")?;
+    command
+        .env("HOME", home)
+        .current_dir(project)
+        .args([
+            "run",
+            "--dry-run",
+            "--policy-file",
+            policy.to_str().ok_or("policy path must be UTF-8")?,
+            "--",
+            target.to_str().ok_or("target path must be UTF-8")?,
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#""kind": "policy_file""#));
+    Ok(())
+}
+
+#[test]
 fn user_profile_composes_with_one_embedded_base_and_reports_safe_source()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
@@ -730,12 +866,11 @@ fn user_profile_composes_with_one_embedded_base_and_reports_safe_source()
     assert!(output.status.success());
     let document: serde_json::Value = serde_json::from_slice(&output.stdout)?;
 
-    assert_eq!(document["dry_run_schema_version"], 6);
-    assert_eq!(document["profile"]["name"], "team-session");
-    assert_eq!(document["profile"]["source"], "user_file");
-    assert_eq!(document["profile"]["base"], "generic");
-    assert_eq!(document["profile"]["detected"], false);
-    let metadata = document["profile"].to_string();
+    assert_eq!(document["dry_run_schema_version"], 7);
+    assert_eq!(document["agent"]["name"], "generic");
+    assert_eq!(document["agent"]["detected"], false);
+    assert_eq!(document["policy_source"]["kind"], "legacy_profile_file");
+    let metadata = document["policy_source"].to_string();
     assert!(!metadata.contains(profile.to_string_lossy().as_ref()));
     assert!(!metadata.contains("schema_version"));
 
@@ -922,7 +1057,7 @@ fn user_protected_target_error_is_positioned_and_redacted() -> Result<(), Box<dy
 }
 
 #[test]
-fn embedded_profile_dry_run_reports_version_six_source_metadata()
+fn agent_default_dry_run_reports_version_seven_source_metadata()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut command = Command::cargo_bin("sandy")?;
     let output = command
@@ -930,9 +1065,9 @@ fn embedded_profile_dry_run_reports_version_six_source_metadata()
         .output()?;
     assert!(output.status.success());
     let document: serde_json::Value = serde_json::from_slice(&output.stdout)?;
-    assert_eq!(document["dry_run_schema_version"], 6);
-    assert_eq!(document["profile"]["source"], "embedded");
-    assert!(document["profile"]["base"].is_null());
+    assert_eq!(document["dry_run_schema_version"], 7);
+    assert_eq!(document["agent"]["name"], "generic");
+    assert_eq!(document["policy_source"]["kind"], "agent_default");
     assert_eq!(sandy_core::MANIFEST_SCHEMA_V2, 2);
     Ok(())
 }
@@ -1305,7 +1440,7 @@ fn user_profiles_are_never_discovered_implicitly() -> Result<(), Box<dyn std::er
         .args(["run", "--dry-run", "--", "/bin/echo"])
         .assert()
         .success()
-        .stdout(predicate::str::contains(r#""source": "embedded""#));
+        .stdout(predicate::str::contains(r#""kind": "agent_default""#));
     Ok(())
 }
 
@@ -1336,7 +1471,7 @@ fn empty_user_profile_preserves_optional_base_paths_without_home()
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains(r#""source": "user_file""#));
+        .stdout(predicate::str::contains(r#""kind": "legacy_profile_file""#));
 
     Ok(())
 }

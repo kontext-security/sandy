@@ -84,6 +84,9 @@ shapes are documented in `LINUX_SECURITY_MODEL.md`.
 - Facade callers may build `SandboxPolicy` in Rust or parse the same policy
   vocabulary from strict, bounded, versioned JSON. Parsing is side-effect-free
   and introduces no second policy model.
+- The CLI may load that same complete caller-controlled document explicitly.
+  It adds only documented fixed launcher capabilities and disables automatic
+  integration discovery for that invocation.
 - The CLI may load one explicit narrow user profile file. Deterministic schema
   validation and additive base composition of independent filesystem,
   executable, and terminal-deny capabilities live in `sandy-core`; bounded

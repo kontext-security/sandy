@@ -14,7 +14,8 @@ use crate::{AccessMode, FileMetadataPolicy, NetworkPolicy, PathScope};
 const MAX_REQUESTED_GRANTS: usize = 1_024;
 const MAX_REQUESTED_EXECUTABLES: usize = 1_024;
 const MAX_REQUESTED_DENIES: usize = 1_024;
-const MAX_POLICY_DOCUMENT_BYTES: usize = 64 * 1024;
+/// Maximum serialized size accepted for one policy document.
+pub const MAX_POLICY_DOCUMENT_SOURCE_BYTES: usize = 64 * 1024;
 const POLICY_DOCUMENT_SCHEMA_V1: u32 = 1;
 
 #[derive(Deserialize)]
@@ -133,7 +134,7 @@ impl SandboxPolicy {
     /// Returns [`PolicyDocumentError`] when the source is too large, malformed,
     /// uses an unsupported version, or exceeds a capability limit.
     pub fn from_json(source: &[u8]) -> Result<Self, PolicyDocumentError> {
-        if source.len() > MAX_POLICY_DOCUMENT_BYTES {
+        if source.len() > MAX_POLICY_DOCUMENT_SOURCE_BYTES {
             return Err(PolicyDocumentError::TooLarge);
         }
         // Dispatch on the version before applying version-specific strictness,
@@ -352,6 +353,24 @@ pub fn allow_foreground_cli_compatibility(mut policy: SandboxPolicy) -> SandboxP
     policy
 }
 
+/// Returns the caller-selected network behavior for product-owned preparation.
+///
+/// This function is intentionally not re-exported by the supported facade.
+#[doc(hidden)]
+#[must_use]
+pub fn policy_network(policy: &SandboxPolicy) -> NetworkPolicy {
+    policy.network
+}
+
+/// Returns whether caller policy permits descendant process creation.
+///
+/// This function is intentionally not re-exported by the supported facade.
+#[doc(hidden)]
+#[must_use]
+pub fn policy_allows_subprocesses(policy: &SandboxPolicy) -> bool {
+    policy.allow_subprocesses
+}
+
 /// Checks request bounds before ambient path expansion and returns its parts.
 ///
 /// The function is public only for sibling workspace packages. It is not part
@@ -566,7 +585,7 @@ mod tests {
 
     #[test]
     fn bounds_document_bytes_and_capabilities() {
-        let oversized = vec![b' '; MAX_POLICY_DOCUMENT_BYTES + 1];
+        let oversized = vec![b' '; MAX_POLICY_DOCUMENT_SOURCE_BYTES + 1];
         assert_eq!(
             SandboxPolicy::from_json(&oversized).err(),
             Some(PolicyDocumentError::TooLarge)
@@ -589,7 +608,7 @@ mod tests {
             let entries = (0..=limit).map(|_| entry).collect::<Vec<_>>().join(",");
             let source =
                 format!(r#"{{"schema_version":1,"network":"block_all","{field}":[{entries}]}}"#);
-            assert!(source.len() <= MAX_POLICY_DOCUMENT_BYTES);
+            assert!(source.len() <= MAX_POLICY_DOCUMENT_SOURCE_BYTES);
             assert_eq!(
                 SandboxPolicy::from_json(source.as_bytes()).err(),
                 Some(PolicyDocumentError::TooManyCapabilities)

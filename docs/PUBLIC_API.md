@@ -23,7 +23,7 @@ let cache = root.join("cache");
 let credentials = root.join("credentials");
 let settings = root.join("settings.json");
 
-// Every policy path must already exist when apply is called.
+// Positive grant paths must already exist when apply is called.
 
 let policy = SandboxPolicy::new(NetworkPolicy::BlockAll)
     .allow_subprocesses()
@@ -95,7 +95,9 @@ There is no interpolation, home-directory expansion, inheritance, include,
 profile selection, or implicit executable authority. A caller that needs
 runtime values may add them with the normal builder after parsing. Sandy does
 not retain the source bytes or know which file they came from, so the embedding
-application owns loading and protecting that source.
+application owns loading and protecting that source. Positive grants must
+exist during `apply`. A missing denial leaf remains protected through its
+lexical spelling and the canonical spelling of its nearest existing ancestor.
 
 JSON path values are Unicode strings. The Rust builder accepts `PathBuf`, but
 the current native resolution contract also requires every resolved path to be
@@ -294,6 +296,7 @@ intend untrusted code to operate.
 - current-process support probing
 - C ABI and other language bindings
 
-The CLI's `--profile-file` document is separate from the facade JSON shape. It
-composes with CLI-owned profiles and compatibility behavior, while
-`SandboxPolicy::from_json` describes only caller-owned current-process policy.
+The CLI's `--policy-file` uses this same document as its complete
+caller-controlled policy. The CLI separately adds its documented fixed launch
+and runtime requirements, all of which remain visible in dry-run output. See
+[`POLICY_FILES.md`](POLICY_FILES.md).

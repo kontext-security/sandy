@@ -86,6 +86,24 @@ pub(crate) struct RunArgs {
     #[arg(long, value_name = "PATH", conflicts_with = "profile")]
     pub(crate) profile_file: Option<PathBuf>,
 
+    /// Load the complete caller-controlled sandbox policy from a strict,
+    /// versioned JSON document. Fixed launcher requirements remain visible in
+    /// dry-run output.
+    #[arg(
+        long,
+        value_name = "PATH",
+        conflicts_with_all = [
+            "profile",
+            "profile_file",
+            "read",
+            "read_write",
+            "execute",
+            "block_net",
+            "numbat_collector"
+        ]
+    )]
+    pub(crate) policy_file: Option<PathBuf>,
+
     /// Grant read-only access to an existing path.
     #[arg(long, value_name = "PATH")]
     pub(crate) read: Vec<PathBuf>,

@@ -1,6 +1,8 @@
 use std::{
     collections::BTreeSet,
-    env, fs,
+    env,
+    ffi::OsString,
+    fs,
     path::{Component, Path, PathBuf},
 };
 
@@ -114,8 +116,7 @@ fn lexical_and_canonical(
     requested: &Path,
 ) -> Result<BTreeSet<PathBuf>, SandboxError> {
     let candidate = absolute_candidate(working_directory, requested)?;
-    let canonical =
-        fs::canonicalize(&candidate).map_err(|_| SandboxError::new(ErrorKind::InvalidPolicy))?;
+    let canonical = resolve_existing_ancestor(&candidate)?;
     let mut paths = BTreeSet::from([canonical]);
     if !candidate
         .components()
@@ -124,6 +125,40 @@ fn lexical_and_canonical(
         paths.insert(normalize_without_parent(&candidate)?);
     }
     Ok(paths)
+}
+
+fn resolve_existing_ancestor(path: &Path) -> Result<PathBuf, SandboxError> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => {
+            return fs::canonicalize(path).map_err(|_| SandboxError::new(ErrorKind::InvalidPolicy));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err(SandboxError::new(ErrorKind::InvalidPolicy)),
+    }
+
+    let mut cursor = path;
+    let mut missing = Vec::<OsString>::new();
+    loop {
+        let name = cursor
+            .file_name()
+            .ok_or_else(|| SandboxError::new(ErrorKind::InvalidPolicy))?;
+        missing.push(name.to_os_string());
+        cursor = cursor
+            .parent()
+            .ok_or_else(|| SandboxError::new(ErrorKind::InvalidPolicy))?;
+        match fs::symlink_metadata(cursor) {
+            Ok(_) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(SandboxError::new(ErrorKind::InvalidPolicy)),
+        }
+    }
+
+    let mut resolved =
+        fs::canonicalize(cursor).map_err(|_| SandboxError::new(ErrorKind::InvalidPolicy))?;
+    for component in missing.into_iter().rev() {
+        resolved.push(component);
+    }
+    Ok(resolved)
 }
 
 fn canonical_existing(working_directory: &Path, requested: &Path) -> Result<PathBuf, SandboxError> {
@@ -341,6 +376,38 @@ mod tests {
                 .write_protections
                 .iter()
                 .any(|protection| protection.path == lexical)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn protects_a_missing_leaf_through_its_canonical_parent()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let real = root.path().join("real");
+        let alias = root.path().join("alias");
+        fs::create_dir(&real)?;
+        symlink(&real, &alias)?;
+        let requested = alias.join("future/settings.json");
+
+        let resolved =
+            resolve(SandboxPolicy::new(NetworkPolicy::BlockAll).deny_write_exact(&requested))?;
+        let canonical = absolute(&fs::canonicalize(real)?.join("future/settings.json"))?;
+        let lexical = absolute(&requested)?;
+
+        assert!(
+            resolved
+                .spec()
+                .write_protections
+                .iter()
+                .any(|item| item.path == lexical)
+        );
+        assert!(
+            resolved
+                .spec()
+                .write_protections
+                .iter()
+                .any(|item| item.path == canonical)
         );
         Ok(())
     }

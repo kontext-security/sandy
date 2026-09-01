@@ -67,6 +67,9 @@ pub(crate) fn resolve(
     mode: IntegrationMode,
     paths: &ResolvedUserPaths,
 ) -> Result<ResolvedRuntimeControl, AppError> {
+    if mode.is_disabled() {
+        return Ok(ResolvedRuntimeControl::inactive(SERVICE));
+    }
     let configured = find_configured_binaries(hook_sources)?;
     if configured.binaries.is_empty() {
         if mode.is_required() {
