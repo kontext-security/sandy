@@ -110,16 +110,20 @@ private tmpfs root. Non-granted siblings, host `/proc`, `/sys`, `/run`, and the
 former host root are absent. Open descriptors and memory acquired before
 `apply()` are not revoked.
 
-An exact protected file is overmounted read-only. A protected subtree is
-recursively read-only. Filesystem enforcement is pathname-based. A protected
-regular file with a pre-existing hard-link alias is rejected, and Sandy verifies
-that its link count does not change between preparation and namespace entry.
+An exact protected file is overmounted read-only. Filesystem enforcement is
+pathname-based. A protected regular file with a pre-existing hard-link alias is
+rejected, and Sandy verifies that its link count does not change between
+preparation and namespace entry. Recursive write protections are rejected: a
+hard link outside a recursively read-only mount could otherwise mutate the same
+inode through a writable pathname.
 
 The following combinations are rejected before enforcement rather than being
 weakened:
 
 - a confidential deny nested below a visible subtree, because a mount mask
   would still expose placeholder metadata;
+- recursive write protections, because a hard-link alias outside the protected
+  subtree could retain write authority;
 - exact grants on directories, because native directory rules are hierarchical;
 - subtree grants on non-directories;
 - exact read/write file grants, because content mutation and parent-directory

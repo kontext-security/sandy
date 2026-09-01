@@ -60,6 +60,17 @@ pub fn plan(policy: &ValidatedPolicy) -> Result<LinuxPolicyPlan, LinuxError> {
     {
         return Err(unsupported("runtime compatibility policy"));
     }
+    // A read-only recursive mount protects only names reached through that
+    // mount. A pre-existing hard link outside the protected subtree can still
+    // mutate the same inode through a writable mount. Reject the shape until
+    // Linux can prove the complete requested semantics.
+    if spec
+        .write_protections
+        .iter()
+        .any(|protection| protection.scope == PathScope::Subtree)
+    {
+        return Err(unsupported("recursive write protection"));
+    }
 
     // A private filesystem view hides non-granted paths completely. A deny
     // nested inside a visible subtree, however, would leave at least a mount
@@ -99,6 +110,7 @@ fn unsupported(phase: &'static str) -> LinuxError {
 mod tests {
     use sandy_core::{
         AbsolutePath, AccessMode, FileGrant, NetworkPolicy, PathScope, PolicySpec, ValidatedPolicy,
+        WriteProtection,
     };
 
     use super::*;
@@ -161,6 +173,26 @@ mod tests {
             })?;
             assert!(plan(&policy).is_ok());
         }
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_recursive_write_protection() -> Result<(), Box<dyn std::error::Error>> {
+        let policy = ValidatedPolicy::try_from(PolicySpec {
+            files: vec![FileGrant {
+                path: path("/workspace")?,
+                access: AccessMode::ReadWrite,
+                scope: PathScope::Subtree,
+            }],
+            write_protections: vec![WriteProtection {
+                path: path("/workspace/protected")?,
+                scope: PathScope::Subtree,
+            }],
+            ..PolicySpec::default()
+        })?;
+
+        let error = plan(&policy).err().ok_or("policy unexpectedly supported")?;
+        assert_eq!(error.kind(), LinuxErrorKind::Unsupported);
         Ok(())
     }
 
