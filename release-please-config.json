@@ -52,6 +52,11 @@
         {
           "type": "toml",
           "path": "Cargo.lock",
+          "jsonpath": "$.package[?(@.name.value == 'sandy-linux')].version"
+        },
+        {
+          "type": "toml",
+          "path": "Cargo.lock",
           "jsonpath": "$.package[?(@.name.value == 'sandy-sandbox')].version"
         },
         {
@@ -63,6 +68,11 @@
           "type": "toml",
           "path": "tests/package-consumer/Cargo.lock",
           "jsonpath": "$.package[?(@.name.value == 'sandy-seatbelt')].version"
+        },
+        {
+          "type": "toml",
+          "path": "tests/package-consumer/Cargo.lock",
+          "jsonpath": "$.package[?(@.name.value == 'sandy-linux')].version"
         },
         {
           "type": "toml",

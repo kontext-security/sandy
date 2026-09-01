@@ -156,6 +156,7 @@ jobs:
           cargo release publish --execute --no-confirm \
             --package sandy-core \
             --package sandy-seatbelt \
+            --package sandy-linux \
             --package sandy-sandbox
 
   publish:
