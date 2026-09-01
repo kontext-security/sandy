@@ -229,7 +229,11 @@ fn prepare_mounts(
         return Err(unsupported("working directory visibility"));
     }
     let working_directory = working_directory.clone();
-    let aliases = prepare_runtime_aliases(spec.runtime_compatibility, &effective)?;
+    let aliases = prepare_runtime_aliases(
+        spec.runtime_compatibility,
+        &effective,
+        &spec.protected_paths,
+    )?;
 
     Ok(MountPreparation {
         pinned,
@@ -266,6 +270,7 @@ fn executable(path: &AbsolutePath, grants: &[sandy_core::ExecutableGrant]) -> bo
 fn prepare_runtime_aliases(
     compatibility: RuntimeCompatibility,
     mounts: &[MountRequirement],
+    protected_paths: &[AbsolutePath],
 ) -> Result<Vec<RuntimeAlias>, LinuxError> {
     if compatibility != RuntimeCompatibility::ForegroundCli {
         return Ok(Vec::new());
@@ -300,7 +305,7 @@ fn prepare_runtime_aliases(
         .map_err(|_| preparation("runtime alias representation"))?;
         let path = AbsolutePath::new(requested.to_owned())
             .map_err(|_| preparation("runtime alias representation"))?;
-        if visible(&path, mounts.iter()) || !visible(&canonical, mounts.iter()) {
+        if !should_materialize_runtime_alias(&path, &canonical, mounts, protected_paths) {
             continue;
         }
         let target =
@@ -308,6 +313,17 @@ fn prepare_runtime_aliases(
         aliases.push(RuntimeAlias { path, target });
     }
     Ok(aliases)
+}
+
+fn should_materialize_runtime_alias(
+    path: &AbsolutePath,
+    canonical: &AbsolutePath,
+    mounts: &[MountRequirement],
+    protected_paths: &[AbsolutePath],
+) -> bool {
+    !denied(path, protected_paths)
+        && !visible(path, mounts.iter())
+        && visible(canonical, mounts.iter())
 }
 
 fn pin(path: &AbsolutePath) -> Result<PinnedPath, LinuxError> {
@@ -405,4 +421,39 @@ fn enforcement(phase: &'static str) -> LinuxError {
 
 fn unsupported(phase: &'static str) -> LinuxError {
     LinuxError::new(LinuxErrorKind::Unsupported, phase)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn path(value: &str) -> Result<AbsolutePath, Box<dyn std::error::Error>> {
+        Ok(AbsolutePath::new(value.to_owned())?)
+    }
+
+    #[test]
+    fn protected_runtime_alias_is_not_materialized() -> Result<(), Box<dyn std::error::Error>> {
+        let alias = path("/bin")?;
+        let canonical = path("/usr/bin")?;
+        let mounts = [MountRequirement {
+            path: canonical.clone(),
+            recursive: true,
+            writable: false,
+            executable: true,
+        }];
+
+        assert!(should_materialize_runtime_alias(
+            &alias,
+            &canonical,
+            &mounts,
+            &[],
+        ));
+        assert!(!should_materialize_runtime_alias(
+            &alias,
+            &canonical,
+            &mounts,
+            std::slice::from_ref(&alias),
+        ));
+        Ok(())
+    }
 }
