@@ -60,7 +60,7 @@ pub(crate) struct RuntimeAlias {
 /// This value owns all pinned path descriptors, the already-created Landlock
 /// ruleset, compiled seccomp programs, and namespace inputs. Dropping it before
 /// [`crate::apply`] leaves the process unrestricted.
-#[must_use = "a prepared sandbox must be applied or deliberately dropped before untrusted work"]
+#[must_use = "the sandbox is not enforced until this value is passed to sandy_linux::apply"]
 pub struct PreparedLinuxSandbox {
     pub(crate) mount: MountPreparation,
     pub(crate) landlock: landlock::PreparedLandlock,
