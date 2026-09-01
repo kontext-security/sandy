@@ -3,7 +3,7 @@ mod linux {
 
     use std::{
         fs,
-        io::Read as _,
+        io::{Read as _, Write as _},
         net::{TcpListener, TcpStream, UdpSocket},
         os::{
             linux::net::SocketAddrExt as _,
@@ -43,6 +43,7 @@ mod linux {
         generic_user_profile_runs_without_exposing_its_source()?;
         built_in_agent_profiles_enforce_state_boundaries()?;
         installed_codex_binary_starts()?;
+        installed_codex_executes_a_tool()?;
         timeout_terminates_the_managed_process_group()?;
         inherited_terminal_remains_native()?;
         Ok(())
@@ -265,6 +266,228 @@ mod linux {
             bounded_diagnostic(&output.stderr),
         )
         .into())
+    }
+
+    fn installed_codex_executes_a_tool() -> Result<(), Box<dyn std::error::Error>> {
+        if std::env::var_os(REQUIRE_REAL_CODEX).as_deref() != Some(std::ffi::OsStr::new("1")) {
+            return Ok(());
+        }
+
+        let executable = std::env::var_os(REAL_CODEX).ok_or("missing required Codex fixture")?;
+        let root = tempfile::tempdir()?;
+        let home = root.path().join("home");
+        let project = root.path().join("project");
+        let outside = root.path().join("outside.txt");
+        let codex_home = home.join(".codex");
+        fs::create_dir(&home)?;
+        fs::create_dir(&project)?;
+        fs::create_dir(&codex_home)?;
+        fs::write(codex_home.join("hooks.json"), "{}")?;
+        fs::write(&outside, "protected")?;
+
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let provider_port = listener.local_addr()?.port();
+        fs::write(
+            codex_home.join("config.toml"),
+            format!(
+                r#"model = "gpt-5.2"
+model_provider = "sandy_test"
+
+[model_providers.sandy_test]
+name = "Sandy compatibility test"
+base_url = "http://127.0.0.1:{provider_port}/v1"
+wire_api = "responses"
+env_key = "SANDY_CODEX_TEST_KEY"
+"#,
+            ),
+        )?;
+
+        let provider = thread::spawn(move || serve_codex_responses(listener));
+        let mut command = Command::new(SANDY);
+        command
+            .env("HOME", &home)
+            .env("CI", "1")
+            .env("SANDY_CODEX_TEST_KEY", "test-only")
+            .current_dir(&project)
+            .args(["run", "--profile", "codex", "--"])
+            .arg(executable)
+            .args([
+                "exec",
+                "--skip-git-repo-check",
+                "--dangerously-bypass-approvals-and-sandbox",
+                "Run the requested command and report when it completes.",
+            ]);
+        let output = output_with_timeout(&mut command)?;
+        let provider_result = provider
+            .join()
+            .map_err(|_| "Codex mock provider panicked")?;
+        if let Err(error) = provider_result {
+            return Err(error.into());
+        }
+        if !output.status.success()
+            || fs::read_to_string(project.join("codex-tool.txt")).as_deref()
+                != Ok("sandy-codex-tool")
+            || fs::read_to_string(&outside)? != "protected"
+        {
+            return Err(format!(
+                "installed Codex tool execution exited with {}; stdout={:?}; stderr={:?}",
+                output.status,
+                bounded_diagnostic(&output.stdout),
+                bounded_diagnostic(&output.stderr),
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    fn serve_codex_responses(listener: TcpListener) -> Result<(), String> {
+        listener
+            .set_nonblocking(true)
+            .map_err(|error| format!("configure Codex mock provider: {error}"))?;
+        let responses = [
+            codex_tool_call_response().map_err(|error| error.to_string())?,
+            codex_final_response().map_err(|error| error.to_string())?,
+        ];
+        let deadline = Instant::now() + LIVE_TIMEOUT;
+        for response in responses {
+            let (mut stream, _) = loop {
+                match listener.accept() {
+                    Ok(connection) => break connection,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        if Instant::now() >= deadline {
+                            return Err("Codex did not complete both provider requests".to_owned());
+                        }
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => return Err(format!("accept Codex provider request: {error}")),
+                }
+            };
+            read_http_request(&mut stream)
+                .map_err(|error| format!("read Codex provider request: {error}"))?;
+            write_sse_response(&mut stream, &response)
+                .map_err(|error| format!("write Codex provider response: {error}"))?;
+        }
+        Ok(())
+    }
+
+    fn codex_tool_call_response() -> Result<String, serde_json::Error> {
+        let arguments = serde_json::to_string(&serde_json::json!({
+            "cmd": "printf sandy-codex-tool > codex-tool.txt; if printf escaped > ../outside.txt; then exit 91; fi"
+        }))?;
+        sse(&[
+            serde_json::json!({
+                "type": "response.created",
+                "response": { "id": "sandy-response-1" }
+            }),
+            serde_json::json!({
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "function_call",
+                    "call_id": "sandy-tool-call",
+                    "name": "exec_command",
+                    "arguments": arguments
+                }
+            }),
+            completed_response("sandy-response-1"),
+        ])
+    }
+
+    fn codex_final_response() -> Result<String, serde_json::Error> {
+        sse(&[
+            serde_json::json!({
+                "type": "response.created",
+                "response": { "id": "sandy-response-2" }
+            }),
+            serde_json::json!({
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "message",
+                    "role": "assistant",
+                    "id": "sandy-message-1",
+                    "content": [{ "type": "output_text", "text": "done" }]
+                }
+            }),
+            completed_response("sandy-response-2"),
+        ])
+    }
+
+    fn completed_response(id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "type": "response.completed",
+            "response": {
+                "id": id,
+                "usage": {
+                    "input_tokens": 0,
+                    "input_tokens_details": null,
+                    "output_tokens": 0,
+                    "output_tokens_details": null,
+                    "total_tokens": 0
+                }
+            }
+        })
+    }
+
+    fn sse(events: &[serde_json::Value]) -> Result<String, serde_json::Error> {
+        let mut body = String::new();
+        for event in events {
+            body.push_str("data: ");
+            body.push_str(&serde_json::to_string(event)?);
+            body.push_str("\n\n");
+        }
+        Ok(body)
+    }
+
+    fn read_http_request(stream: &mut TcpStream) -> std::io::Result<()> {
+        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+        let mut request = Vec::new();
+        let mut expected_length = None;
+        loop {
+            let mut chunk = [0_u8; 8_192];
+            let count = stream.read(&mut chunk)?;
+            if count == 0 {
+                break;
+            }
+            request.extend_from_slice(&chunk[..count]);
+            if request.len() > 4 * 1024 * 1024 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Codex mock request exceeded 4 MiB",
+                ));
+            }
+            if expected_length.is_none()
+                && let Some(header_end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n")
+            {
+                let headers = String::from_utf8_lossy(&request[..header_end]);
+                let content_length = headers
+                    .lines()
+                    .filter_map(|line| line.split_once(':'))
+                    .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                    .map(|(_, value)| value.trim().parse::<usize>())
+                    .transpose()
+                    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?
+                    .unwrap_or(0);
+                expected_length = Some(header_end + 4 + content_length);
+            }
+            if expected_length.is_some_and(|length| request.len() >= length) {
+                break;
+            }
+        }
+        if !request.starts_with(b"POST /v1/responses ") {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Codex used an unexpected provider endpoint",
+            ));
+        }
+        Ok(())
+    }
+
+    fn write_sse_response(stream: &mut TcpStream, body: &str) -> std::io::Result<()> {
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len(),
+        )?;
+        stream.flush()
     }
 
     fn bounded_diagnostic(bytes: &[u8]) -> String {
