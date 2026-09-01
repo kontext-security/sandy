@@ -34,7 +34,10 @@ const MAX_DOCTOR_OUTPUT_BYTES: u64 = 64 * 1024;
 const DOCTOR_OUTPUT_BLOCK_BYTES: u64 = 1024;
 #[cfg(not(target_os = "macos"))]
 const DOCTOR_OUTPUT_BLOCK_BYTES: u64 = 512;
-const DOCTOR_OUTPUT_BLOCKS: u64 = MAX_DOCTOR_OUTPUT_BYTES / DOCTOR_OUTPUT_BLOCK_BYTES;
+// Keep the native file-size guard one block above the logical parser limit.
+// This lets the parent observe and classify oversized output instead of racing
+// a child that reaches an identical native limit and exits on its own.
+const DOCTOR_OUTPUT_BLOCKS: u64 = MAX_DOCTOR_OUTPUT_BYTES / DOCTOR_OUTPUT_BLOCK_BYTES + 1;
 const DOCTOR_TIMEOUT: Duration = Duration::from_secs(5);
 const DOCTOR_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
@@ -899,12 +902,13 @@ mod tests {
             program: binary,
             arguments: Vec::new(),
         };
-        let started = Instant::now();
-
         let result = doctor_with_timeout(&command, root.path(), Duration::from_secs(1));
 
-        assert!(matches!(result, Err(AppError::RuntimeControl { .. })));
-        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(matches!(
+            result,
+            Err(AppError::RuntimeControl { message, .. })
+                if message == "kontext doctor --json output exceeded the limit"
+        ));
         Ok(())
     }
 }
