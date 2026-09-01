@@ -204,12 +204,14 @@ The release workflow verifies the packaged x86-64 and arm64 binaries with
 `doctor` and a real sandboxed launch on Ubuntu 24.04. The x86-64 artifact is
 built on Ubuntu 22.04; that build choice lowers its glibc floor but does not
 claim compatibility with every Linux distribution. CI also runs real Node,
-Python, and subprocess fixtures. Common Rust toolchains can depend on the
-dynamic `/proc/self` paths omitted by the private root and are outside the
-initial Linux compatibility contract. Built-in agent profile tests prove
-policy and state boundaries with fixtures; third-party agent distributions are
-not installed or authenticated in release CI and therefore require separate
-version-specific qualification.
+Python, and subprocess fixtures. On x86-64, CI additionally starts a pinned
+native Codex release with its built-in profile and networking blocked. That
+smoke test proves local startup and runtime compatibility, while separate
+fixtures prove all built-in profile policy and state boundaries. It does not
+authenticate an account or make a provider request. Native Claude Code and
+OpenCode releases, along with common Rust toolchains, can depend on dynamic
+`/proc/self` paths omitted by the private root and are outside the initial Linux
+compatibility contract.
 
 ## Unsafe boundary
 

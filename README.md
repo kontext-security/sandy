@@ -35,10 +35,20 @@ sandy doctor
 Then run an agent from your project:
 
 ```bash
+# macOS
 sandy run -- claude
 sandy run -- codex --sandbox danger-full-access
 sandy run -- opencode
+
+# Linux 0.2
+sandy run -- codex --sandbox danger-full-access
 ```
+
+Linux CI starts a pinned native Codex release inside its Sandy profile. Claude
+Code and OpenCode native Linux releases require dynamic `/proc/self` interfaces
+that Sandy's private root intentionally omits, so they are not supported on
+Linux in 0.2. The Codex smoke verifies local startup and runtime compatibility;
+authenticated provider sessions remain the agent vendor's responsibility.
 
 The current project is writable. Network access is allowed unless you block it
 explicitly:

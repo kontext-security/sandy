@@ -7,7 +7,10 @@ mod linux {
         net::{TcpListener, TcpStream, UdpSocket},
         os::{
             linux::net::SocketAddrExt as _,
-            unix::net::{SocketAddr, UnixListener, UnixStream},
+            unix::{
+                net::{SocketAddr, UnixListener, UnixStream},
+                process::CommandExt as _,
+            },
         },
         path::Path,
         process::{Child, Command, ExitStatus, Output, Stdio},
@@ -19,7 +22,10 @@ mod linux {
     const BLOCK_NET_ABSTRACT: &str = "SANDY_CLI_BLOCK_NET_ABSTRACT";
     const BLOCK_NET_SOCKET: &str = "SANDY_CLI_BLOCK_NET_SOCKET";
     const PRIVATE_ROOT_CHILD: &str = "SANDY_CLI_PRIVATE_ROOT_CHILD";
+    const REAL_CODEX: &str = "SANDY_REAL_CODEX";
+    const REQUIRE_REAL_CODEX: &str = "SANDY_REQUIRE_REAL_CODEX";
     const SANDY: &str = env!("CARGO_BIN_EXE_sandy");
+    const LIVE_TIMEOUT: Duration = Duration::from_secs(15);
 
     pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         if std::env::var_os(BLOCK_NET_CHILD).is_some() {
@@ -36,6 +42,8 @@ mod linux {
         private_root_limitations_are_stable()?;
         generic_user_profile_runs_without_exposing_its_source()?;
         built_in_agent_profiles_enforce_state_boundaries()?;
+        installed_codex_binary_starts()?;
+        timeout_terminates_the_managed_process_group()?;
         inherited_terminal_remains_native()?;
         Ok(())
     }
@@ -221,6 +229,80 @@ mod linux {
             }
         }
         Ok(())
+    }
+
+    fn installed_codex_binary_starts() -> Result<(), Box<dyn std::error::Error>> {
+        if std::env::var_os(REQUIRE_REAL_CODEX).as_deref() != Some(std::ffi::OsStr::new("1")) {
+            return Ok(());
+        }
+
+        let executable = std::env::var_os(REAL_CODEX).ok_or("missing required Codex fixture")?;
+        let root = tempfile::tempdir()?;
+        let home = root.path().join("home");
+        let project = root.path().join("project");
+        fs::create_dir(&home)?;
+        fs::create_dir(&project)?;
+        fs::create_dir(home.join(".codex"))?;
+        fs::write(home.join(".codex/hooks.json"), "{}")?;
+        fs::write(home.join(".codex/config.toml"), "")?;
+
+        let mut command = Command::new(SANDY);
+        command
+            .env("HOME", &home)
+            .env("CI", "1")
+            .current_dir(&project)
+            .args(["run", "--profile", "codex", "--block-net", "--"])
+            .arg(executable)
+            .arg("--version");
+        let output = output_with_timeout(&mut command)?;
+        if output.status.success() && (!output.stdout.is_empty() || !output.stderr.is_empty()) {
+            return Ok(());
+        }
+        Err(format!(
+            "installed Codex exited with {}; stdout={:?}; stderr={:?}",
+            output.status,
+            bounded_diagnostic(&output.stdout),
+            bounded_diagnostic(&output.stderr),
+        )
+        .into())
+    }
+
+    fn bounded_diagnostic(bytes: &[u8]) -> String {
+        String::from_utf8_lossy(bytes).chars().take(2_048).collect()
+    }
+
+    fn timeout_terminates_the_managed_process_group() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let pid_file = root.path().join("descendant.pid");
+        let mut command = Command::new("/bin/sh");
+        command
+            .args(["-c", "sleep 30 & echo $! > \"$1\"; wait", "sandy-live"])
+            .arg(&pid_file)
+            .process_group(0);
+        let mut child = command.spawn()?;
+        if wait_child_for(&mut child, Duration::from_millis(250)).is_ok() {
+            return Err("timeout fixture exited before exercising cleanup".into());
+        }
+
+        let descendant = fs::read_to_string(pid_file)?.trim().to_owned();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while process_exists(&descendant)? {
+            if Instant::now() >= deadline {
+                return Err("timeout left a descendant process alive".into());
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        Ok(())
+    }
+
+    fn process_exists(pid: &str) -> Result<bool, Box<dyn std::error::Error>> {
+        let status = Command::new("/usr/bin/kill")
+            .args(["-0", "--"])
+            .arg(pid)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()?;
+        Ok(status.success())
     }
 
     fn node_runtime_uses_only_the_explicit_baseline() -> Result<(), Box<dyn std::error::Error>> {
@@ -433,12 +515,16 @@ subprocess.run(["/bin/sh", "-c", "printf child > python-child.txt"], check=True)
     fn status_with_timeout(
         command: &mut Command,
     ) -> Result<ExitStatus, Box<dyn std::error::Error>> {
+        command.process_group(0);
         let mut child = command.spawn()?;
         wait_child_with_timeout(&mut child)
     }
 
     fn output_with_timeout(command: &mut Command) -> Result<Output, Box<dyn std::error::Error>> {
-        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .process_group(0);
         let mut child = command.spawn()?;
         let mut stdout = child.stdout.take().ok_or("missing child stdout")?;
         let mut stderr = child.stderr.take().ok_or("missing child stderr")?;
@@ -450,7 +536,7 @@ subprocess.run(["/bin/sh", "-c", "printf child > python-child.txt"], check=True)
             let mut bytes = Vec::new();
             stderr.read_to_end(&mut bytes).map(|_| bytes)
         });
-        let status = wait_child_with_timeout(&mut child)?;
+        let status = wait_child_with_timeout(&mut child);
         let stdout = stdout_reader
             .join()
             .map_err(|_| "stdout reader panicked")??;
@@ -458,7 +544,7 @@ subprocess.run(["/bin/sh", "-c", "printf child > python-child.txt"], check=True)
             .join()
             .map_err(|_| "stderr reader panicked")??;
         Ok(Output {
-            status,
+            status: status?,
             stdout,
             stderr,
         })
@@ -467,18 +553,40 @@ subprocess.run(["/bin/sh", "-c", "printf child > python-child.txt"], check=True)
     fn wait_child_with_timeout(
         child: &mut Child,
     ) -> Result<ExitStatus, Box<dyn std::error::Error>> {
-        let deadline = Instant::now() + Duration::from_secs(15);
+        wait_child_for(child, LIVE_TIMEOUT)
+    }
+
+    fn wait_child_for(
+        child: &mut Child,
+        timeout: Duration,
+    ) -> Result<ExitStatus, Box<dyn std::error::Error>> {
+        let deadline = Instant::now() + timeout;
         loop {
             if let Some(status) = child.try_wait()? {
                 return Ok(status);
             }
             if Instant::now() >= deadline {
-                child.kill()?;
-                let _ = child.wait();
+                terminate_process_group(child)?;
                 return Err("live Linux CLI fixture exceeded its hard timeout".into());
             }
             thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    fn terminate_process_group(child: &mut Child) -> Result<(), Box<dyn std::error::Error>> {
+        let group = format!("-{}", child.id());
+        let terminated = Command::new("/usr/bin/kill")
+            .args(["-KILL", "--"])
+            .arg(group)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()?
+            .success();
+        if !terminated && child.try_wait()?.is_none() {
+            child.kill()?;
+        }
+        let _ = child.wait();
+        Ok(())
     }
 }
 
