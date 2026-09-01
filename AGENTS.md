@@ -137,6 +137,10 @@ typed subprocess capability and separately grants executable mappings. On
 macOS, subprocess compatibility includes broad Mach lookup and may reach
 same-user local services even when IP networking is blocked.
 
+Foreground terminal compatibility and subprocess creation are independent
+capabilities. Product runtime preparation must never enable subprocesses as an
+implicit consequence of selecting inherited terminal behavior.
+
 ## Security invariants
 
 These rules are release-blocking:

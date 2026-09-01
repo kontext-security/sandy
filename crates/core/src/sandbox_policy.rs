@@ -341,10 +341,13 @@ pub fn allow_file_metadata(mut policy: SandboxPolicy) -> SandboxPolicy {
 
 /// Enables the CLI's foreground compatibility behavior.
 ///
+/// This does not grant subprocess authority. The product boundary must select
+/// that independent capability explicitly when its execution contract needs
+/// descendants.
+///
 /// This function is intentionally not re-exported by the supported facade.
 #[doc(hidden)]
 pub fn allow_foreground_cli_compatibility(mut policy: SandboxPolicy) -> SandboxPolicy {
-    policy.allow_subprocesses = true;
     policy.runtime_compatibility = crate::RuntimeCompatibility::ForegroundCli;
     policy
 }
@@ -543,6 +546,21 @@ mod tests {
         assert!(parts.executables.is_empty());
         assert!(parts.denied_subtrees.is_empty());
         assert!(parts.write_denied_exact.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn foreground_compatibility_does_not_grant_subprocesses()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let parts = into_policy_parts(allow_foreground_cli_compatibility(SandboxPolicy::new(
+            NetworkPolicy::BlockAll,
+        )))?;
+
+        assert!(!parts.allow_subprocesses);
+        assert_eq!(
+            parts.runtime_compatibility,
+            crate::RuntimeCompatibility::ForegroundCli
+        );
         Ok(())
     }
 

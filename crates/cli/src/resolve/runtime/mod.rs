@@ -1,7 +1,5 @@
 //! Product-owned runtime compatibility policy.
 
-use sandy_core::NetworkPolicy;
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 use sandy_core::SandboxPolicy;
 
 use crate::resolve::CliPolicyIntent;
@@ -12,16 +10,16 @@ pub(crate) mod linux;
 pub(crate) mod macos;
 
 #[cfg(target_os = "linux")]
-pub(crate) fn intent(network: NetworkPolicy) -> CliPolicyIntent {
-    linux::intent(network)
+pub(crate) fn intent(policy: SandboxPolicy) -> CliPolicyIntent {
+    linux::intent(policy)
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn intent(network: NetworkPolicy) -> CliPolicyIntent {
-    macos::intent(network)
+pub(crate) fn intent(policy: SandboxPolicy) -> CliPolicyIntent {
+    macos::intent(policy)
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-pub(crate) fn intent(network: NetworkPolicy) -> CliPolicyIntent {
-    CliPolicyIntent::new(SandboxPolicy::new(network))
+pub(crate) fn intent(policy: SandboxPolicy) -> CliPolicyIntent {
+    CliPolicyIntent::new(policy)
 }
