@@ -40,15 +40,25 @@ sandy run -- claude
 sandy run -- codex --sandbox danger-full-access
 sandy run -- opencode
 
-# Linux 0.2
+# Linux 0.2 (after the one-time setup below)
 sandy run -- codex --sandbox danger-full-access
 ```
 
-Linux CI starts a pinned native Codex release inside its Sandy profile. Claude
-Code and OpenCode native Linux releases require dynamic `/proc/self` interfaces
-that Sandy's private root intentionally omits, so they are not supported on
-Linux in 0.2. The Codex smoke verifies local startup and runtime compatibility;
-authenticated provider sessions remain the agent vendor's responsibility.
+On Linux, create Codex's protected control files before the first Sandy launch.
+Sandy does not create or overwrite agent configuration during `run`:
+
+```bash
+mkdir -p ~/.codex
+test -e ~/.codex/config.toml || touch ~/.codex/config.toml
+test -e ~/.codex/hooks.json || printf '{}\n' > ~/.codex/hooks.json
+```
+
+Linux CI launches a pinned native Codex release under the built-in profile on
+x86-64 and arm64 and checks `codex --version`. This qualifies binary startup;
+it does not cover the TUI, configuration lifecycle, tool execution,
+authentication, or provider sessions. Claude Code and OpenCode native Linux
+releases require dynamic `/proc/self` interfaces that Sandy's private root
+intentionally omits, so they are outside the Linux 0.2 compatibility contract.
 
 The current project is writable. Network access is allowed unless you block it
 explicitly:
@@ -143,8 +153,10 @@ run_untrusted_work();
 Policy paths are resolved when `apply` runs and must already exist. File access
 does not imply executable access. Unknown fields, unsupported versions, and
 unrepresentable policy combinations are rejected rather than approximated.
-See the [public Rust API](docs/PUBLIC_API.md) and [CLI profile
-format](docs/PROFILE_FORMAT.md) for the complete contracts.
+This complete library policy is not a CLI `--profile-file`: the CLI format is
+an additive extension of one built-in profile and cannot set network or process
+policy. See the [public Rust API](docs/PUBLIC_API.md) and [CLI profile
+format](docs/PROFILE_FORMAT.md) for the two contracts.
 
 ## Behavioral Security
 

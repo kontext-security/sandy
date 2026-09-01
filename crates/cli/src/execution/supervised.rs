@@ -265,6 +265,9 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
         return Ok(0);
     }
 
+    #[cfg(target_os = "linux")]
+    validate_linux_write_protections(validated.policy(), selected.name())?;
+
     let manifest_path = session.path().join("launch.json");
     let mut file = OpenOptions::new()
         .write(true)
@@ -317,4 +320,38 @@ fn read_write_grant_scope(path: &std::path::Path) -> Result<PathScope, AppError>
         ));
     }
     Ok(scope)
+}
+
+#[cfg(target_os = "linux")]
+fn validate_linux_write_protections(
+    policy: &sandy_core::ValidatedPolicy,
+    profile_name: &str,
+) -> Result<(), AppError> {
+    let spec = policy.spec();
+    for protection in &spec.write_protections {
+        let visible_writable = spec.files.iter().any(|grant| {
+            grant.access == AccessMode::ReadWrite
+                && (grant.path == protection.path
+                    || (grant.scope == PathScope::Subtree
+                        && protection.path.as_path().starts_with(grant.path.as_path())))
+        });
+        if !visible_writable {
+            continue;
+        }
+        match fs::symlink_metadata(protection.path.as_path()) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(AppError::Launch(format!(
+                    "Linux profile {profile_name:?} requires its write-protected files to exist before launch; initialize the profile configuration outside Sandy and retry"
+                )));
+            }
+            Err(error) => {
+                return Err(AppError::io(
+                    "inspect Linux write-protected profile path",
+                    error,
+                ));
+            }
+        }
+    }
+    Ok(())
 }

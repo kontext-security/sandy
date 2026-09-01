@@ -93,7 +93,7 @@ fn linux_probe_failure_message() -> String {
         std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
             .is_ok_and(|value| value.trim() == "1");
     if apparmor_restricts_user_namespaces {
-        return "the native runtime probe failed because AppArmor restricts unprivileged user namespaces; ask the host administrator to authorize user namespaces for the Sandy executable (the CI-only fallback of setting kernel.apparmor_restrict_unprivileged_userns=0 weakens this restriction system-wide)"
+        return "the native runtime probe may have failed because AppArmor restricts unprivileged user namespaces; ask the host administrator to authorize user namespaces for the Sandy executable (the CI-only fallback of setting kernel.apparmor_restrict_unprivileged_userns=0 weakens this restriction system-wide)"
             .to_owned();
     }
     "the native runtime probe failed; Sandy requires Linux 6.12 or a vendor kernel with Landlock ABI 6, unprivileged user/mount/IPC namespaces, and the modern mount API"

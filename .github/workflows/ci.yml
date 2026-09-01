@@ -57,9 +57,11 @@ jobs:
       matrix:
         include:
           - runner: ubuntu-24.04
-            real_codex: "1"
+            codex_target: x86_64-unknown-linux-musl
+            codex_sha256: 05f942d3d3c5b5acd9edad56ce2797b6fe72dbb1462b24e5c9bf7dcec9a28a11
           - runner: ubuntu-24.04-arm
-            real_codex: "0"
+            codex_target: aarch64-unknown-linux-musl
+            codex_sha256: 37da6b486503c8a42cc4604d2a3d80d388df896dd251e9225f4f3d49b08c2e8c
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     steps:
@@ -93,10 +95,10 @@ jobs:
       - name: Test workspace
         run: cargo test --workspace --locked
       - name: Install pinned Codex fixture
-        if: matrix.real_codex == '1'
         env:
           CODEX_VERSION: 0.152.0
-          CODEX_SHA256: 05f942d3d3c5b5acd9edad56ce2797b6fe72dbb1462b24e5c9bf7dcec9a28a11
+          CODEX_TARGET: ${{ matrix.codex_target }}
+          CODEX_SHA256: ${{ matrix.codex_sha256 }}
         run: |
           fixture_dir="$RUNNER_TEMP/sandy-real-codex"
           archive_dir="$(mktemp -d)"
@@ -106,14 +108,14 @@ jobs:
           codex_archive="$archive_dir/codex.tar.gz"
           curl --proto '=https' --tlsv1.2 --fail --location --retry 3 \
             --output "$codex_archive" \
-            "https://github.com/openai/codex/releases/download/rust-v${CODEX_VERSION}/codex-x86_64-unknown-linux-musl.tar.gz"
+            "https://github.com/openai/codex/releases/download/rust-v${CODEX_VERSION}/codex-${CODEX_TARGET}.tar.gz"
           test "$(sha256sum "$codex_archive" | awk '{print $1}')" = "$CODEX_SHA256"
           tar -C "$archive_dir" -xzf "$codex_archive"
-          install -m 0755 "$archive_dir/codex-x86_64-unknown-linux-musl" "$fixture_dir/codex"
+          install -m 0755 "$archive_dir/codex-${CODEX_TARGET}" "$fixture_dir/codex"
       - name: Test Linux enforcement
         env:
           SANDY_REQUIRE_NODE: "1"
-          SANDY_REQUIRE_REAL_CODEX: ${{ matrix.real_codex }}
+          SANDY_REQUIRE_REAL_CODEX: "1"
           SANDY_REAL_CODEX: ${{ runner.temp }}/sandy-real-codex/codex
         run: make test-live-linux
       - name: Test packaged facade consumer

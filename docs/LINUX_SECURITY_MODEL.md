@@ -192,8 +192,10 @@ Write-protected entries must exist so the backend can pin and overmount them.
 The CLI resolves embedded profiles through the shared typed policy model, but
 does not perform macOS runtime-control discovery on Linux. Built-in and user
 profiles are accepted only when the complete resolved policy is representable;
-absent required files or a confidential deny nested inside a writable tree fail
-before the bootstrap executes the target.
+absent write-protected files beneath a writable grant or a confidential deny
+nested inside a writable tree fail before the bootstrap executes the target.
+The CLI reports the former as an explicit profile-initialization precondition;
+it never creates or silently skips a protected control file.
 
 The Linux CLI accepts `--read-write` only for existing directories. Exact
 read-only and executable regular-file grants remain supported; a writable
@@ -204,14 +206,15 @@ The release workflow verifies the packaged x86-64 and arm64 binaries with
 `doctor` and a real sandboxed launch on Ubuntu 24.04. The x86-64 artifact is
 built on Ubuntu 22.04; that build choice lowers its glibc floor but does not
 claim compatibility with every Linux distribution. CI also runs real Node,
-Python, and subprocess fixtures. On x86-64, CI additionally starts a pinned
-native Codex release with its built-in profile and networking blocked. That
-smoke test proves local startup and runtime compatibility, while separate
-fixtures prove all built-in profile policy and state boundaries. It does not
-authenticate an account or make a provider request. Native Claude Code and
-OpenCode releases, along with common Rust toolchains, can depend on dynamic
-`/proc/self` paths omitted by the private root and are outside the initial Linux
-compatibility contract.
+Python, and subprocess fixtures. On x86-64 and arm64, CI additionally launches
+a pinned native Codex release with its built-in profile and networking blocked,
+then checks `codex --version`. That smoke test qualifies binary startup only;
+it does not exercise the TUI, configuration lifecycle, tool execution,
+authentication, or a provider request. Separate fixtures prove all built-in
+profile policy and state boundaries. Native Claude Code and OpenCode releases,
+along with common Rust toolchains, can depend on dynamic `/proc/self` paths
+omitted by the private root and are outside the initial Linux compatibility
+contract.
 
 ## Unsafe boundary
 

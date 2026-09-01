@@ -463,6 +463,44 @@ fn linux_rejects_read_write_regular_files_before_launch() -> Result<(), Box<dyn 
 }
 
 #[test]
+#[cfg(target_os = "linux")]
+fn linux_rejects_missing_codex_protected_files_before_launch()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let home = directory.path().join("home");
+    let project = directory.path().join("project");
+    let marker = directory.path().join("target-ran");
+    fs::create_dir(&home)?;
+    fs::create_dir(&project)?;
+    fs::create_dir(home.join(".codex"))?;
+
+    let mut command = Command::cargo_bin("sandy")?;
+    command
+        .env("HOME", &home)
+        .env("SANDY_TEST_MARKER", &marker)
+        .current_dir(&project)
+        .args([
+            "run",
+            "--profile",
+            "codex",
+            "--",
+            "/bin/sh",
+            "-c",
+            "printf ran > \"$SANDY_TEST_MARKER\"",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "Linux profile \"codex\" requires its write-protected files to exist before launch",
+        ));
+
+    assert!(!home.join(".codex/config.toml").exists());
+    assert!(!home.join(".codex/hooks.json").exists());
+    assert!(!marker.exists());
+    Ok(())
+}
+
+#[test]
 fn blocked_network_dry_run_has_no_implicit_socket_authority()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut command = Command::cargo_bin("sandy")?;
