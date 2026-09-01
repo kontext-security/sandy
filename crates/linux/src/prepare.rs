@@ -26,6 +26,7 @@ pub(crate) struct PinnedPath {
     pub(crate) kind: PinnedKind,
     device: u64,
     inode: u64,
+    link_count: u64,
 }
 
 pub(crate) struct MountRequirement {
@@ -194,12 +195,15 @@ fn prepare_mounts(
         .iter()
         .filter(|protection| visible(&protection.path, effective.iter()))
         .map(|protection| {
-            let kind = pinned
+            let pinned_path = pinned
                 .get(&protection.path)
-                .ok_or_else(|| preparation("write-protection pinning"))?
-                .kind;
+                .ok_or_else(|| preparation("write-protection pinning"))?;
+            let kind = pinned_path.kind;
             if kind == PinnedKind::Directory && protection.scope == PathScope::Exact {
                 return Err(unsupported("exact directory write protection"));
+            }
+            if kind == PinnedKind::Regular && pinned_path.link_count != 1 {
+                return Err(unsupported("write-protected hard-link alias"));
             }
             Ok(ProtectionRequirement {
                 path: protection.path.clone(),
@@ -329,6 +333,7 @@ fn pin(path: &AbsolutePath) -> Result<PinnedPath, LinuxError> {
         kind,
         device: metadata.dev(),
         inode: metadata.ino(),
+        link_count: metadata.nlink(),
     })
 }
 
@@ -353,6 +358,7 @@ pub(crate) fn repin_after_namespace(preparation: &mut MountPreparation) -> Resul
         if metadata.dev() != pinned.device
             || metadata.ino() != pinned.inode
             || classify(&metadata) != pinned.kind
+            || metadata.nlink() != pinned.link_count
         {
             return Err(enforcement("mount source verification"));
         }

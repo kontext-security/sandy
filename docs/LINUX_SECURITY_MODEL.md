@@ -28,7 +28,8 @@ failure leaves the process unrestricted.
 
 Application then:
 
-1. enters a user and mount namespace, plus a network namespace for `BlockAll`;
+1. enters private user, mount, and IPC namespaces, plus a network namespace
+   for `BlockAll`;
 2. installs same-ID, one-entry UID and GID maps and makes mount propagation
    private;
 3. reopens every grant in the new mount namespace and verifies its device,
@@ -55,12 +56,16 @@ restrictions. Device ioctls on already-open descriptors remain inherited
 capabilities.
 
 The host must permit the calling executable to create and configure user,
-mount, and—when blocking network access—network namespaces. Some distributions
-restrict those operations through a system security profile. Sandy exercises
-the namespace and modern mount setup in a sacrificial child during preparation and
-reports the backend as unsupported when the host denies it; it never falls back
-to weaker enforcement. Host administrators must make the namespace capability
-available through their normal system security policy.
+mount, and IPC namespaces and—when blocking network access—a network namespace.
+Some distributions restrict those operations through a system security profile.
+Sandy exercises the namespace and modern mount setup in a sacrificial child
+during preparation and reports the backend as unsupported when the host denies
+it; it never falls back to weaker enforcement. Host administrators must make
+the namespace capability available through their normal system security policy.
+
+System V shared memory, message queues, and semaphores are confined to the
+private IPC namespace. Descendants remain able to create and share new IPC
+objects inside the sandbox domain; host IPC objects are not visible.
 
 Read authority never includes execute authority. The private filesystem marks
 non-executable mounts `noexec`; an executable nested below a readable subtree
@@ -95,7 +100,9 @@ former host root are absent. Open descriptors and memory acquired before
 `apply()` are not revoked.
 
 An exact protected file is overmounted read-only. A protected subtree is
-recursively read-only.
+recursively read-only. Filesystem enforcement is pathname-based. A protected
+regular file with a pre-existing hard-link alias is rejected, and Sandy verifies
+that its link count does not change between preparation and namespace entry.
 
 The following combinations are rejected before enforcement rather than being
 weakened:

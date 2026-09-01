@@ -4,6 +4,8 @@ use sandy_core::{
 
 use crate::{LinuxError, LinuxErrorKind};
 
+const BASELINE_LANDLOCK_ABI: u32 = 6;
+
 /// Deterministic Linux lowering of a validated platform-neutral policy.
 ///
 /// This type owns no file descriptors and performs no ambient discovery. It
@@ -32,7 +34,7 @@ impl LinuxPolicyPlan {
     /// policy, including process-signal isolation.
     #[must_use]
     pub fn required_landlock_abi(&self) -> u32 {
-        crate::BASELINE_LANDLOCK_ABI
+        BASELINE_LANDLOCK_ABI
     }
 }
 
@@ -120,7 +122,7 @@ mod tests {
         let plan = plan(&policy)?;
         assert!(plan.blocks_network());
         assert!(!plan.allows_subprocesses());
-        assert_eq!(plan.required_landlock_abi(), crate::BASELINE_LANDLOCK_ABI);
+        assert_eq!(plan.required_landlock_abi(), 6);
         Ok(())
     }
 

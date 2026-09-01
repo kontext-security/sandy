@@ -44,6 +44,7 @@ mod linux {
         exact_directory_grants_are_rejected_before_enforcement()?;
         exact_device_grants_do_not_expose_adjacent_devices()?;
         host_noexec_is_never_weakened()?;
+        write_protected_hard_link_aliases_are_rejected()?;
         mount_source_replacement_is_rejected()?;
         disabled_process_mode_preserves_threads_only()?;
 
@@ -199,6 +200,35 @@ mod linux {
         let status = status_with_timeout(&mut command)?;
         if !status.success() {
             return Err("disabled process-mode child failed".into());
+        }
+        Ok(())
+    }
+
+    fn write_protected_hard_link_aliases_are_rejected() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let workspace_path = root.path().join("workspace");
+        fs::create_dir(&workspace_path)?;
+        let protected_path = workspace_path.join("protected.txt");
+        fs::write(&protected_path, "protected")?;
+        fs::hard_link(&protected_path, workspace_path.join("alias.txt"))?;
+        let workspace = absolute(&workspace_path)?;
+        let policy = ValidatedPolicy::try_from(PolicySpec {
+            files: vec![FileGrant {
+                path: workspace.clone(),
+                access: AccessMode::ReadWrite,
+                scope: PathScope::Subtree,
+            }],
+            write_protections: vec![WriteProtection {
+                path: absolute(&protected_path)?,
+                scope: PathScope::Exact,
+            }],
+            ..PolicySpec::default()
+        })?;
+        let error = sandy_linux::prepare(sandy_linux::plan(&policy)?, &workspace)
+            .err()
+            .ok_or("write-protected hard-link alias was unexpectedly accepted")?;
+        if error.kind() != sandy_linux::LinuxErrorKind::Unsupported {
+            return Err("hard-link alias returned the wrong error class".into());
         }
         Ok(())
     }

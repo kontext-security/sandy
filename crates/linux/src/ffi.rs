@@ -9,6 +9,8 @@ use std::{
 };
 
 const EMPTY: &CStr = c"";
+const BASE_NAMESPACE_FLAGS: libc::c_int =
+    libc::CLONE_NEWUSER | libc::CLONE_NEWNS | libc::CLONE_NEWIPC;
 
 #[repr(C)]
 struct CapHeader {
@@ -38,7 +40,7 @@ pub(crate) fn effective_ids() -> (u32, u32) {
 }
 
 pub(crate) fn unshare_namespaces(block_network: bool) -> io::Result<()> {
-    let mut flags = libc::CLONE_NEWUSER | libc::CLONE_NEWNS;
+    let mut flags = BASE_NAMESPACE_FLAGS;
     if block_network {
         flags |= libc::CLONE_NEWNET;
     }
@@ -93,7 +95,7 @@ pub(crate) fn probe_namespace_setup(
 }
 
 unsafe fn namespace_probe_child(uid_map: &[u8], gid_map: &[u8], block_network: bool) -> ! {
-    let mut flags = libc::CLONE_NEWUSER | libc::CLONE_NEWNS;
+    let mut flags = BASE_NAMESPACE_FLAGS;
     if block_network {
         flags |= libc::CLONE_NEWNET;
     }
