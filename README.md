@@ -32,6 +32,29 @@ Verify that the native sandbox is available:
 sandy doctor
 ```
 
+Compatibility today:
+
+| Surface | macOS | Linux 0.2 | Notes |
+| --- | --- | --- | --- |
+| Generic commands and profile | Supported | Supported | The resolved policy must be representable by the native backend. |
+| Claude Code | Supported | Not yet supported | The native Linux release requires dynamic process paths omitted from Sandy's private root. |
+| Codex | Supported | Startup-qualified | CI checks a pinned native binary with `codex --version` on x86-64 and arm64. |
+| OpenCode | Supported | Not yet supported | The native Linux release requires dynamic process paths omitted from Sandy's private root. |
+| Filesystem and executable grants | Supported | Supported | Read and execute authority remain separate; unsupported policy shapes fail closed. |
+| Network allow/block | Supported | Supported | Linux `BlockAll` uses a private network namespace. |
+| CLI `--profile-file` | Supported | Supported | This is an additive extension of one built-in profile. |
+| Rust `sandy::apply` | Supported | Supported | The library restricts the calling process without a Sandy executable. |
+| Kontext integration | Supported | Not yet supported | Linux does not yet provide the required runtime discovery and exact external socket authority. |
+| Numbat integration | Supported | Not yet supported | Runtime discovery and integration setup are currently macOS-only. |
+
+Linux's private filesystem view intentionally omits `/proc/self/exe`,
+`/proc/self/fd`, `/dev/fd`, and `/dev/shm`. Claude Code and OpenCode currently
+depend on those dynamic interfaces. Mounting broad host process metadata would
+weaken Sandy's Linux isolation contract, so Sandy rejects those combinations
+instead of silently exposing more of the host. Codex does not need them for the
+tested startup path, but its TUI, configuration lifecycle, tool execution, and
+provider sessions are not yet qualified.
+
 Then run an agent from your project:
 
 ```bash
@@ -52,13 +75,6 @@ mkdir -p ~/.codex
 test -e ~/.codex/config.toml || touch ~/.codex/config.toml
 test -e ~/.codex/hooks.json || printf '{}\n' > ~/.codex/hooks.json
 ```
-
-Linux CI launches a pinned native Codex release under the built-in profile on
-x86-64 and arm64 and checks `codex --version`. This qualifies binary startup;
-it does not cover the TUI, configuration lifecycle, tool execution,
-authentication, or provider sessions. Claude Code and OpenCode native Linux
-releases require dynamic `/proc/self` interfaces that Sandy's private root
-intentionally omits, so they are outside the Linux 0.2 compatibility contract.
 
 The current project is writable. Network access is allowed unless you block it
 explicitly:
