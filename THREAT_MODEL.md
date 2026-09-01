@@ -71,19 +71,6 @@ rather than receiving approximate enforcement. Landlock signal scoping prevents
 the restricted process from signaling processes outside its sandbox domain
 while preserving signals among its descendants.
 
-An explicitly selected user profile file is parsed through a narrower schema
-than embedded profiles. It can only add required filesystem grants, executable
-grants, and terminal denials to one selectable embedded base; it cannot remove
-inherited policy or declare integration behavior. Filesystem grants never add
-executable authority. The CLI reads from the canonical path selected before
-opening and denies both that target and the supplied absolute lexical path
-inside the launched sandbox.
-
-The user profile is operator-selected security configuration, not agent input:
-it can add host filesystem or executable authority. The operator must trust and
-control it. Current-session source denial does not authenticate the document or
-prevent a target from altering a writable source before a later launch.
-
 ## In scope
 
 - reads and writes outside explicit filesystem grants;
@@ -116,8 +103,6 @@ must apply before creating them.
 - all confused-deputy behavior through allowed Mach/XPC services;
 - outbound data disclosure while network is enabled;
 - mutation between path canonicalization and later use;
-- replacement of a user-profile pathname after trusted preparation, and access
-  through a hard-link alias not named by the lexical or canonical source path;
 - replacement of a CLI policy-file pathname after trusted preparation, and
   access through an unnamed hard-link alias;
 - replacement of an explicitly granted Unix socket after the trusted parent
@@ -205,13 +190,13 @@ port. This endpoint is not a synchronous reference monitor.
 Hook-source discovery honors the supported agent configuration-root overrides.
 Those values affect both the agent and Sandy and are intentionally preserved in
 the child environment. Sandy accepts only absolute, UTF-8, non-root values for
-the closed set modeled by typed profiles. The resolved root must already exist,
+the closed set modeled by built-in agent presets. The resolved root must already exist,
 is granted as agent state, and must not be home-wide or overlap protected data.
 Known writable user hook leaves are protected even when absent so one sandboxed
 run cannot plant a registration that expands the next run's capabilities.
 
 Agent state directories may contain credentials and are granted for compatible
-known-agent profiles. This is a deliberate usability tradeoff and must not be
+known-agent presets. This is a deliberate usability tradeoff and must not be
 described as credential isolation.
 
 For network-enabled launches, Sandy supplies a platform public PEM root bundle
@@ -223,7 +208,7 @@ grant from an environment variable.
 ## Fail-closed requirements
 
 An unsupported platform, nested sandbox, malformed or oversized manifest,
-invalid path, profile compilation error, native enforcement error, or explicitly
+invalid path, policy compilation error, native enforcement error, or explicitly
 required runtime-control integration failure must prevent target execution. A failure
 while preserving an automatically detected optional integration contributes no
 runtime-control capabilities, emits a warning, and does not prevent standalone

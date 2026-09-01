@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod agent;
 mod app;
 mod cli;
 mod doctor;
@@ -7,7 +8,6 @@ mod error;
 mod execution;
 mod integration;
 mod policy_file;
-mod profile;
 mod resolve;
 
 use std::process::ExitCode;

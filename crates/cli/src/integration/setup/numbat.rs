@@ -80,7 +80,7 @@ impl SetupProvider for NumbatSetup {
                 OsString::from("hook"),
                 OsString::from("install"),
                 OsString::from("--agent"),
-                OsString::from(context.agent.profile_name()),
+                OsString::from(context.agent.preset_name()),
                 OsString::from("--output=file"),
                 OsString::from("--output-file"),
                 output.into_os_string(),

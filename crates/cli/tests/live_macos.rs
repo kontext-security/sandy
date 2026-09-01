@@ -113,51 +113,6 @@ fn explicit_executable_grants_allow_only_selected_descendant_tools()
     assert!(cli_allowed_marker.is_file());
     assert!(!cli_read_only_marker.exists());
     assert!(!cli_adjacent_marker.exists());
-
-    let profile = root.path().join("session.json");
-    fs::write(
-        &profile,
-        format!(
-            r#"{{
-                "schema_version": 1,
-                "name": "tool-session",
-                "extends": "generic",
-                "grants": [
-                    {{ "path": "{}", "access": "read", "scope": "subtree" }},
-                    {{ "path": "{}", "access": "read", "scope": "subtree" }},
-                    {{ "path": "{}", "access": "read", "scope": "subtree" }}
-                ],
-                "executable_grants": [
-                    {{ "path": "{}", "scope": "subtree" }}
-                ]
-            }}"#,
-            allowed_root.display(),
-            read_only_root.display(),
-            adjacent_root.display(),
-            allowed_root.display(),
-        ),
-    )?;
-    let profile_allowed_marker = project.join("profile-allowed");
-    let profile_read_only_marker = project.join("profile-read-only");
-    let profile_adjacent_marker = project.join("profile-adjacent");
-    let mut profile_run = Command::cargo_bin("sandy")?;
-    profile_run
-        .env("HOME", &home)
-        .current_dir(&project)
-        .args(["run", "--profile-file"])
-        .arg(&profile)
-        .args(["--", "/bin/sh", "-c", descendant_tool_probe(), "tool-probe"])
-        .arg(&allowed)
-        .arg(&read_only)
-        .arg(&adjacent)
-        .arg(&profile_allowed_marker)
-        .arg(&profile_read_only_marker)
-        .arg(&profile_adjacent_marker)
-        .assert()
-        .success();
-    assert!(profile_allowed_marker.is_file());
-    assert!(!profile_read_only_marker.exists());
-    assert!(!profile_adjacent_marker.exists());
     Ok(())
 }
 
@@ -179,36 +134,32 @@ fn descendant_tool_probe() -> &'static str {
 
 #[test]
 #[ignore = "irreversibly applies Seatbelt; run on a host, not inside another sandbox"]
-fn user_profile_source_paths_and_inherited_sensitive_data_remain_denied()
+fn policy_file_source_and_declared_denials_override_the_working_directory_grant()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
-    let home = root.path().join("home");
-    let ssh = home.join(".ssh");
     let project = root.path().join("project");
-    let stored_profile = project.join("operator-profile.json");
-    let profile_link = project.join("session.json");
+    let stored_policy = project.join("stored-policy.json");
+    let policy_link = project.join("sandbox.json");
     let protected_target = project.join("protected-target.txt");
     let protected_alias = project.join("protected-alias.txt");
     let adjacent = project.join("adjacent.txt");
-    fs::create_dir_all(&ssh)?;
     fs::create_dir(&project)?;
-    fs::write(ssh.join("sentinel"), "protected")?;
+    fs::write(&protected_target, "protected")?;
+    std::os::unix::fs::symlink(&protected_target, &protected_alias)?;
+    fs::write(&adjacent, "before")?;
     fs::write(
-        &stored_profile,
+        &stored_policy,
         format!(
             r#"{{
                 "schema_version": 1,
-                "name": "session",
-                "extends": "generic",
+                "network": "block_all",
+                "allow_subprocesses": true,
                 "deny_subtrees": ["{}"]
             }}"#,
             protected_alias.display(),
         ),
     )?;
-    std::os::unix::fs::symlink(&stored_profile, &profile_link)?;
-    fs::write(&protected_target, "protected")?;
-    std::os::unix::fs::symlink(&protected_target, &protected_alias)?;
-    fs::write(&adjacent, "before")?;
+    std::os::unix::fs::symlink(&stored_policy, &policy_link)?;
 
     let script = r#"
         ! /bin/cat "$1" >/dev/null 2>&1 &&
@@ -216,39 +167,26 @@ fn user_profile_source_paths_and_inherited_sensitive_data_remain_denied()
         ! /bin/cat "$2" >/dev/null 2>&1 &&
         ! /usr/bin/printf changed > "$2" 2>/dev/null &&
         ! /bin/cat "$3" >/dev/null 2>&1 &&
+        ! /usr/bin/printf changed > "$3" 2>/dev/null &&
         ! /bin/cat "$4" >/dev/null 2>&1 &&
         ! /usr/bin/printf changed > "$4" 2>/dev/null &&
-        ! /bin/cat "$5" >/dev/null 2>&1 &&
-        ! /usr/bin/printf changed > "$5" 2>/dev/null &&
-        /usr/bin/printf changed > "$6"
+        /usr/bin/printf changed > "$5"
     "#;
     let mut command = Command::cargo_bin("sandy")?;
     command
-        .env("HOME", &home)
         .current_dir(&project)
-        .args([
-            "run",
-            "--profile-file",
-            profile_link
-                .to_str()
-                .ok_or("profile link path must be UTF-8")?,
-            "--",
-            "/bin/sh",
-            "-c",
-            script,
-            "profile-probe",
-        ])
-        .arg(&profile_link)
-        .arg(&stored_profile)
-        .arg(ssh.join("sentinel"))
+        .args(["run", "--policy-file"])
+        .arg(&policy_link)
+        .args(["--", "/bin/sh", "-c", script, "policy-probe"])
+        .arg(&policy_link)
+        .arg(&stored_policy)
         .arg(&protected_alias)
         .arg(&protected_target)
         .arg(&adjacent)
         .assert()
         .success();
 
-    assert!(fs::read_to_string(&stored_profile)?.contains("schema_version"));
-    assert_eq!(fs::read_to_string(ssh.join("sentinel"))?, "protected");
+    assert!(fs::read_to_string(&stored_policy)?.contains("schema_version"));
     assert_eq!(fs::read_to_string(&protected_target)?, "protected");
     assert_eq!(fs::read_to_string(adjacent)?, "changed");
     Ok(())
@@ -396,7 +334,7 @@ fn numbat_runtime_resources_preserve_operator_integrity() -> Result<(), Box<dyn 
         .current_dir(&project)
         .args([
             "run",
-            "--profile",
+            "--agent",
             "codex",
             "--numbat",
             "--",
@@ -457,7 +395,7 @@ fn numbat_opencode_plugin_parent_cannot_be_relocated() -> Result<(), Box<dyn std
         .current_dir(&project)
         .args([
             "run",
-            "--profile",
+            "--agent",
             "opencode",
             "--numbat",
             "--",
@@ -490,7 +428,7 @@ fn absent_opencode_registration_cannot_be_planted_for_a_later_run()
         .current_dir(&project)
         .args([
             "run",
-            "--profile",
+            "--agent",
             "opencode",
             "--",
             "/bin/sh",
@@ -509,7 +447,7 @@ fn absent_opencode_registration_cannot_be_planted_for_a_later_run()
         .args([
             "run",
             "--dry-run",
-            "--profile",
+            "--agent",
             "opencode",
             "--numbat",
             "--",
@@ -1032,7 +970,7 @@ fn optional_kontext_failure_does_not_prevent_target_execution()
 
 #[test]
 #[ignore = "irreversibly applies Seatbelt; run on a host, not inside another sandbox"]
-fn opencode_profile_allows_state_but_protects_configuration_and_secrets()
+fn opencode_preset_allows_state_but_protects_configuration_and_secrets()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let root_path = fs::canonicalize(root.path())?;
@@ -1055,7 +993,7 @@ fn opencode_profile_allows_state_but_protects_configuration_and_secrets()
         .current_dir(&project)
         .args([
             "run",
-            "--profile",
+            "--agent",
             "opencode",
             "--",
             "/bin/sh",
@@ -1075,15 +1013,7 @@ fn opencode_profile_allows_state_but_protects_configuration_and_secrets()
         denied
             .env("HOME", &home)
             .current_dir(&project)
-            .args([
-                "run",
-                "--profile",
-                "opencode",
-                "--",
-                "/bin/sh",
-                "-c",
-                &script,
-            ])
+            .args(["run", "--agent", "opencode", "--", "/bin/sh", "-c", &script])
             .assert()
             .failure()
             .stderr(predicate::str::contains("Operation not permitted"));
@@ -1096,7 +1026,7 @@ fn opencode_profile_allows_state_but_protects_configuration_and_secrets()
         .current_dir(&project)
         .args([
             "run",
-            "--profile",
+            "--agent",
             "opencode",
             "--",
             "/bin/sh",
@@ -1133,7 +1063,7 @@ fn codex_control_files_are_readable_but_cannot_be_replaced_or_modified()
         .current_dir(&project)
         .args([
             "run",
-            "--profile",
+            "--agent",
             "codex",
             "--",
             "/bin/sh",
@@ -1156,7 +1086,7 @@ fn codex_control_files_are_readable_but_cannot_be_replaced_or_modified()
         denied
             .env("HOME", &home)
             .current_dir(&project)
-            .args(["run", "--profile", "codex", "--", "/bin/sh", "-c", script])
+            .args(["run", "--agent", "codex", "--", "/bin/sh", "-c", script])
             .assert()
             .failure();
     }
@@ -1167,7 +1097,7 @@ fn codex_control_files_are_readable_but_cannot_be_replaced_or_modified()
         .current_dir(&project)
         .args([
             "run",
-            "--profile",
+            "--agent",
             "codex",
             "--",
             "/bin/sh",

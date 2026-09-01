@@ -1,7 +1,7 @@
 //! Explicit loading for complete caller-controlled policy documents.
 
 use std::{
-    env, fs,
+    fs,
     fs::File,
     io::Read as _,
     path::{Path, PathBuf},
@@ -45,8 +45,8 @@ pub(crate) fn protect_source(
 /// Loads exactly one bounded regular file and parses it through the shared
 /// policy document contract. No directory search, fallback, or interpolation
 /// is performed.
-pub(crate) fn load(path: &Path) -> Result<LoadedPolicy, AppError> {
-    let lexical_path = absolute_lexical_path(path)?;
+pub(crate) fn load(path: &Path, working_directory: &Path) -> Result<LoadedPolicy, AppError> {
+    let lexical_path = absolute_lexical_path(path, working_directory);
     let lexical = absolute_if_utf8(&lexical_path).map_err(|_| {
         AppError::PolicyFile(
             "source path must be absolute UTF-8 without parent traversal".to_owned(),
@@ -87,13 +87,11 @@ pub(crate) fn load(path: &Path) -> Result<LoadedPolicy, AppError> {
     })
 }
 
-fn absolute_lexical_path(path: &Path) -> Result<PathBuf, AppError> {
+fn absolute_lexical_path(path: &Path, working_directory: &Path) -> PathBuf {
     if path.is_absolute() {
-        return Ok(path.to_path_buf());
+        return path.to_path_buf();
     }
-    env::current_dir()
-        .map(|directory| directory.join(path))
-        .map_err(|error| AppError::io("read working directory for sandbox policy file", error))
+    working_directory.join(path)
 }
 
 fn inspect_regular_file(path: &Path) -> Result<(), AppError> {
@@ -129,7 +127,7 @@ mod tests {
         fs::write(&real, r#"{"schema_version":1,"network":"block_all"}"#)?;
         std::os::unix::fs::symlink(&real, &alias)?;
 
-        let loaded = load(&alias)?;
+        let loaded = load(&alias, root.path())?;
         let canonical = fs::canonicalize(real)?;
         assert_eq!(loaded.network(), NetworkPolicy::BlockAll);
         assert_eq!(loaded.source_paths.len(), 2);
@@ -151,12 +149,15 @@ mod tests {
     #[test]
     fn rejects_non_regular_and_oversized_sources() -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
-        assert!(matches!(load(root.path()), Err(AppError::PolicyFile(_))));
+        assert!(matches!(
+            load(root.path(), root.path()),
+            Err(AppError::PolicyFile(_))
+        ));
 
         let oversized = root.path().join("oversized.json");
         fs::write(&oversized, vec![b' '; MAX_POLICY_DOCUMENT_SOURCE_BYTES + 1])?;
         assert!(matches!(
-            load(&oversized),
+            load(&oversized, root.path()),
             Err(AppError::PolicyDocument(
                 sandy_core::PolicyDocumentError::TooLarge
             ))

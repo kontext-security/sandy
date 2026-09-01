@@ -1,7 +1,7 @@
 # Linux security model
 
 The Linux backend is one native security boundary shared by the supported Rust
-facade and the CLI bootstrap. It adds no product policy, profiles, arguments,
+facade and the CLI bootstrap. It adds no product policy, agent presets, arguments,
 environment values, or implicit filesystem grants.
 
 ```text
@@ -189,12 +189,12 @@ remain native. Linux does not support the CLI's local-host-only TCP exception
 or exact external Unix-socket grants in the initial CLI.
 
 Write-protected entries must exist so the backend can pin and overmount them.
-The CLI resolves embedded profiles through the shared typed policy model, but
+The CLI resolves built-in agent presets through the shared typed policy model, but
 does not perform macOS runtime-control discovery on Linux. Built-in and user
-profiles are accepted only when the complete resolved policy is representable;
+policies are accepted only when the complete resolved policy is representable;
 absent write-protected files beneath a writable grant or a confidential deny
 nested inside a writable tree fail before the bootstrap executes the target.
-The CLI reports the former as an explicit profile-initialization precondition;
+The CLI reports the former as an explicit agent-initialization precondition;
 it never creates or silently skips a protected control file.
 
 The Linux CLI accepts `--read-write` only for existing directories. Exact
@@ -207,7 +207,7 @@ The release workflow verifies the packaged x86-64 and arm64 binaries with
 built on Ubuntu 22.04; that build choice lowers its glibc floor but does not
 claim compatibility with every Linux distribution. CI also runs real Node,
 Python, and subprocess fixtures. On x86-64 and arm64, CI additionally runs a
-pinned native Codex release through its built-in profile. A deterministic local
+pinned native Codex release through its built-in preset. A deterministic local
 Responses API drives an agent turn that invokes Codex's command tool. The
 fixture proves that the command may write inside the granted project and cannot
 write to an adjacent host path; it does not use external credentials or qualify

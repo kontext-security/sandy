@@ -92,7 +92,7 @@ their meaning until `apply` resolves them against one working-directory
 snapshot and requires them to exist.
 
 There is no interpolation, home-directory expansion, inheritance, include,
-profile selection, or implicit executable authority. A caller that needs
+agent selection, or implicit executable authority. A caller that needs
 runtime values may add them with the normal builder after parsing. Sandy does
 not retain the source bytes or know which file they came from, so the embedding
 application owns loading and protecting that source. Positive grants must
@@ -220,7 +220,7 @@ Unimplemented operations are absent rather than published as placeholders.
 
 ## Policy semantics
 
-- Sandy adds no filesystem grants, network grants, runtime baseline, profiles,
+- Sandy adds no filesystem grants, network grants, runtime baseline, agent presets,
   protected product paths, or environment changes.
 - Relative paths are resolved against one working-directory snapshot captured
   by `apply`.
@@ -287,7 +287,7 @@ intend untrusted code to operate.
 
 ## Intentionally private or absent
 
-- CLI profiles, explicit user profile-file loading, and runtime baselines
+- CLI agent presets and runtime baselines
 - command launch, supervision, output capture, and terminal handling
 - helper and bootstrap protocols
 - environment mutation

@@ -65,7 +65,7 @@ pub(crate) enum SupportedAgent {
 
 impl SupportedAgent {
     #[must_use]
-    pub(crate) fn profile_name(self) -> &'static str {
+    pub(crate) fn preset_name(self) -> &'static str {
         match self {
             Self::Claude => "claude",
             Self::Codex => "codex",
@@ -76,15 +76,10 @@ impl SupportedAgent {
 
 #[derive(Debug, Args)]
 pub(crate) struct RunArgs {
-    /// Force an agent profile (claude, codex, opencode, generic). Without it,
-    /// the profile is detected from the command name.
+    /// Select a built-in agent preset (claude, codex, opencode, generic).
+    /// Without it, Sandy detects the preset from the command name.
     #[arg(long, value_name = "NAME")]
-    pub(crate) profile: Option<String>,
-
-    /// Load one user-authored session profile. The document must extend one
-    /// built-in profile and may add typed filesystem and executable policy.
-    #[arg(long, value_name = "PATH", conflicts_with = "profile")]
-    pub(crate) profile_file: Option<PathBuf>,
+    pub(crate) agent: Option<String>,
 
     /// Load the complete caller-controlled sandbox policy from a strict,
     /// versioned JSON document. Fixed launcher requirements remain visible in
@@ -93,8 +88,7 @@ pub(crate) struct RunArgs {
         long,
         value_name = "PATH",
         conflicts_with_all = [
-            "profile",
-            "profile_file",
+            "agent",
             "read",
             "read_write",
             "execute",

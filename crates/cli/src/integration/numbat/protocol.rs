@@ -3,13 +3,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use sandy_core::HookProtocol;
-
 use super::{
     CODEX_BLOCK_END, CODEX_BLOCK_START, OPENCODE_PLUGIN_MARKER, OPENCODE_PLUGIN_SENTINELS,
     OWNERSHIP_MARKER, error,
 };
-use crate::{error::AppError, integration::hook_source::shell_words};
+use crate::{agent::HookProtocol, error::AppError, integration::hook_source::shell_words};
 
 #[derive(Debug)]
 pub(super) enum ConfiguredSource {

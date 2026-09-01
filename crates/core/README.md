@@ -8,10 +8,9 @@ contributions, derives required ancestor protections, and produces the
 `ValidatedPolicy` accepted by enforcement. Decoded launch manifests bypass
 that trusted assembly step and are validated strictly without repair.
 
-Core also owns deterministic profile grammar and additive inheritance. Trusted
-embedded profile documents remain distinct from the narrower user-profile
-document; file loading, home expansion, existence checks, and canonicalization
-stay in the CLI boundary.
+Agent-specific defaults are product data in `sandy-cli`; they are deliberately
+outside this platform-neutral validation crate. File loading, home expansion,
+existence checks, and canonicalization stay in the owning product boundary.
 
 This is an implementation package published so the supported `sandy-sandbox`
 facade can be distributed through the Rust package registry. Direct
