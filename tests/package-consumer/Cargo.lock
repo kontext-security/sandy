@@ -71,7 +71,7 @@ dependencies = [
 
 [[package]]
 name = "sandy-core"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "serde",
  "serde_json",
@@ -80,7 +80,7 @@ dependencies = [
 
 [[package]]
 name = "sandy-linux"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "landlock",
  "libc",
@@ -97,7 +97,7 @@ dependencies = [
 
 [[package]]
 name = "sandy-sandbox"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "sandy-core",
  "sandy-linux",
@@ -106,7 +106,7 @@ dependencies = [
 
 [[package]]
 name = "sandy-seatbelt"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "libc",
  "sandy-core",

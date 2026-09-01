@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.1.10](https://github.com/kontext-security/sandy/compare/v0.1.9...v0.1.10) (2026-09-01)
+
+
+### Features
+
+* **cli:** ship Linux sandboxing ([#47](https://github.com/kontext-security/sandy/issues/47)) ([b6aa19b](https://github.com/kontext-security/sandy/commit/b6aa19b6903af6b5c16b70c8cea53be3ec6c0244))
+* **linux:** prove the native enforcement substrate ([#45](https://github.com/kontext-security/sandy/issues/45)) ([ad20aca](https://github.com/kontext-security/sandy/commit/ad20acac2d977f3f8e397780f65557e412c082ef))
+* **sandbox:** enforce current-process policies on Linux ([#46](https://github.com/kontext-security/sandy/issues/46)) ([cedf9be](https://github.com/kontext-security/sandy/commit/cedf9be9ba6bba8ed9fb44d1011d562c9273d5a3))
+
+
+### Bug Fixes
+
+* **cli:** classify oversized doctor output deterministically ([#49](https://github.com/kontext-security/sandy/issues/49)) ([9531e4b](https://github.com/kontext-security/sandy/commit/9531e4b65c97e37a0030f4650f7cec809b2b46d5))
+
 ## [0.1.9](https://github.com/kontext-security/sandy/compare/v0.1.8...v0.1.9) (2026-08-30)
 
 
