@@ -18,13 +18,13 @@ pub struct LinuxPolicyPlan {
 impl LinuxPolicyPlan {
     /// Returns whether a private network namespace is required.
     #[must_use]
-    pub(crate) fn blocks_network(&self) -> bool {
+    pub fn blocks_network(&self) -> bool {
         self.policy.spec().network == NetworkPolicy::BlockAll
     }
 
     /// Returns whether ordinary descendant process creation is authorized.
     #[must_use]
-    pub(crate) fn allows_subprocesses(&self) -> bool {
+    pub fn allows_subprocesses(&self) -> bool {
         self.policy.spec().allow_subprocesses
     }
 
