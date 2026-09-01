@@ -322,6 +322,7 @@ fn cli_file_and_executable_grants_are_independent() -> Result<(), Box<dyn std::e
     let writable = directory.path().join("writable");
     let executable = directory.path().join("executable");
     let readable_file = directory.path().join("readable.txt");
+    #[cfg(target_os = "macos")]
     let writable_file = directory.path().join("writable.txt");
     let executable_file = directory.path().join("executable-file");
     fs::create_dir(&home)?;
@@ -329,31 +330,31 @@ fn cli_file_and_executable_grants_are_independent() -> Result<(), Box<dyn std::e
     fs::create_dir(&writable)?;
     fs::create_dir(&executable)?;
     fs::write(&readable_file, "readable")?;
+    #[cfg(target_os = "macos")]
     fs::write(&writable_file, "writable")?;
     fs::write(&executable_file, "executable")?;
 
     let mut command = Command::cargo_bin("sandy")?;
-    let output = command
-        .env("HOME", home)
-        .args([
-            "run",
-            "--dry-run",
-            "--read",
-            readable.to_str().ok_or("test path must be UTF-8")?,
-            "--read-write",
-            writable.to_str().ok_or("test path must be UTF-8")?,
-            "--execute",
-            executable.to_str().ok_or("test path must be UTF-8")?,
-            "--read",
-            readable_file.to_str().ok_or("test path must be UTF-8")?,
-            "--read-write",
-            writable_file.to_str().ok_or("test path must be UTF-8")?,
-            "--execute",
-            executable_file.to_str().ok_or("test path must be UTF-8")?,
-            "--",
-            "/bin/echo",
-        ])
-        .output()?;
+    command.env("HOME", home).args([
+        "run",
+        "--dry-run",
+        "--read",
+        readable.to_str().ok_or("test path must be UTF-8")?,
+        "--read-write",
+        writable.to_str().ok_or("test path must be UTF-8")?,
+        "--execute",
+        executable.to_str().ok_or("test path must be UTF-8")?,
+        "--read",
+        readable_file.to_str().ok_or("test path must be UTF-8")?,
+        "--execute",
+        executable_file.to_str().ok_or("test path must be UTF-8")?,
+    ]);
+    #[cfg(target_os = "macos")]
+    command.args([
+        "--read-write",
+        writable_file.to_str().ok_or("test path must be UTF-8")?,
+    ]);
+    let output = command.args(["--", "/bin/echo"]).output()?;
     assert!(output.status.success());
 
     let document: serde_json::Value = serde_json::from_slice(&output.stdout)?;
@@ -383,15 +384,34 @@ fn cli_file_and_executable_grants_are_independent() -> Result<(), Box<dyn std::e
             .any(|grant| { grant["path"] == executable && grant["scope"] == "subtree" })
     );
     assert!(!files.iter().any(|grant| grant["path"] == executable));
-    for (path, access) in [
-        (fs::canonicalize(readable_file)?, "read"),
-        (fs::canonicalize(writable_file)?, "read_write"),
-    ] {
-        let path = path.to_str().ok_or("canonical test path must be UTF-8")?;
+    let readable_file = fs::canonicalize(readable_file)?;
+    let readable_file = readable_file
+        .to_str()
+        .ok_or("canonical test path must be UTF-8")?;
+    assert!(files.iter().any(|grant| {
+        grant["path"] == readable_file && grant["access"] == "read" && grant["scope"] == "exact"
+    }));
+    assert!(
+        !executables
+            .iter()
+            .any(|grant| grant["path"] == readable_file)
+    );
+    #[cfg(target_os = "macos")]
+    {
+        let writable_file = fs::canonicalize(writable_file)?;
+        let writable_file = writable_file
+            .to_str()
+            .ok_or("canonical test path must be UTF-8")?;
         assert!(files.iter().any(|grant| {
-            grant["path"] == path && grant["access"] == access && grant["scope"] == "exact"
+            grant["path"] == writable_file
+                && grant["access"] == "read_write"
+                && grant["scope"] == "exact"
         }));
-        assert!(!executables.iter().any(|grant| grant["path"] == path));
+        assert!(
+            !executables
+                .iter()
+                .any(|grant| grant["path"] == writable_file)
+        );
     }
     let executable_file = fs::canonicalize(executable_file)?;
     let executable_file = executable_file
@@ -403,6 +423,42 @@ fn cli_file_and_executable_grants_are_independent() -> Result<(), Box<dyn std::e
             .any(|grant| { grant["path"] == executable_file && grant["scope"] == "exact" })
     );
     assert!(!files.iter().any(|grant| grant["path"] == executable_file));
+    Ok(())
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn linux_rejects_read_write_regular_files_before_launch() -> Result<(), Box<dyn std::error::Error>>
+{
+    let directory = tempfile::tempdir()?;
+    let home = directory.path().join("home");
+    let project = directory.path().join("project");
+    let writable_file = directory.path().join("one-file");
+    let marker = directory.path().join("target-ran");
+    fs::create_dir(&home)?;
+    fs::create_dir(&project)?;
+    fs::write(&writable_file, "unchanged")?;
+
+    let mut command = Command::cargo_bin("sandy")?;
+    command
+        .env("HOME", &home)
+        .env("SANDY_TEST_MARKER", &marker)
+        .current_dir(&project)
+        .args(["run", "--profile", "generic", "--read-write"])
+        .arg(&writable_file)
+        .args([
+            "--",
+            "/bin/sh",
+            "-c",
+            "printf ran > \"$SANDY_TEST_MARKER\"",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--read-write on Linux requires an existing directory; grant the containing directory instead",
+        ));
+    assert!(!marker.exists());
+    assert_eq!(fs::read_to_string(writable_file)?, "unchanged");
     Ok(())
 }
 

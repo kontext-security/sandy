@@ -121,7 +121,7 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
         intent = intent.grant_file(path, AccessMode::Read, grant_scope(path)?);
     }
     for path in &arguments.read_write {
-        intent = intent.grant_file(path, AccessMode::ReadWrite, grant_scope(path)?);
+        intent = intent.grant_file(path, AccessMode::ReadWrite, read_write_grant_scope(path)?);
     }
     for path in &arguments.execute {
         intent = intent.allow_execute(path, grant_scope(path)?);
@@ -305,4 +305,16 @@ fn grant_scope(path: &std::path::Path) -> Result<PathScope, AppError> {
     } else {
         PathScope::Exact
     })
+}
+
+fn read_write_grant_scope(path: &std::path::Path) -> Result<PathScope, AppError> {
+    let scope = grant_scope(path)?;
+    #[cfg(target_os = "linux")]
+    if scope == PathScope::Exact {
+        return Err(AppError::Launch(
+            "--read-write on Linux requires an existing directory; grant the containing directory instead"
+                .to_owned(),
+        ));
+    }
+    Ok(scope)
 }

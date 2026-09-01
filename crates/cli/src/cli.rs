@@ -90,7 +90,7 @@ pub(crate) struct RunArgs {
     #[arg(long, value_name = "PATH")]
     pub(crate) read: Vec<PathBuf>,
 
-    /// Grant read/write access to an existing path.
+    /// Grant read/write access to an existing path. Linux requires a directory.
     #[arg(long = "read-write", value_name = "PATH")]
     pub(crate) read_write: Vec<PathBuf>,
 

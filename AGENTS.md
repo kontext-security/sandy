@@ -257,9 +257,10 @@ Both the absolute lexical source path and canonical target receive terminal
 subtree denials; these pathname rules do not eliminate replacement races or
 cover hard-link aliases.
 
-`--read` and `--read-write` add only filesystem authority. `--execute` adds
-only executable mapping and launch authority. A path requiring both must be
-named through both capability types.
+`--read` and `--read-write` add only filesystem authority. On Linux,
+`--read-write` accepts existing directories and rejects non-directory paths
+before bootstrap. `--execute` adds only executable mapping and launch authority.
+A path requiring both must be named through both capability types.
 
 All Sandy options precede `--`. Everything after `--` is opaque target data
 and must pass through unchanged. Do not add ambiguous shorthand.

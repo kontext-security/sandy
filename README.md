@@ -141,6 +141,10 @@ sandy run --read ../shared-library -- claude
 sandy run --read-write ~/Downloads/output -- codex --sandbox danger-full-access
 ```
 
+On Linux, `--read-write` accepts existing directories. To modify one file,
+grant its containing directory; Sandy rejects a writable regular-file grant
+before launching the target.
+
 File grants do not make content executable. Grant executable mapping and
 launch separately when a target must run programs or generated code from an
 additional path:
@@ -302,8 +306,8 @@ On macOS, known-agent profiles may grant access to agent state directories for
 compatibility.
 
 The `sandy` CLI and Rust current-process library support macOS and Linux.
-Linux requires Landlock ABI 6, user and mount namespaces, the modern mount API,
-and a host security policy that permits the calling executable to configure
+Linux requires Landlock ABI 6, user, mount, and IPC namespaces, the modern mount
+API, and a host security policy that permits the calling executable to configure
 those namespaces. Some distributions restrict unprivileged user namespaces by
 default; `sandy doctor` detects this and Sandy never falls back to weaker
 enforcement.

@@ -53,16 +53,16 @@ CLI explicitly composes its typed platform runtime baseline before validation.
 On Linux, preparation must run while the process is single-threaded. It pins
 paths, verifies exact policy representability, exercises namespace setup in a
 sacrificial child, and compiles native rules before enforcement. Application
-enters private namespaces and a private filesystem view, then applies Landlock,
-removes capabilities, and installs seccomp. A preparation failure leaves the
-process unchanged. An enforcement failure may leave it partially restricted,
-so continuing is unsupported. The private view omits the host process tree,
-`/sys`, broad `/run` and `/dev` contents, and the former host root. The CLI
-grants only named runtime devices and public proc files. Existing descriptors
-remain capabilities. Unsupported hosts and policy combinations fail rather
-than receiving approximate enforcement. Landlock signal scoping prevents the
-restricted process from signaling processes outside its sandbox domain while
-preserving signals among its descendants.
+enters private user, mount, and IPC namespaces and a private filesystem view,
+then applies Landlock, removes capabilities, and installs seccomp. A preparation
+failure leaves the process unchanged. An enforcement failure may leave it
+partially restricted, so continuing is unsupported. The private view omits the
+host process tree, `/sys`, broad `/run` and `/dev` contents, and the former host
+root. The CLI grants only named runtime devices and public proc files. Existing
+descriptors remain capabilities. Unsupported hosts and policy combinations fail
+rather than receiving approximate enforcement. Landlock signal scoping prevents
+the restricted process from signaling processes outside its sandbox domain
+while preserving signals among its descendants.
 
 An explicitly selected user profile file is parsed through a narrower schema
 than embedded profiles. It can only add required filesystem grants, executable

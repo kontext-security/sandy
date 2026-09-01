@@ -36,7 +36,7 @@ PreparedLinuxSandbox  pins paths and prepares rules
 apply()               irreversible native transition
 ```
 
-The backend uses a private user and mount namespace, an optional network
+The backend uses private user, mount, and IPC namespaces, an optional network
 namespace for `BlockAll`, a descriptor-built private root, complete capability
 removal, and final seccomp filters. The fixed security baseline requires
 Landlock ABI 6 and always scopes signals to the sandbox domain. Exact external

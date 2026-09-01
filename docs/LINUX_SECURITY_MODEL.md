@@ -188,6 +188,11 @@ profiles are accepted only when the complete resolved policy is representable;
 absent required files or a confidential deny nested inside a writable tree fail
 before the bootstrap executes the target.
 
+The Linux CLI accepts `--read-write` only for existing directories. Exact
+read-only and executable regular-file grants remain supported; a writable
+regular file is rejected before bootstrap with guidance to grant its containing
+directory.
+
 The release workflow verifies the packaged x86-64 and arm64 binaries with
 `doctor` and a real sandboxed launch on Ubuntu 24.04. The x86-64 artifact is
 built on Ubuntu 22.04; that build choice lowers its glibc floor but does not
