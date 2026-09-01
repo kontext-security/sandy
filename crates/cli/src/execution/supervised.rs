@@ -7,7 +7,7 @@ use std::{
 
 use sandy_core::{
     AccessMode, CommandSpec, LaunchManifestV2, MANIFEST_SCHEMA_V2, NetworkPolicy, OsValue,
-    PathScope, ValidatedLaunch, encode_launch,
+    PathScope, SandboxPolicy, ValidatedLaunch, encode_launch,
 };
 use serde_json::json;
 use tempfile::Builder;
@@ -83,7 +83,10 @@ pub(crate) fn run(arguments: RunArgs) -> Result<i32, AppError> {
     } else {
         NetworkPolicy::AllowAll
     };
-    let mut intent = runtime::intent(network);
+    // Foreground launching and subprocess creation are independent policy
+    // capabilities. The default CLI contract deliberately selects both.
+    let policy = SandboxPolicy::new(network).allow_subprocesses();
+    let mut intent = runtime::intent(policy);
     intent = intent.grant_file_and_execute(
         paths.working_directory.as_path(),
         AccessMode::ReadWrite,

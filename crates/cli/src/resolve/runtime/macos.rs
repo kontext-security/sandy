@@ -3,8 +3,7 @@
 use std::path::Path;
 
 use sandy_core::{
-    AccessMode, NetworkPolicy, PathScope, SandboxPolicy, allow_file_metadata,
-    allow_foreground_cli_compatibility,
+    AccessMode, PathScope, SandboxPolicy, allow_file_metadata, allow_foreground_cli_compatibility,
 };
 
 use crate::resolve::CliPolicyIntent;
@@ -29,14 +28,16 @@ const READ_WRITE_LITERALS: &[&str] = &[
 ];
 
 /// Adds the CLI's ordinary command-runtime permissions through the shared
-/// policy builder. These entries have no privileged precedence over profile or
-/// user policy, and terminal denies still override them.
-pub(crate) fn intent(network: NetworkPolicy) -> CliPolicyIntent {
-    add_matching(network, |path| Path::new(path).exists())
+/// policy builder. These entries have no privileged precedence over caller
+/// policy, and terminal denies still override them.
+pub(crate) fn intent(policy: SandboxPolicy) -> CliPolicyIntent {
+    add_matching(policy, |path| Path::new(path).exists())
 }
 
-fn add_matching(network: NetworkPolicy, mut include: impl FnMut(&str) -> bool) -> CliPolicyIntent {
-    let mut policy = SandboxPolicy::new(network);
+fn add_matching(
+    mut policy: SandboxPolicy,
+    mut include: impl FnMut(&str) -> bool,
+) -> CliPolicyIntent {
     policy = allow_file_metadata(policy);
     policy = allow_foreground_cli_compatibility(policy);
     let mut intent =
@@ -69,9 +70,15 @@ mod tests {
 
     #[test]
     fn baseline_is_only_explicit_policy_input() -> Result<(), Box<dyn std::error::Error>> {
-        let policy = resolve_policy(add_matching(NetworkPolicy::BlockAll, |_| false), &[])?
-            .finish()?
-            .into_spec();
+        let policy = resolve_policy(
+            add_matching(
+                SandboxPolicy::new(NetworkPolicy::BlockAll).allow_subprocesses(),
+                |_| false,
+            ),
+            &[],
+        )?
+        .finish()?
+        .into_spec();
 
         assert!(policy.files.iter().any(|grant| {
             grant.path.as_path() == std::path::Path::new("/")
@@ -94,9 +101,12 @@ mod tests {
     fn data_and_device_paths_do_not_gain_executable_authority()
     -> Result<(), Box<dyn std::error::Error>> {
         let policy = resolve_policy(
-            add_matching(NetworkPolicy::BlockAll, |path| {
-                READ_ONLY_DATA_SUBTREES.contains(&path) || READ_WRITE_LITERALS.contains(&path)
-            }),
+            add_matching(
+                SandboxPolicy::new(NetworkPolicy::BlockAll).allow_subprocesses(),
+                |path| {
+                    READ_ONLY_DATA_SUBTREES.contains(&path) || READ_WRITE_LITERALS.contains(&path)
+                },
+            ),
             &[],
         )?
         .finish()?
