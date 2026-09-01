@@ -321,16 +321,15 @@ env_key = "SANDY_CODEX_TEST_KEY"
         let provider_result = provider
             .join()
             .map_err(|_| "Codex mock provider panicked")?;
-        if let Err(error) = provider_result {
-            return Err(error.into());
-        }
-        let tool_output = fs::read_to_string(project.join("codex-tool.txt"))?;
+        let provider_error = provider_result.err();
+        let tool_output = fs::read_to_string(project.join("codex-tool.txt")).ok();
         if !output.status.success()
-            || tool_output != "sandy-codex-tool"
+            || provider_error.is_some()
+            || tool_output.as_deref() != Some("sandy-codex-tool")
             || fs::read_to_string(&outside)? != "protected"
         {
             return Err(format!(
-                "installed Codex tool execution exited with {}; stdout={:?}; stderr={:?}",
+                "installed Codex tool execution exited with {}; provider={provider_error:?}; tool_output={tool_output:?}; stdout={:?}; stderr={:?}",
                 output.status,
                 bounded_diagnostic(&output.stdout),
                 bounded_diagnostic(&output.stderr),
@@ -349,13 +348,16 @@ env_key = "SANDY_CODEX_TEST_KEY"
             codex_final_response().map_err(|error| error.to_string())?,
         ];
         let deadline = Instant::now() + LIVE_TIMEOUT;
-        for response in responses {
+        for (request_index, response) in responses.into_iter().enumerate() {
             let (mut stream, _) = loop {
                 match listener.accept() {
                     Ok(connection) => break connection,
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         if Instant::now() >= deadline {
-                            return Err("Codex did not complete both provider requests".to_owned());
+                            return Err(format!(
+                                "Codex did not send provider request {}",
+                                request_index + 1
+                            ));
                         }
                         thread::sleep(Duration::from_millis(10));
                     }
